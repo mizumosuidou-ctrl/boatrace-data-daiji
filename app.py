@@ -2579,7 +2579,7 @@ def _quick_reading_text(racer_row: dict[str, object], profile, diagnosis_date: d
         f"日主は{profile.day_master}、三柱は{profile.birth_year_stem_branch}・"
         f"{profile.birth_month_stem_branch}・{profile.birth_day_stem_branch}。"
         f"開催日補助は流年{transit.year_pillar}、流月{transit.month_stem_pillar}、"
-        f"流日{transit.day_stem_pillar}。"
+        f"流日{transit.day_pillar}。"
         + (("注意：" + '。'.join(cautions) + "。") if cautions else "")
         + "これは命理上の心理仮説で、実際の平均ST順位差・F状態・展示・コースを入れると今回レース用に補正します。"
     )
