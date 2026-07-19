@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
+import time
 
 import pandas as pd
 import streamlit as st
@@ -13,10 +15,25 @@ from app import (
     upsert_racers,
     validate_racer_import,
 )
-from boatrace_scraper import fetch_profile, search_profiles_by_name
+from boatrace_scraper import (
+    build_session,
+    discover_active_roster,
+    fetch_profile,
+    search_profiles_by_name,
+)
 from quick_lookup import can_auto_select, find_local_candidates
 from deployment_check import run_deployment_check
+from roster_sync import (
+    ensure_roster_tables,
+    mark_profile_completed,
+    mark_profile_failed,
+    pending_registration_numbers,
+    roster_sync_summary,
+    save_discovered_roster,
+)
 from zodiac_engine import build_profile
+
+DB_PATH = Path("data/multi_zodiac_boat.db")
 
 
 def save_official_profile(registration_number: str) -> str:
@@ -62,13 +79,97 @@ def render_profile(registration_number: str, diagnosis_date: date) -> None:
     st.caption("出生時刻不明のためASC・ハウス・時柱は使用していません。命理診断は心理傾向の仮説です。")
 
 
+def render_roster_admin() -> None:
+    ensure_roster_tables(DB_PATH)
+    summary = roster_sync_summary(DB_PATH)
+    st.write("BOAT RACE公式に現在掲載されている選手を発見し、プロフィールを少量ずつ補完します。")
+    a, b, c, d = st.columns(4)
+    a.metric("公式発見", summary.discovered)
+    b.metric("プロフィール取得済み", summary.completed)
+    c.metric("未取得", summary.pending)
+    d.metric("取得失敗", summary.failed)
+    st.caption(f"最終一覧確認：{summary.last_discovered_at}／非掲載候補：{summary.missing_candidate}")
+
+    if st.button("① 公式の現役選手一覧を更新", use_container_width=True):
+        progress = st.progress(0)
+        status = st.empty()
+
+        def on_progress(index: int, total: int, left: int, right: int, found: int) -> None:
+            progress.progress(index / total)
+            status.write(f"登録{left}〜{right}を確認中：現在{found}人")
+
+        try:
+            with st.spinner("公式の登録番号範囲を確認しています…"):
+                roster = discover_active_roster(progress_callback=on_progress)
+                result = save_discovered_roster(DB_PATH, roster)
+            st.success(
+                f"公式掲載{result['total']}人を確認。新規{result['added']}人、"
+                f"復帰候補{result['restored']}人、既存更新{result['updated']}人。"
+            )
+            st.rerun()
+        except Exception as exc:
+            st.error(f"公式一覧の更新に失敗しました: {exc}")
+
+    batch_size = st.select_slider(
+        "1回に補完する人数",
+        options=[10, 20, 30, 50],
+        value=20,
+        help="公開サーバーの負荷を抑えるため、最初は20人を推奨します。",
+    )
+    if st.button("② 未取得プロフィールを補完", use_container_width=True):
+        numbers = pending_registration_numbers(DB_PATH, batch_size)
+        if not numbers:
+            st.success("現在、補完待ちの選手はいません。")
+        else:
+            progress = st.progress(0)
+            status = st.empty()
+            session = build_session()
+            success_count = 0
+            failure_count = 0
+            try:
+                total = len(numbers)
+                for index, number in enumerate(numbers, start=1):
+                    try:
+                        scraped = fetch_profile(number, session=session)
+                        frame = pd.DataFrame([scraped.to_dict()])
+                        valid, errors = validate_racer_import(frame)
+                        if errors:
+                            raise ValueError("／".join(errors))
+                        upsert_racers(valid)
+                        mark_profile_completed(DB_PATH, number)
+                        success_count += 1
+                        status.write(f"{index}/{total}：{scraped.name}を登録")
+                    except Exception as exc:
+                        mark_profile_failed(DB_PATH, number, str(exc))
+                        failure_count += 1
+                        status.write(f"{index}/{total}：登録{number}は取得失敗")
+                    progress.progress(index / total)
+                    if index < total:
+                        time.sleep(0.8)
+                refresh_zodiac_profiles()
+                st.success(f"プロフィール補完：成功{success_count}人／失敗{failure_count}人")
+                st.rerun()
+            finally:
+                session.close()
+
+    st.info(
+        "新人・復帰対応：定期的に①を実行すると新しい登録番号を追加し、"
+        "以前見えなかった選手が再掲載された場合は復帰候補として戻します。"
+        "公式で2回連続見つからない選手も削除せず『非掲載候補』として保持します。"
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="MULTI-ZODIAC 選手診断", layout="centered")
     init_db()
     refresh_zodiac_profiles()
+    ensure_roster_tables(DB_PATH)
 
     st.title("MULTI-ZODIAC 選手診断")
     st.write("ボートレーサーの名前または登録番号を入れるだけで、公式プロフィールを確認して診断します。")
+
+    with st.expander("現役選手マスター更新"):
+        render_roster_admin()
 
     with st.expander("接続・保存状態を確認"):
         if st.button("動作環境をチェック", use_container_width=True):

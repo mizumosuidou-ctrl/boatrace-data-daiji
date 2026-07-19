@@ -13,7 +13,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 PROFILE_URL = "https://www.boatrace.jp/owpc/pc/data/racersearch/profile?toban={registration_number}"
-DEFAULT_USER_AGENT = "MULTI-ZODIAC-BOAT/0.2 (+personal research; respectful rate limit)"
+DEFAULT_USER_AGENT = "MULTI-ZODIAC-BOAT/0.3 (+personal research; respectful rate limit)"
 
 
 class ProfileNotFoundError(ValueError):
@@ -74,7 +74,6 @@ def parse_profile_html(html: str, registration_number: str, url: Optional[str] =
     registration_term = term_match.group(1) if term_match else ""
     class_level = values.get("級別", "").replace("級", "").strip()
 
-    # The profile title usually contains “Name（出場予定）”.
     title_text = _normalize_space(soup.title.get_text(" ", strip=True)) if soup.title else ""
     name = re.sub(r"（.*?）|\(.*?\)|ボートレーサー検索.*$", "", title_text).strip()
     if not name or "BOAT RACE" in name:
@@ -82,7 +81,6 @@ def parse_profile_html(html: str, registration_number: str, url: Optional[str] =
         name = _normalize_space(heading.get_text(" ", strip=True)) if heading else ""
         name = re.sub(r"（.*?）|\(.*?\)|ボートレーサー検索.*$", "", name).strip()
 
-    # Kana is normally near the visible name. Use a broad katakana match, excluding labels.
     kana_candidates = re.findall(r"[ァ-ヶー\u3000 ]{3,}", text)
     name_kana = ""
     for candidate in kana_candidates:
@@ -166,7 +164,7 @@ def collect_profiles(
             except requests.RequestException as exc:
                 failures.append({"registration_number": number, "reason": f"通信エラー: {exc}"})
                 status = "通信エラー"
-            except Exception as exc:  # Preserve the run and report parse changes.
+            except Exception as exc:
                 failures.append({"registration_number": number, "reason": f"解析エラー: {exc}"})
                 status = "解析エラー"
             if progress_callback:
@@ -176,15 +174,15 @@ def collect_profiles(
     finally:
         session.close()
 
-    success_df = pd.DataFrame(successes)
-    failure_df = pd.DataFrame(failures)
-    return success_df, failure_df
+    return pd.DataFrame(successes), pd.DataFrame(failures)
 
 
 def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8-sig")
 
+
 SEARCH_URL = "https://www.boatrace.jp/owpc/pc/data/racersearch/result"
+
 
 @dataclass(frozen=True)
 class RacerSearchResult:
@@ -194,11 +192,6 @@ class RacerSearchResult:
 
 
 def parse_search_results_html(html: str) -> list[RacerSearchResult]:
-    """Parse BOAT RACE official racer-search results.
-
-    The official result page links each candidate to /racersearch/profile?toban=NNNN.
-    Duplicate links are collapsed by registration number.
-    """
     soup = BeautifulSoup(html, "html.parser")
     found: dict[str, RacerSearchResult] = {}
     for link in soup.find_all("a", href=True):
@@ -214,10 +207,7 @@ def parse_search_results_html(html: str) -> list[RacerSearchResult]:
         if not name:
             continue
         profile_url = href if href.startswith("http") else f"https://www.boatrace.jp{href}"
-        found.setdefault(
-            registration_number,
-            RacerSearchResult(registration_number, name, profile_url),
-        )
+        found.setdefault(registration_number, RacerSearchResult(registration_number, name, profile_url))
     return sorted(found.values(), key=lambda item: item.registration_number)
 
 
@@ -226,7 +216,6 @@ def search_profiles_by_name(
     session: Optional[requests.Session] = None,
     timeout: int = 20,
 ) -> list[RacerSearchResult]:
-    """Search current official racer profiles by a full or partial name."""
     query = _normalize_space(name)
     if not query:
         return []
@@ -244,3 +233,64 @@ def search_profiles_by_name(
     finally:
         if owns_session:
             session.close()
+
+
+def search_profiles_by_range(
+    left: int,
+    right: int,
+    session: Optional[requests.Session] = None,
+    timeout: int = 20,
+) -> list[RacerSearchResult]:
+    """公式検索の登録番号範囲から、現在掲載されている選手を取得する。"""
+    owns_session = session is None
+    session = session or build_session()
+    try:
+        response = session.get(
+            SEARCH_URL,
+            params={
+                "toban_left": str(int(left)).zfill(4),
+                "toban_right": str(int(right)).zfill(4),
+                "prevpgid": "TDAT320",
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        response.encoding = response.apparent_encoding or "utf-8"
+        return parse_search_results_html(response.text)
+    finally:
+        if owns_session:
+            session.close()
+
+
+def discover_active_roster(
+    start_number: int = 2500,
+    end_number: int = 6000,
+    chunk_size: int = 50,
+    delay_seconds: float = 0.4,
+    progress_callback: Optional[Callable[[int, int, int, int, int], None]] = None,
+) -> list[RacerSearchResult]:
+    """公式掲載中の登録番号を範囲検索で発見する。
+
+    取得結果は登録番号で重複排除する。プロフィール詳細は別工程で少量ずつ取得する。
+    """
+    if start_number > end_number:
+        raise ValueError("開始登録番号は終了登録番号以下にしてください")
+    chunk_size = max(10, min(200, int(chunk_size)))
+    ranges = [
+        (left, min(left + chunk_size - 1, end_number))
+        for left in range(start_number, end_number + 1, chunk_size)
+    ]
+    found: dict[str, RacerSearchResult] = {}
+    session = build_session()
+    try:
+        total = len(ranges)
+        for index, (left, right) in enumerate(ranges, start=1):
+            for racer in search_profiles_by_range(left, right, session=session):
+                found[racer.registration_number] = racer
+            if progress_callback:
+                progress_callback(index, total, left, right, len(found))
+            if index < total and delay_seconds > 0:
+                time.sleep(delay_seconds)
+    finally:
+        session.close()
+    return sorted(found.values(), key=lambda item: item.registration_number)
