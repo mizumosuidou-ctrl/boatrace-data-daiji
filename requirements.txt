@@ -1,0 +1,6 @@
+streamlit>=1.36
+pandas>=2.2
+requests>=2.32
+beautifulsoup4>=4.12
+
+lunar_python>=1.4.8
