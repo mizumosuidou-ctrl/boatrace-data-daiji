@@ -1,0 +1,23 @@
+# サーバーで:  cd deploy && cp .env.example .env && (編集) && docker compose up -d
+services:
+  worker:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ../web/data:/app/web/data
+      - ../var:/app/var
+
+  web:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../web:/srv:ro
+      - caddy_data:/data
+
+volumes:
+  caddy_data:
