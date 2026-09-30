@@ -279,6 +279,7 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
   font-family: var(--f-display); font-weight: 800; font-size: clamp(18px, 2vw, 26px); letter-spacing: .32em; color: transparent;
   -webkit-text-stroke: 1px var(--text-2);
 }
+.hero-headline, .verdict h2, .up-card .hl { word-break: keep-all; overflow-wrap: anywhere; line-break: strict; }
 .hero-headline { font-family: var(--f-serif); font-weight: 700; font-size: clamp(22px, 2.6vw, 36px); line-height: 1.35; margin: clamp(18px, 2.4vw, 28px) 0 0; max-width: 22em; text-wrap: balance; }
 .hero-headline::before { content: "“"; color: var(--accent); margin-right: .1em; }
 .hero-headline::after { content: "”"; color: var(--accent); margin-left: .05em; }
@@ -484,6 +485,8 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .board-row.top { background: linear-gradient(90deg, rgba(var(--water-a), .08), transparent 60%); }
 .racer b { font-size: 16px; font-weight: 700; display: block; line-height: 1.3; }
 .racer small { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.racer .so { color: var(--accent); font-weight: 700; }
+.factor-legend .chip { padding: 1px 8px; font-size: 9.5px; }
 .racer .g { font-family: var(--f-mono); font-size: 10px; padding: 1px 5px; border-radius: 4px; margin-left: 6px; border: 1px solid var(--line-2); color: var(--text-2); vertical-align: 2px; }
 .racer .g.A1 { color: var(--hit); border-color: color-mix(in srgb, var(--hit) 55%, transparent); }
 .winbar { display: flex; align-items: center; gap: 12px; }

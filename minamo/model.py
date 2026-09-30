@@ -7,6 +7,7 @@ softmaxで1着確率、Plackett-Luceで3連単120通りの確率を出す。
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from itertools import permutations
 from statistics import mean
@@ -34,7 +35,8 @@ FACTOR_LABELS = {
     "local": "当地相性",
     "motor": "モーター",
     "boat": "ボート",
-    "start": "平均ST",
+    "start": "スタート力",
+    "tenkai": "展開(ST順差)",
     "exhibition": "展示タイム",
     "exh_st": "展示ST",
     "flying": "F持ち",
@@ -52,6 +54,7 @@ class BoatScore:
     top2: float = 0.0
     top3: float = 0.0
     factors: dict[str, float] = field(default_factory=dict)
+    start_order: Optional[float] = None  # 予想スタート順（LightGBM使用時）
 
 
 @dataclass
@@ -65,6 +68,8 @@ class Prediction:
     picks: list[dict]
     has_exhibition: bool
     has_odds: bool
+    engine: str = "model"  # model / lightgbm-pre / lightgbm-post
+    shadow_win: dict[int, float] = field(default_factory=dict)  # 比較用：もう一方のエンジンの1着確率
 
     def to_dict(self) -> dict:
         return {
@@ -77,6 +82,7 @@ class Prediction:
                     "top2": round(b.top2, 4),
                     "top3": round(b.top3, 4),
                     "factors": {k: round(v, 3) for k, v in b.factors.items()},
+                    "start_order": round(b.start_order, 2) if b.start_order is not None else None,
                 }
                 for b in self.boats
             ],
@@ -88,6 +94,8 @@ class Prediction:
             "picks": self.picks,
             "has_exhibition": self.has_exhibition,
             "has_odds": self.has_odds,
+            "engine": self.engine,
+            "shadow_win": {str(k): round(v, 4) for k, v in self.shadow_win.items()},
         }
 
 
@@ -147,6 +155,18 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
             f["wind"] = -0.07 * (wind - 4) if c == 1 else 0.03 * (wind - 4)
         scores.append(BoatScore(boat=e.boat, course=c, score=sum(f.values()), factors=f))
 
+    engine, shadow = "model", {}
+    ml = _ml_result(card, before)
+    if ml and all(s.boat in ml["boats"] for s in scores):
+        tot = sum(math.exp(s.score) for s in scores)
+        shadow = {s.boat: math.exp(s.score) / tot for s in scores}
+        for s in scores:
+            m = ml["boats"][s.boat]
+            s.score = math.log(m["p"])
+            s.factors = m["factors"]
+            s.start_order = m["start_order"]
+        engine = ml["engine"]
+
     strengths = {s.boat: math.exp(s.score) for s in scores}
     total = sum(strengths.values())
     for s in scores:
@@ -191,7 +211,27 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         picks=picks,
         has_exhibition=has_exh,
         has_odds=bool(odds),
+        engine=engine,
+        shadow_win=shadow,
     )
+
+
+def _ml_result(card: RaceCard, before: Optional[BeforeInfo]) -> Optional[dict]:
+    """学習済みLightGBMがあり、採用基準を満たしていれば使う。
+
+    MINAMO_ENGINE=heuristic で常に統計モデル、=ml で成績にかかわらずLightGBM。
+    """
+    mode = os.environ.get("MINAMO_ENGINE", "auto")
+    if mode == "heuristic":
+        return None
+    try:
+        from .ml import live
+    except ImportError:
+        return None
+    predictor = live.get()
+    if predictor is None or (mode == "auto" and not predictor.adopted):
+        return None
+    return predictor.predict(card, before)
 
 
 KIMARITE_BY_COURSE = {

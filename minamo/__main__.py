@@ -30,6 +30,10 @@ def main() -> None:
     demo = sub.add_parser("demo")
     demo.add_argument("--days", type=int, default=3)
     demo.add_argument("--venues", type=int, default=14)
+    mlt = sub.add_parser("ml-train", help="LightGBMを学習・検証して var/ml に保存")
+    mlt.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
+    mlt.add_argument("--test-days", type=int, default=90)
+    sub.add_parser("ml-synthetic", help="動作確認用の架空CSVを var/ml/raw に作る")
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -41,6 +45,16 @@ def main() -> None:
 
         generate(days=args.days, venues=args.venues)
         print(f"demo data written to {store.DATA_DIR}")
+    elif args.cmd in ("ml-train", "ml-synthetic"):
+        from .ml import live, synthetic, train
+
+        raw = Path(getattr(args, "raw", None) or live.ML_DIR / "raw")
+        if args.cmd == "ml-synthetic":
+            synthetic.generate(raw)
+            print(f"synthetic CSV written to {raw}")
+        else:
+            meta = train.run(raw, live.ML_DIR, test_days=args.test_days)
+            print(train.summary_ja(meta))
     elif args.cmd == "serve":
         root = Path(__file__).resolve().parent.parent / "web"
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))

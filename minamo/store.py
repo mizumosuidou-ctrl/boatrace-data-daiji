@@ -54,18 +54,27 @@ def venue_info(jcd: str) -> dict:
     return {"jcd": v.code, "name": v.name, "roman": v.roman, "region": v.region, "water": v.water}
 
 
-def settle(ai: dict, result: RaceResult) -> dict:
+def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None) -> dict:
     picks = [p["combo"] for p in ai.get("picks", [])]
     order = result.order
     hit = result.trifecta if result.trifecta in picks else None
     payout = result.trifecta_payout or 0
-    return {
+    out = {
         "honmei_win": bool(order) and ai.get("honmei") == order[0],
         "trifecta_hit": bool(hit),
         "hit_combo": hit,
         "stake": 100 * len(picks),
         "return": payout if hit else 0,
     }
+    # LightGBMと統計モデルの本命（1着確率1位）を比べる
+    if pred and order and pred.get("shadow_win"):
+        fav = max(pred["boats"], key=lambda b: b["win"])["boat"]
+        shadow = pred["shadow_win"]
+        shadow_fav = int(max(shadow, key=lambda k: shadow[k]))
+        out["engine"] = pred.get("engine")
+        out["fav_win"] = fav == order[0]
+        out["shadow_fav_win"] = shadow_fav == order[0]
+    return out
 
 
 def build_race(
@@ -138,7 +147,7 @@ def build_race(
             "rows": [asdict(r) for r in result.rows],
         }
         if not result.cancelled and result.trifecta:
-            payload["settle"] = settle(ai, result)
+            payload["settle"] = settle(ai, result, payload["prediction"])
     return payload
 
 
@@ -159,6 +168,7 @@ def race_summary(race: dict) -> dict:
         "win": [round(b["win"], 3) for b in pred.get("boats", [])],
         "stage": race.get("stage"),
         "source": ai.get("source"),
+        "engine": pred.get("engine", "model"),
         "result": res.get("trifecta"),
         "payout": res.get("payout"),
         "cancelled": res.get("cancelled", False),
@@ -169,7 +179,7 @@ def race_summary(race: dict) -> dict:
 
 def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
     venues = []
-    totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0}
+    totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0, "ml_races": 0, "ml_fav_hits": 0, "shadow_fav_hits": 0}
     for vd in sorted(vdays, key=lambda v: v.jcd):
         races = []
         for rno in range(1, 13):
@@ -185,6 +195,10 @@ def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
                 totals["honmei_hits"] += int(st["honmei_win"])
                 totals["stake"] += st["stake"]
                 totals["return"] += st["return"]
+                if "fav_win" in st:
+                    totals["ml_races"] += 1
+                    totals["ml_fav_hits"] += int(st["fav_win"])
+                    totals["shadow_fav_hits"] += int(st["shadow_fav_win"])
         if not races:
             continue
         info = venue_info(vd.jcd)
@@ -203,7 +217,7 @@ def update_record(date: str, totals: dict, demo: bool) -> None:
     days.append({"date": date, **totals})
     days.sort(key=lambda d: d["date"])
     days = days[-120:]
-    agg = {k: sum(d[k] for d in days) for k in ("races", "settled", "hits", "honmei_hits", "stake", "return")}
+    agg = {k: sum(d.get(k, 0) for d in days) for k in ("races", "settled", "hits", "honmei_hits", "stake", "return", "ml_races", "ml_fav_hits", "shadow_fav_hits")}
     write_json(path, {"days": days, "totals": agg, "demo": demo, "updated_at": now_jst().isoformat(timespec="seconds")})
     latest = read_json(DATA_DIR / "latest.json") or {}
     dates = sorted(set((latest.get("dates") or []) + [date]))[-30:]

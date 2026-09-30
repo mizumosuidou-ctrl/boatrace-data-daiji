@@ -71,7 +71,9 @@ export function mountSim(canvas, race, opts = {}) {
 
   function progress(b, t) {
     const e = entries[b] || {};
-    const st = Math.abs(e.ex_st ?? e.avg_st ?? 0.16);
+    // 予想スタート順があればそれで隊形を描く（1番手ほど前）
+    const so = byBoat[b].start_order;
+    const st = so != null ? 0.09 + (so - 1) * 0.022 : Math.abs(e.ex_st ?? e.avg_st ?? 0.16);
     const r = rank[b];
     // 助走 → スタート（STが速いほど前）→ 着順どおりに差が開く
     const launch = -0.22 - st * 0.9;

@@ -337,10 +337,14 @@ function scrollCellsToNow(root) {
 
 /* ------------------------------------------------------------ race */
 const WIND_DIR = (n) => (n ? ((n - 1) * 22.5) : null);
-const FACTOR_KEYS = [["skill", "選手力"], ["local", "当地"], ["motor", "モーター"], ["boat", "ボート"], ["start", "平均ST"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["flying", "F"], ["grade", "級別"], ["wind", "風"]];
+const FACTOR_KEYS_MODEL = [["skill", "選手力"], ["local", "当地"], ["motor", "モーター"], ["boat", "ボート"], ["start", "平均ST"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["flying", "F"], ["grade", "級別"], ["wind", "風"]];
+const FACTOR_KEYS_ML = [["course", "コース"], ["start", "スタート力"], ["tenkai", "展開(ST順差)"], ["skill", "選手力"], ["motor", "モーター"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["flying", "F"]];
+const isML = (P) => String(P.engine || "").startsWith("lightgbm");
+const factorKeys = (P) => (isML(P) ? FACTOR_KEYS_ML : FACTOR_KEYS_MODEL);
+const ENGINE_LABEL = { "lightgbm-pre": "LightGBM · 展示前", "lightgbm-post": "LightGBM · 展示反映", model: "統計モデル" };
 
-function factorBars(f) {
-  return `<div class="factors" aria-hidden="true">${FACTOR_KEYS.map(([k, label]) => {
+function factorBars(f, keys) {
+  return `<div class="factors" aria-hidden="true">${keys.map(([k, label]) => {
     const v = f[k] || 0;
     const hgt = Math.min(13, Math.abs(v) * 30);
     return `<span class="factor" title="${label} ${v >= 0 ? "+" : ""}${v.toFixed(2)}">${v ? `<i class="${v > 0 ? "pos" : "neg"}" style="height:${hgt}px"></i>` : ""}</span>`;
@@ -390,17 +394,17 @@ function boardHtml(race) {
     const e = E[b.boat] || {};
     return `<div class="board-row ${b.win === maxWin ? "top" : ""}">
       <div>${boat(b.boat, "lg")}</div>
-      <div class="racer"><b>${esc(e.name)}<span class="g ${esc(e.grade)}">${esc(e.grade)}</span></b><small>${esc(e.branch)} · ${e.age ?? "-"}歳 · ${b.course}コース${e.ex_course && e.ex_course !== e.boat ? " (進入変化)" : ""}</small></div>
+      <div class="racer"><b>${esc(e.name)}<span class="g ${esc(e.grade)}">${esc(e.grade)}</span></b><small>${b.start_order != null ? `<span class="so">予想ST順 ${Number.isInteger(b.start_order) ? b.start_order : b.start_order.toFixed(1)}番手</span> · ` : ""}${esc(e.branch)} · ${e.age ?? "-"}歳 · ${b.course}コース${e.ex_course && e.ex_course !== e.boat ? " (進入変化)" : ""}</small></div>
       <div class="winbar" data-b="${b.boat}" style="${cVar(b.boat)}"><div class="track"><span class="fill" style="width:${(b.win / maxWin) * 100}%"></span></div><span class="v">${pct(b.win)}<small>%</small></span></div>
       <div class="num">${pct(b.top2)}%</div>
       <div class="num" data-l="3連対">${pct(b.top3)}%</div>
-      <div>${factorBars(b.factors)}</div>
+      <div>${factorBars(b.factors, factorKeys(P))}</div>
     </div>`;
   }).join("");
   return `<div class="panel board">
     <div class="board-head"><div>艇</div><div>選手</div><div>1着確率</div><div style="text-align:right">2連対</div><div style="text-align:right">3連対</div><div>要因（＋/−）</div></div>
     ${rows}
-    <div class="factor-legend">${FACTOR_KEYS.map(([, l], i) => `<span>${i + 1}.${l}</span>`).join("")}</div>
+    <div class="factor-legend"><span class="chip ${isML(P) ? "src-claude" : ""}">${esc(ENGINE_LABEL[P.engine] || "統計モデル")}</span>${factorKeys(P).map(([, l], i) => `<span>${i + 1}.${l}</span>`).join("")}</div>
   </div>`;
 }
 
@@ -463,7 +467,8 @@ async function renderRace(r, refresh = false) {
   const now = nowMs();
   const done = !!race.result;
   const srcChip = ai.source === "claude" ? `<span class="chip src-claude">● CLAUDE${ai.model ? " · " + esc(ai.model) : ""}</span>` : ai.source === "demo" ? `<span class="chip">DEMO · MODEL TEXT</span>` : `<span class="chip">STATISTICAL MODEL</span>`;
-  const stage = race.stage === "exhibition" ? `<span class="chip">展示反映済</span>` : `<span class="chip">出走表段階</span>`;
+  const stage = (race.stage === "exhibition" ? `<span class="chip">展示反映済</span>` : `<span class="chip">出走表段階</span>`)
+    + (isML(race.prediction) ? `<span class="chip src-claude">LightGBM</span>` : "");
   race.__showResult = done;
   const prevNext = `
     <div style="display:flex;gap:8px;margin-top:26px;flex-wrap:wrap">
@@ -515,11 +520,11 @@ async function renderRace(r, refresh = false) {
     <section class="panel sim rv" style="--i:5">
       <div class="sim-head"><span class="eyebrow">${done ? "First turn · result replay" : "First turn simulation"}</span><button class="replay" id="replay" type="button"><svg viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7.5-4.5z"/></svg>Replay</button></div>
       <canvas class="sim-canvas" id="sim" role="img" aria-label="1周1マークの展開シミュレーション"></canvas>
-      <div class="sim-foot"><span>進入 ${P.boats.slice().sort((a, b) => a.course - b.course).map((b) => b.boat).join("")} ${race.stage === "exhibition" ? "（展示進入）" : "（枠なり想定）"}</span><span>ST・予想着順から描画したイメージです</span></div>
+      <div class="sim-foot"><span>進入 ${P.boats.slice().sort((a, b) => a.course - b.course).map((b) => b.boat).join("")} ${race.stage === "exhibition" ? "（展示進入）" : "（枠なり想定）"}</span><span>${isML(P) ? "予想スタート順" : "ST"}・予想着順から描画したイメージです</span></div>
     </section>
 
     <section class="section">
-      <div class="section-head"><div><span class="eyebrow">Probability board</span><h2 class="section-title">Who wins<small>統計モデルの1着・2連対・3連対確率と、その根拠</small></h2></div></div>
+      <div class="section-head"><div><span class="eyebrow">Probability board</span><h2 class="section-title">Who wins<small>予想エンジンが出した1着・2連対・3連対確率と、その根拠</small></h2></div></div>
       ${boardHtml(race)}
     </section>
 
@@ -603,6 +608,11 @@ async function renderRecord() {
           <line class="axis" x1="${pad}" x2="${W - pad}" y1="${H - pad}" y2="${H - pad}"/>
         </svg>
       </div>
+      ${T.ml_races ? `<div class="section-head" style="margin-top:40px"><div><span class="eyebrow">Engine duel</span><h2 class="section-title">LightGBM vs 統計モデル<small>同じレースで、それぞれの本命（1着確率1位）が1着になった割合</small></h2></div></div>
+      <div class="calib">
+        <div class="panel rv"><h4>LightGBM</h4><div class="big" style="color:var(--accent)">${((T.ml_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
+        <div class="panel rv" style="--i:1"><h4>統計モデル</h4><div class="big">${((T.shadow_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
+      </div>` : ""}
       <div class="section-head" style="margin-top:40px"><div><span class="eyebrow">Calibration</span><h2 class="section-title">By confidence<small>確信度の帯ごとの成績。数字が高いレースほど当たっているかを検証</small></h2></div></div>
       <div class="calib">${Object.entries(tiers).map(([k, [n, h1, h3]], i) => `<div class="panel rv" style="--i:${i}"><h4>${k}</h4><div class="big">${n ? ((h3 / n) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">3連単的中 · 本命1着 ${n ? ((h1 / n) * 100).toFixed(1) : "--"}% · ${n}R</div></div>`).join("")}</div>
     </section>
