@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+var/
+web/data/
+deploy/.env
