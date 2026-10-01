@@ -232,6 +232,14 @@ def summary_ja(meta: dict) -> str:
     if "pre_v1" in m:
         lines.append("当地成績・最近の調子・モーター実績: " + ("使う（入れた方が良い）" if meta.get("extra_adopt") else "使わない（入れても良くならない）"))
         lines.append(f"3連単の2着・3着の平坦化: {meta.get('pl_decay')}（これまで {PL_DECAY}）")
+    swaps = (meta.get("priors") or {}).get("motor_swaps") or {}
+    if swaps:
+        from ..venues import venue
+
+        lines.append("モーター交換日（これより前のモーターとは別に数える）:")
+        items = [f"{venue(j).name} " + "・".join(f"{d[:4]}/{d[4:6]}/{d[6:]}" for d in ds_) for j, ds_ in sorted(swaps.items())]
+        for i in range(0, len(items), 4):
+            lines.append("  " + "　".join(items[i:i + 4]))
     lines.append("採用: " + ("する（基準より良い）" if meta["adopt"] else "しない（基準を下回った）"))
     if "post" in m:
         lines.append("展示後モデル: " + ("使う（同じレースで展示前より良い）" if meta.get("post_adopt") else "使わない（展示前の方が良い）"))

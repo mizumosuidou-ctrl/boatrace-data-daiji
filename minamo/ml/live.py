@@ -15,6 +15,15 @@ from . import dataset as ds
 log = logging.getLogger(__name__)
 
 ML_DIR = Path(os.environ.get("MINAMO_ML_DIR", Path(__file__).resolve().parents[2] / "var" / "ml"))
+# 学習のあとで見つけたモーター交換日（pipeline が出走表から見つけて書く）
+SWAP_FILE = Path(os.environ.get("MINAMO_STATE_DIR", Path(__file__).resolve().parents[2] / "var" / "state")) / "motor_swaps.json"
+
+
+def _live_swaps() -> dict:
+    try:
+        return json.loads(SWAP_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 class MLPredictor:
@@ -49,6 +58,7 @@ class MLPredictor:
             courses = {e.boat: e.boat for e in entries}
         rt = getattr(card, "racetime", None) or {}
         rt_racers = rt.get("racers") or {}
+        era = self.motor_era(card.jcd, card.date)
         rows = []
         for e in entries:
             b = be.get(e.boat)
@@ -56,7 +66,7 @@ class MLPredictor:
             rows.append({
                 "race_id": "live", "date": self.stats_date, "venue": card.jcd, "lane": e.boat,
                 "course": courses[e.boat], "toban": e.toban, "grade_o": ds.GRADE_ORD.get(e.grade, np.nan),
-                "motor_no": str(e.motor_no) if e.motor_no else np.nan,
+                "motor_no": f"{e.motor_no}@{era}" if e.motor_no else np.nan,
                 "rt_day": rt.get("day", np.nan),
                 "rt_n": r[1] if r else (0.0 if rt else np.nan),
                 "rt_best": r[0] if r else np.nan,
@@ -79,6 +89,14 @@ class MLPredictor:
         df = ds.apply_stats(df, self.pc, self.pa, self.meta["priors"])
         df = ds.apply_extra(df, self.extra)
         return df
+
+    def motor_era(self, jcd: str, date: str) -> int:
+        """学習と同じ数え方で「何回目のモーターか」。学習のあとに交換されていれば、その分も足す。"""
+        known = sorted((self.meta.get("priors") or {}).get("motor_swaps", {}).get(jcd, []))
+        era = int(np.searchsorted(np.array(known, dtype=str), str(date), side="right")) if known else 0
+        last = max(known + [str((self.meta.get("data_range") or ["", ""])[1]).replace("-", "")[:8]])
+        era += sum(1 for d in _live_swaps().get(jcd, []) if last < d <= str(date))
+        return era
 
     def predict(self, card, before=None) -> Optional[dict]:
         """{boat: {"p":..., "factors":{...}, "start_order":...}} と使ったモデル名。"""

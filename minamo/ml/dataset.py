@@ -51,7 +51,7 @@ RT_MS_RANGE = (90_000, 150_000)  # 1分30秒〜2分30秒の外は読み違いと
 BASE_FEATURES_V1 = list(BASE_FEATURES)  # 修正3までの特徴量（比較用）
 BASE_FEATURES = BASE_FEATURES_V1 + EXTRA_FEATURES + RT_FEATURES
 FORM_DAYS = 90
-MOTOR_DAYS = 180
+MOTOR_DAYS = None  # モーターは交換日で区切るので、今のモーターの全期間を使う（ボートレース日和と同じ）
 ABILITY_DAYS = 365  # 貢献Pの「選手の実力」＝そのモーターに乗る前、直近1年の勝率
 WIN_POINTS = {1: 10.0, 2: 8.0, 3: 6.0, 4: 4.0, 5: 2.0, 6: 1.0}  # 勝率の点数（失格などは0点）
 EX_FEATURES = [
@@ -254,6 +254,67 @@ def load_motors(path: Optional[Path]) -> pd.DataFrame:
     return mo[cols]
 
 
+# モーターの交換日（新モーターの使用開始日）。データから見つけたものに加えて、調べた日付も使う。
+# ※ネット上の一覧から写したもの。データから見つけた日と30日以内なら、データの日を使う。
+KNOWN_MOTOR_SWAPS = {
+    "01": ["20251227"], "02": ["20250806"], "03": ["20260511"], "04": ["20250609"], "05": ["20260418"],
+    "06": ["20260409"], "07": ["20250719"], "08": ["20251111"], "09": ["20251222"], "10": ["20250307"],
+    "11": ["20260408"], "12": ["20260323"], "13": ["20260417"], "14": ["20260411"], "15": ["20250903"],
+    "16": ["20251217"], "17": ["20251019"], "18": ["20260420"], "19": ["20260429"], "20": ["20251126"],
+    "21": ["20260416"], "22": ["20260218"], "23": ["20250905"], "24": ["20260524"],
+}
+SWAP_ZERO_FRAC = 0.6  # その日のモーター2連率の6割以上が 0 → 新モーターの初日
+SWAP_MIN_GAP_DAYS = 200
+
+
+def detect_motor_swaps(motors: pd.DataFrame) -> dict[str, list[str]]:
+    """モーター2連率がいっせいに 0 に戻った日を、場ごとに交換日として見つける。"""
+    if motors is None or not len(motors) or "motor_2" not in motors:
+        return {}
+    d = pd.DataFrame({"date": motors["race_id"].str[:8], "venue": motors["race_id"].str[9:11], "m2": motors["motor_2"]})
+    g = d.groupby(["venue", "date"])["m2"].agg(n="size", zero=lambda x: float((x <= 0.5).mean())).reset_index()
+    out: dict[str, list[str]] = {}
+    for venue, v in g.sort_values("date").groupby("venue"):
+        prev_zero, found = None, []
+        for date, n, zero in zip(v["date"], v["n"], v["zero"]):
+            if n >= 6 and zero >= SWAP_ZERO_FRAC and prev_zero is not None and prev_zero < 0.3:
+                if not found or (pd.Timestamp(date) - pd.Timestamp(found[-1])).days >= SWAP_MIN_GAP_DAYS:
+                    found.append(date)
+            prev_zero = zero
+        if found:
+            out[venue] = found
+    return out
+
+
+def motor_swaps(motors: Optional[pd.DataFrame]) -> dict[str, list[str]]:
+    """データから見つけた交換日＋調べた交換日（近いものは1つにまとめる）。"""
+    found = detect_motor_swaps(motors)
+    out = {}
+    for venue in sorted(set(found) | set(KNOWN_MOTOR_SWAPS)):
+        dates = list(found.get(venue, []))
+        for k in KNOWN_MOTOR_SWAPS.get(venue, []):
+            if all(abs((pd.Timestamp(k) - pd.Timestamp(x)).days) > 30 for x in dates):
+                dates.append(k)
+        out[venue] = sorted(dates)
+    return out
+
+
+def motor_era(venue: pd.Series, date: pd.Series, swaps: dict[str, list[str]]) -> pd.Series:
+    """場×日ごとに「何回目のモーターか」（交換日より前のデータと混ざらないように）。"""
+    ds = date.dt.strftime("%Y%m%d") if hasattr(date, "dt") else date.astype(str)
+    out = pd.Series(0, index=venue.index)
+    for v, dates in swaps.items():
+        mask = venue == v
+        if mask.any():
+            out[mask] = np.searchsorted(np.array(sorted(dates)), ds[mask].to_numpy(), side="right")
+    return out
+
+
+def era_motor_key(motor_no: pd.Series, era: pd.Series) -> pd.Series:
+    """'12' と 交換回数 2 → '12@2'。番号が無ければ NaN。"""
+    return pd.Series([f"{m}@{e}" if isinstance(m, str) else np.nan for m, e in zip(motor_no, era)], index=motor_no.index)
+
+
 # ------------------------------------------------------------------ as-of stats
 
 
@@ -371,7 +432,7 @@ def asof(daily: pd.DataFrame, keys: list[str], vals: list[str], window_days: Opt
 
 
 def extra_stats(facts: pd.DataFrame, next_date: Optional[pd.Timestamp] = None) -> dict[str, pd.DataFrame]:
-    """当地成績（選手×場）・最近の調子（選手、直近90日）・モーター実績（場×モーター、直近180日）。"""
+    """当地成績（選手×場）・最近の調子（選手、直近90日）・モーター実績（場×モーター、交換後の全期間）。"""
     f = facts[["toban", "venue", "date", "course", "finish", "start_rank", "motor_no"]].copy().reset_index(drop=True)
     f["one"] = 1.0
     f["win"] = (f["finish"] == 1).astype(float)
@@ -575,6 +636,9 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     if len(motors):  # 実績にモーター番号が無いレースは、モーター表の番号で補う
         facts = facts.merge(motors[["race_id", "lane", "motor_no_m"]], on=["race_id", "lane"], how="left")
         facts["motor_no"] = facts["motor_no"].fillna(facts.pop("motor_no_m"))
+    # モーターは1年に1回交換される。交換日より前の同じ番号のモーターとは別物として数える
+    swaps = motor_swaps(motors)
+    facts["motor_no"] = era_motor_key(facts["motor_no"], motor_era(facts["venue"], facts["date"], swaps))
 
     priors = course_priors(facts)
     pc, pa = racer_stats(facts)
@@ -611,6 +675,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
             rows[c] = rows[c].astype("float32")
     gc.collect()
     live_tables = {k: t[t["date"] == nxt].drop(columns=["date"]) for k, t in extra.items()}
+    priors["motor_swaps"] = swaps
     return rows, priors, pc_tot, pa_tot, live_tables
 
 

@@ -125,8 +125,25 @@ class Pipeline:
                 self._save(date, name, {"card": asdict(card)})
                 self.publish(date, vd.jcd, rno, vd)
         self._save(date, "venues", {"venues": [asdict(v) for v in vdays]})
+        for vd in vdays:
+            self._check_motor_swap(date, vd.jcd)
         store.build_day(date, vdays)
         return vdays
+
+    def _check_motor_swap(self, date: str, jcd: str) -> None:
+        """出走表のモーター2連率が、いっせいに 0 になっていたら新モーターの初日として記録する。"""
+        vals = []
+        for rno in range(1, 13):
+            st = self._load(date, f"{jcd}-{rno:02d}") or {}
+            vals += [e.get("motor_2") for e in (st.get("card") or {}).get("entries", [])]
+        if len(vals) < 12 or sum(1 for v in vals if not v) / len(vals) < 0.6:
+            return
+        path = STATE_DIR / "motor_swaps.json"
+        swaps = store.read_json(path) or {}
+        if date not in swaps.get(jcd, []):
+            swaps.setdefault(jcd, []).append(date)
+            store.write_json(path, swaps)
+            log.info("motor swap detected: %s %s", jcd, date)
 
     def _racetime(self, date: str, vd: VenueDay) -> dict:
         """節の前日までのレースタイム。取れなくても予想は続ける。"""
