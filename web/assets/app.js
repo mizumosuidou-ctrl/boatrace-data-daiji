@@ -578,7 +578,8 @@ async function renderRecord() {
     t[0]++; t[1] += r.honmei_win ? 1 : 0; t[2] += r.hit ? 1 : 0;
     if (r.hit && (!best || r.payout > best.payout)) best = { ...r, v, date: d.date };
   }
-  const dd = rec.days.slice(-14);
+  // まだ1レースも確定していない日（当日の朝など）は 0% に見えてしまうので描かない
+  const dd = rec.days.filter((d) => d.settled).slice(-14);
   const W = 800, H = 260, pad = 36;
   const maxRoi = Math.max(150, ...dd.map((d) => (d.stake ? (d.return / d.stake) * 100 : 0)));
   const bw = (W - pad * 2) / Math.max(1, dd.length);
@@ -591,11 +592,14 @@ async function renderRecord() {
       <text x="${cx}" y="${H - pad + 16}" text-anchor="middle">${d.date.slice(4, 6)}/${d.date.slice(6)}</text>
       <text x="${cx}" y="${y(r) - 6}" text-anchor="middle">${r.toFixed(0)}%</text>`;
   }).join("");
-  const line = dd.map((d, i) => `${pad + i * bw + bw * 0.5},${y(d.settled ? (d.hits / d.settled) * 100 : 0)}`).join(" ");
+  const pts = dd.map((d, i) => [pad + i * bw + bw * 0.5, y((d.hits / d.settled) * 100), d]);
+  const line = pts.map(([x, py]) => `${x},${py}`).join(" ");
+  // 点も打つ（1日だけだと線にならないため）。横に伸びる SVG でも丸く見えるよう、長さ0の線の丸端で描く
+  const dots = pts.map(([x, py, d]) => `<path class="dot" d="M${x} ${py}h0"><title>${fmtDate(d.date)} 的中率 ${((d.hits / d.settled) * 100).toFixed(1)}%</title></path>`).join("");
   $("#main").innerHTML = `
   <div class="wrap">
     <section class="section">
-      <span class="eyebrow">Track record · ${rec.days.length} days</span>
+      <span class="eyebrow">Track record · ${rec.days.filter((d) => d.settled).length} days</span>
       <h1 class="section-title" style="font-size:clamp(48px,7vw,110px)">Record<small>すべての予想は締切前に公開し、結果と自動照合しています。${rec.demo ? "（現在はデモデータ）" : ""}</small></h1>
       <div class="rec-hero">
         <div class="panel rec-kpi gold rv"><span class="eyebrow">3連単 的中率</span><div class="v">${hitRate.toFixed(1)}<small>%</small></div><p>${T.hits} / ${T.settled} レース</p></div>
@@ -610,6 +614,7 @@ async function renderRecord() {
           <text x="${W - pad}" y="${y(100) - 6}" text-anchor="end">100%</text>
           ${bars}
           <polyline class="line" points="${line}"/>
+          ${dots}
           <line class="axis" x1="${pad}" x2="${W - pad}" y1="${H - pad}" y2="${H - pad}"/>
         </svg>
       </div>
