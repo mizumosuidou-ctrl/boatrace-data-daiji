@@ -108,9 +108,18 @@ class MLPredictor:
                 "p": float(p[i]),
                 "factors": groups,
                 "start_order": float(df[order].iloc[i]),
+                "motor_kp": _num_or_none(df["motor_kp_raw"].iloc[i]),
                 "n_c": int(df["n_c"].iloc[i]),
             }
         return {"engine": "lightgbm-post" if use_post else "lightgbm-pre", "boats": out, "pl_decay": self.meta.get("pl_decay")}
+
+
+def _num_or_none(v) -> Optional[float]:
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if np.isnan(v) else round(v, 2)
 
 
 _cached: Optional[MLPredictor] = None

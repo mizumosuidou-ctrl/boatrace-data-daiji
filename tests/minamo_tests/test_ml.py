@@ -279,3 +279,19 @@ def test_racetime_stats_use_only_prior_days_of_same_series():
     assert a.loc["2025-01-02", "rt_best"] == 110000 and a.loc["2025-01-02", "rt_series_rank"] == 2
     assert a.loc["2025-01-03", "rt_best"] == 108000 and a.loc["2025-01-03", "rt_series_rank"] == 1 and a.loc["2025-01-03", "rt_n"] == 2
     assert a.loc["2025-01-05", "rt_day"] == 1 and np.isnan(a.loc["2025-01-05", "rt_best"])  # 日が空いたら別の節
+
+
+def test_motor_contribution_point_subtracts_racer_ability():
+    # 選手aは1年間ずっと3着（勝率6点）。モーター7に乗った節では1着（10点）→ 貢献P +4
+    rows = []
+    for i in range(30):
+        day = pd.Timestamp("2025-01-01") + pd.Timedelta(days=i)
+        rows.append({"toban": "a", "venue": "12", "date": day, "course": 1, "finish": 3, "start_rank": 1, "motor_no": "1"})
+    for i in range(3):
+        day = pd.Timestamp("2025-03-01") + pd.Timedelta(days=i)
+        rows.append({"toban": "a", "venue": "12", "date": day, "course": 1, "finish": 1, "start_rank": 1, "motor_no": "7"})
+    t = ds.extra_stats(pd.DataFrame(rows), next_date=pd.Timestamp("2025-03-04"))["motor"]
+    m7 = t[(t["motor_no"] == "7") & (t["date"] == pd.Timestamp("2025-03-04"))].iloc[0]
+    assert m7["m_kp_ok"] == 3 and m7["m_kp_sum"] / m7["m_kp_ok"] == pytest.approx(4.0)
+    first = t[(t["motor_no"] == "7") & (t["date"] == pd.Timestamp("2025-03-01"))].iloc[0]
+    assert first["m_kp_ok"] == 0  # 当日の走りは使わない

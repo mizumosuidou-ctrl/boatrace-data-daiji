@@ -90,12 +90,14 @@ def build_race(
 ) -> dict:
     be = {b.boat: b for b in (before.entries if before else [])}
     rt = (getattr(card, "racetime", None) or {}).get("racers") or {}
+    kp = {b.boat: getattr(b, "motor_kp", None) for b in pred.boats}
     entries = []
     for e in sorted(card.entries, key=lambda e: e.boat):
         d = asdict(e)
         b = be.get(e.boat)
         r = rt.get(e.toban)
         d.update({
+            "motor_kp": kp.get(e.boat),  # モーター貢献P（MINAMO計算）
             "rt_best": r[0] / 1000 if r else None,  # 節間ベスト（秒）
             "rt_series_rank": r[2] if r else None,  # 節の出場選手の中での順位
             "exhibition_time": b.exhibition_time if b else None,

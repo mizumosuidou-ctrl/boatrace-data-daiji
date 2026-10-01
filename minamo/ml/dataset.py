@@ -41,7 +41,7 @@ BASE_FEATURES = [
 EXTRA_FEATURES = [
     "n_v", "win_v", "top2_v",
     "n_90", "win_90", "top2_90", "sr_90",
-    "n_m", "motor_res",
+    "n_m", "motor_res", "motor_kp",
 ]
 # 節間のレースタイム（2日目以降。前日までの走りだけを使う）
 RT_FEATURES = [
@@ -52,6 +52,8 @@ BASE_FEATURES_V1 = list(BASE_FEATURES)  # 修正3までの特徴量（比較用�
 BASE_FEATURES = BASE_FEATURES_V1 + EXTRA_FEATURES + RT_FEATURES
 FORM_DAYS = 90
 MOTOR_DAYS = 180
+ABILITY_DAYS = 365  # 貢献Pの「選手の実力」＝そのモーターに乗る前、直近1年の勝率
+WIN_POINTS = {1: 10.0, 2: 8.0, 3: 6.0, 4: 4.0, 5: 2.0, 6: 1.0}  # 勝率の点数（失格などは0点）
 EX_FEATURES = [
     "ex_time_rel", "ex_time_rank", "ex_st", "ex_st_rank", "tilt",
     "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap",
@@ -70,7 +72,7 @@ FACTOR_GROUPS = {
     "tenkai": ["sr_gap_inner", "sr_gap_c1", "sr_gap_outer", "sr_inner_slowest_gap", "n_inner_slower",
                "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap", "combo_start_order"],
     "skill": ["grade_o", "win_c", "top2_c", "top3_c", "n_all", "win_all", "top2_all"],
-    "motor": ["motor_2", "motor_2_rel", "n_m", "motor_res"],
+    "motor": ["motor_2", "motor_2_rel", "n_m", "motor_res", "motor_kp"],
     "local": ["n_v", "win_v", "top2_v"],
     "form": ["n_90", "win_90", "top2_90"],
     "racetime": RT_FEATURES,
@@ -370,7 +372,7 @@ def asof(daily: pd.DataFrame, keys: list[str], vals: list[str], window_days: Opt
 
 def extra_stats(facts: pd.DataFrame, next_date: Optional[pd.Timestamp] = None) -> dict[str, pd.DataFrame]:
     """当地成績（選手×場）・最近の調子（選手、直近90日）・モーター実績（場×モーター、直近180日）。"""
-    f = facts[["toban", "venue", "date", "course", "finish", "start_rank", "motor_no"]].copy()
+    f = facts[["toban", "venue", "date", "course", "finish", "start_rank", "motor_no"]].copy().reset_index(drop=True)
     f["one"] = 1.0
     f["win"] = (f["finish"] == 1).astype(float)
     f["top2"] = (f["finish"] <= 2).astype(float)
@@ -379,6 +381,23 @@ def extra_stats(facts: pd.DataFrame, next_date: Optional[pd.Timestamp] = None) -
     # モーターはコースの有利不利を差し引いた2連対（コース平均との差）
     top2_by_course = f.groupby(f["course"].astype(int))["top2"].mean()
     f["res"] = f["top2"] - f["course"].astype(int).map(top2_by_course).astype(float)
+    # モーター貢献P（ボートレース日和と同じ考え方）：
+    #   そのモーターに乗った走りの勝率点 − 乗る前の直近1年の、その選手の勝率
+    # 選手の実力を差し引くので、強い選手が乗っただけで良く見えることがない
+    f["pts"] = f["finish"].map(WIN_POINTS).fillna(0.0).astype(float)
+    g = f.groupby(["toban", "date"], as_index=False)[["one", "pts"]].sum()
+    ab = asof(g, ["toban"], ["one", "pts"], ABILITY_DAYS).rename(columns={"one": "ab_n", "pts": "ab_pts"})
+    # 実力は「その節が始まる前」の値（節の途中の好走を実力に混ぜない）
+    vd = meetings(facts)
+    f = f.merge(vd[["venue", "date", "rt_day"]], on=["venue", "date"], how="left")
+    f["start"] = f["date"] - pd.to_timedelta(f["rt_day"].fillna(1) - 1, unit="D")
+    f = f.merge(ab.rename(columns={"date": "start"}), on=["toban", "start"], how="left")
+    own = f[["toban", "date"]].merge(ab, on=["toban", "date"], how="left")  # 初日に走っていなければその日の値
+    f["ab_n"] = f["ab_n"].fillna(pd.Series(own["ab_n"].to_numpy(), index=f.index))
+    f["ab_pts"] = f["ab_pts"].fillna(pd.Series(own["ab_pts"].to_numpy(), index=f.index))
+    ability = (f["ab_pts"] / f["ab_n"]).where(f["ab_n"] >= 10)
+    f["kp_ok"] = ability.notna().astype(float)
+    f["kp_sum"] = (f["pts"] - ability).fillna(0.0)
     out = {}
     g = f.groupby(["toban", "venue", "date"], as_index=False)[["one", "win", "top2"]].sum()
     out["local"] = asof(g, ["toban", "venue"], ["one", "win", "top2"], None, next_date).rename(
@@ -387,9 +406,9 @@ def extra_stats(facts: pd.DataFrame, next_date: Optional[pd.Timestamp] = None) -
     out["form"] = asof(g, ["toban"], ["one", "win", "top2", "sr_ok", "sr_sum"], FORM_DAYS, next_date).rename(
         columns={"one": "f_one", "win": "f_win", "top2": "f_top2", "sr_ok": "f_sr_ok", "sr_sum": "f_sr_sum"})
     m = f.dropna(subset=["motor_no"])
-    g = m.groupby(["venue", "motor_no", "date"], as_index=False)[["one", "res"]].sum()
-    out["motor"] = asof(g, ["venue", "motor_no"], ["one", "res"], MOTOR_DAYS, next_date).rename(
-        columns={"one": "m_one", "res": "m_res"})
+    g = m.groupby(["venue", "motor_no", "date"], as_index=False)[["one", "res", "kp_ok", "kp_sum"]].sum()
+    out["motor"] = asof(g, ["venue", "motor_no"], ["one", "res", "kp_ok", "kp_sum"], MOTOR_DAYS, next_date).rename(
+        columns={"one": "m_one", "res": "m_res", "kp_ok": "m_kp_ok", "kp_sum": "m_kp_sum"})
     return out
 
 
@@ -412,8 +431,24 @@ def apply_extra(rows: pd.DataFrame, tables: dict[str, pd.DataFrame]) -> pd.DataF
     rows["sr_90"] = (z("f_sr_sum") + k * rows["sr_all"]) / (z("f_sr_ok") + k)
     rows["n_m"] = z("m_one")
     rows["motor_res"] = z("m_res") / (z("m_one") + k)
+    rows["motor_kp"] = z("m_kp_sum") / (z("m_kp_ok") + k)  # 走数が少ないうちは0（ふつう）に寄せる
+    # 画面表示用（ボートレース日和の貢献Pと同じ目盛り。5走未満は出さない）
+    rows["motor_kp_raw"] = (z("m_kp_sum") / z("m_kp_ok")).where(z("m_kp_ok") >= 5) if "m_kp_ok" in rows else np.nan
     drop = [c for c in rows.columns if c[:2] in ("v_", "f_", "m_") and c not in ("f_recent",)]
     return rows.drop(columns=drop)
+
+
+def meetings(facts: pd.DataFrame) -> pd.DataFrame:
+    """場×日ごとの節番号（meet）と何日目（rt_day）。日が空くか節の名前が変わったら別の節。"""
+    title = facts["series_title"] if "series_title" in facts else pd.Series(np.nan, index=facts.index)
+    vd = facts[["venue", "date"]].assign(series_title=title).groupby(["venue", "date"], as_index=False)["series_title"].first()
+    vd = vd.sort_values(["venue", "date"]).reset_index(drop=True)
+    gap = vd.groupby("venue")["date"].diff() != pd.Timedelta(days=1)
+    prev = vd.groupby("venue")["series_title"].shift()
+    changed = vd["series_title"].notna() & prev.notna() & (vd["series_title"] != prev)
+    vd["meet"] = (gap | changed).cumsum()
+    vd["rt_day"] = vd.groupby("meet").cumcount() + 1
+    return vd
 
 
 def racetime_stats(facts: pd.DataFrame) -> pd.DataFrame:
@@ -423,13 +458,8 @@ def racetime_stats(facts: pd.DataFrame) -> pd.DataFrame:
     rt_day 何日目 / rt_n これまでのタイム数 / rt_best 自己ベスト(ms) /
     rt_series_rank 節の全出場選手の中での順位 / rt_series_n 順位の付いた人数
     """
-    f = facts[["venue", "date", "toban", "race_time_ms", "series_title"]]
-    vd = f.groupby(["venue", "date"], as_index=False)["series_title"].first().sort_values(["venue", "date"])
-    gap = vd.groupby("venue")["date"].diff() != pd.Timedelta(days=1)
-    prev = vd.groupby("venue")["series_title"].shift()
-    changed = vd["series_title"].notna() & prev.notna() & (vd["series_title"] != prev)
-    vd["meet"] = (gap | changed).cumsum()
-    vd["rt_day"] = vd.groupby("meet").cumcount() + 1
+    f = facts[["venue", "date", "toban", "race_time_ms"]]
+    vd = meetings(facts)
     f = f.merge(vd[["venue", "date", "meet"]], on=["venue", "date"])
     t = f.dropna(subset=["race_time_ms"])
     daily = t.groupby(["meet", "toban", "date"], as_index=False)["race_time_ms"].agg(d_min="min", d_cnt="count")

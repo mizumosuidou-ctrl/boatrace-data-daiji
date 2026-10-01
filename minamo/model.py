@@ -58,6 +58,7 @@ class BoatScore:
     top3: float = 0.0
     factors: dict[str, float] = field(default_factory=dict)
     start_order: Optional[float] = None  # 予想スタート順（LightGBM使用時）
+    motor_kp: Optional[float] = None  # モーター貢献P（MINAMO計算、LightGBM使用時）
 
 
 @dataclass
@@ -86,6 +87,7 @@ class Prediction:
                     "top3": round(b.top3, 4),
                     "factors": {k: round(v, 3) for k, v in b.factors.items()},
                     "start_order": round(b.start_order, 2) if b.start_order is not None else None,
+                    "motor_kp": b.motor_kp,
                 }
                 for b in self.boats
             ],
@@ -168,6 +170,7 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
             s.score = math.log(m["p"])
             s.factors = m["factors"]
             s.start_order = m["start_order"]
+            s.motor_kp = m.get("motor_kp")
         engine = ml["engine"]
         decay = ml.get("pl_decay") or PL_DECAY  # 学習で合わせた値
 

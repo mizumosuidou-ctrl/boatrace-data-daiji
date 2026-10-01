@@ -365,7 +365,7 @@ function sheetHtml(race) {
   const col = (k) => E.map((e) => e[k]);
   const cols = [
     ["全国勝率", "nat_win", false, 2], ["全国2連", "nat_2", false, 1], ["当地勝率", "loc_win", false, 2],
-    ["モーター2連", "motor_2", false, 1], ["ボート2連", "boat_2", false, 1], ["平均ST", "avg_st", true, 2],
+    ["モーター2連", "motor_2", false, 1], ...(E.some((e) => e.motor_kp != null) ? [["貢献P", "motor_kp", false, 2]] : []), ["ボート2連", "boat_2", false, 1], ["平均ST", "avg_st", true, 2],
     ...(E.some((e) => e.rt_series_rank != null) ? [["節ﾀｲﾑ順", "rt_series_rank", true, 0], ["節ﾍﾞｽﾄ", "rt_best", true, 1]] : []),
     ["展示T", "exhibition_time", true, 2], ["展示ST", "ex_st", true, 2],
     // オリジナル展示（場の公式サイト）。区間が場ごとに違うので、色付けはレース内の順位だけ
