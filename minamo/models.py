@@ -43,6 +43,8 @@ class RaceCard:
     deadline: str = ""  # HH:MM
     deadlines: dict[int, str] = field(default_factory=dict)  # 同場全レースの締切
     entries: list[Entry] = field(default_factory=list)
+    # 節間のレースタイム {"day": 何日目, "racers": {登番: [ベスト(ms), 走数, 節内順位, 順位の付いた人数]}}
+    racetime: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)

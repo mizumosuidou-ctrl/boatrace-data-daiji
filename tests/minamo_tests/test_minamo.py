@@ -250,3 +250,26 @@ def test_demo_generation(sandbox):
     assert len(day["venues"]) == 3 and day["demo"]
     assert day["totals"]["races"] == 36
     assert 0 < day["totals"]["settled"] < 36
+
+
+def test_racetime_table_uses_prior_days_of_the_series(tmp_path):
+    from minamo import racetime
+    from minamo_fixtures import RESULT_HTML
+
+    assert racetime.parse_time("1'48\"9") == 108900 and racetime.parse_time("") is None
+
+    class F:
+        calls = []
+
+        def result(self, hd, jcd, rno):
+            self.calls.append((hd, rno))
+            return RESULT_HTML if rno == 1 else "<html></html>"
+
+    rt = racetime.RaceTimes(F(), tmp_path, lambda d, n: None)
+    t = rt.table("20261003", "12", "3日目")
+    assert t["day"] == 3 and t["racers"]["3960"] == [108900, 2, 1, len(t["racers"])]
+    assert {d for d, _ in F.calls} == {"20261002", "20261001"}  # 当日は使わない
+    n = len(F.calls)
+    rt.table("20261003", "12", "3日目")
+    assert len(F.calls) == n  # 一度読んだ日は取り直さない
+    assert rt.table("20261001", "12", "初日") == {"day": 1, "racers": {}}

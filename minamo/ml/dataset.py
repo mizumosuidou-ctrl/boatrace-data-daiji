@@ -43,8 +43,13 @@ EXTRA_FEATURES = [
     "n_90", "win_90", "top2_90", "sr_90",
     "n_m", "motor_res",
 ]
+# 節間のレースタイム（2日目以降。前日までの走りだけを使う）
+RT_FEATURES = [
+    "rt_day", "rt_n", "rt_best_gap", "rt_rank_race", "rt_series_rank", "rt_series_pct", "rt_top15",
+]
+RT_MS_RANGE = (90_000, 150_000)  # 1分30秒〜2分30秒の外は読み違いとして捨てる
 BASE_FEATURES_V1 = list(BASE_FEATURES)  # 修正3までの特徴量（比較用）
-BASE_FEATURES = BASE_FEATURES_V1 + EXTRA_FEATURES
+BASE_FEATURES = BASE_FEATURES_V1 + EXTRA_FEATURES + RT_FEATURES
 FORM_DAYS = 90
 MOTOR_DAYS = 180
 EX_FEATURES = [
@@ -68,6 +73,7 @@ FACTOR_GROUPS = {
     "motor": ["motor_2", "motor_2_rel", "n_m", "motor_res"],
     "local": ["n_v", "win_v", "top2_v"],
     "form": ["n_90", "win_90", "top2_90"],
+    "racetime": RT_FEATURES,
     "exhibition": ["ex_time_rel", "ex_time_rank", "tilt"],
     "exh_st": ["ex_st", "ex_st_rank"],
     "original": ORIG_FEATURES,
@@ -111,7 +117,7 @@ def _race_id(df: pd.DataFrame) -> pd.Series:
 
 
 FACT_COLS = ["race_date", "venue", "race_no", "lane", "course", "toban", "grade", "start_rank",
-             "st", "st_hundredths", "finish", "race_f", "updated_at", "motor_no"]
+             "st", "st_hundredths", "finish", "race_f", "updated_at", "motor_no", "race_time_ms", "series_title"]
 
 
 def motor_key(s: pd.Series) -> pd.Series:
@@ -132,6 +138,8 @@ def _compact(chunk: pd.DataFrame) -> pd.DataFrame:
     out["race_f"] = chunk["race_f"].fillna("").astype(str).str.lower().isin(["1", "true", "t", "f"])
     out["updated_at"] = chunk["updated_at"]
     out["motor_no"] = motor_key(chunk["motor_no"])
+    out["race_time_ms"] = _num(chunk["race_time_ms"]).astype("float32")
+    out["series_title"] = chunk["series_title"].astype("category")
     out = out.dropna(subset=["race_date", "venue", "race_no", "lane", "toban"])
     for c in ["race_date", "venue", "grade"]:
         out[c] = out[c].astype("category")
@@ -150,7 +158,7 @@ def load_facts(path: Path) -> pd.DataFrame:
             part = part[part["race_date"].astype(str) >= since]
         parts.append(part)
     df = pd.concat(parts, ignore_index=True)
-    for c in ["race_date", "venue", "grade"]:
+    for c in ["race_date", "venue", "grade", "series_title"]:
         df[c] = df[c].astype(str).replace("nan", np.nan)
     df = df[df["lane"].between(1, 6)]
     df["race_no"] = df["race_no"].astype(int)
@@ -168,6 +176,10 @@ def load_facts(path: Path) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["race_date"], format="%Y%m%d", errors="coerce")
     df = df.dropna(subset=["date"])
     df["grade_o"] = df["grade"].map(GRADE_ORD)
+    rt = df["race_time_ms"]
+    if rt.notna().any() and rt.median() < 1000:  # 秒で入っていたらミリ秒にそろえる
+        df["race_time_ms"] = rt * 1000
+    df.loc[~df["race_time_ms"].between(*RT_MS_RANGE), "race_time_ms"] = np.nan
     return df.reset_index(drop=True)
 
 
@@ -404,6 +416,49 @@ def apply_extra(rows: pd.DataFrame, tables: dict[str, pd.DataFrame]) -> pd.DataF
     return rows.drop(columns=drop)
 
 
+def racetime_stats(facts: pd.DataFrame) -> pd.DataFrame:
+    """節間のレースタイム（前日までの走り）を、場×日×選手ごとに作る。
+
+    節＝同じ場で日付が続いている間（節の名前が変わったら別の節）。
+    rt_day 何日目 / rt_n これまでのタイム数 / rt_best 自己ベスト(ms) /
+    rt_series_rank 節の全出場選手の中での順位 / rt_series_n 順位の付いた人数
+    """
+    f = facts[["venue", "date", "toban", "race_time_ms", "series_title"]]
+    vd = f.groupby(["venue", "date"], as_index=False)["series_title"].first().sort_values(["venue", "date"])
+    gap = vd.groupby("venue")["date"].diff() != pd.Timedelta(days=1)
+    prev = vd.groupby("venue")["series_title"].shift()
+    changed = vd["series_title"].notna() & prev.notna() & (vd["series_title"] != prev)
+    vd["meet"] = (gap | changed).cumsum()
+    vd["rt_day"] = vd.groupby("meet").cumcount() + 1
+    f = f.merge(vd[["venue", "date", "meet"]], on=["venue", "date"])
+    t = f.dropna(subset=["race_time_ms"])
+    daily = t.groupby(["meet", "toban", "date"], as_index=False)["race_time_ms"].agg(d_min="min", d_cnt="count")
+    daily = daily.sort_values(["meet", "toban", "date"])
+    daily["rt_best"] = daily.groupby(["meet", "toban"])["d_min"].cummin()
+    daily["rt_n"] = daily.groupby(["meet", "toban"])["d_cnt"].cumsum()
+    grid = f[["meet", "toban"]].drop_duplicates().merge(vd[["venue", "date", "meet", "rt_day"]], on="meet")
+    grid = pd.merge_asof(grid.sort_values("date"), daily[["meet", "toban", "date", "rt_best", "rt_n"]].sort_values("date"),
+                         on="date", by=["meet", "toban"], allow_exact_matches=False)  # 当日の走りは使わない
+    grid["rt_n"] = grid["rt_n"].fillna(0)
+    grid["rt_series_rank"] = grid.groupby(["meet", "date"])["rt_best"].rank(method="min")
+    grid["rt_series_n"] = grid.groupby(["meet", "date"])["rt_best"].transform("count")
+    return grid[["venue", "date", "toban", "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n"]]
+
+
+def add_racetime(df: pd.DataFrame) -> pd.DataFrame:
+    """節間タイムを、レース内の比較（6人中の順位・ベストとの差）と上位15位以内に直す。"""
+    for c in ("rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n"):
+        if c not in df:
+            df[c] = np.nan
+    best = pd.to_numeric(df["rt_best"], errors="coerce")
+    g = best.groupby(df["race_id"])
+    df["rt_best_gap"] = (best - g.transform("min")) / 1000.0
+    df["rt_rank_race"] = g.rank(method="min")
+    df["rt_series_pct"] = df["rt_series_rank"] / df["rt_series_n"]
+    df["rt_top15"] = (df["rt_series_rank"] <= 15).astype(float).where(df["rt_series_rank"].notna())
+    return df
+
+
 # ------------------------------------------------------------------ within-race relations
 
 
@@ -443,6 +498,7 @@ def add_race_features(df: pd.DataFrame, with_ex: bool) -> pd.DataFrame:
     if "motor_2" not in df:
         df["motor_2"] = np.nan
     df["motor_2_rel"] = df["motor_2"] - df.groupby("race_id")["motor_2"].transform("mean")
+    df = add_racetime(df)
     if with_ex:
         df["ex_time_rel"] = df["ex_time"] - df.groupby("race_id")["ex_time"].transform("mean")
         df["ex_time_rank"] = df.groupby("race_id")["ex_time"].rank(method="average")
@@ -496,6 +552,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     f_recent = recent_f_counts(facts)
     nxt = facts["date"].max() + pd.Timedelta(days=1)
     extra = extra_stats(facts, next_date=nxt)
+    rt = racetime_stats(facts)
 
     rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank", "motor_no"]].copy()
     del facts
@@ -509,6 +566,8 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows.loc[dup, "course"] = rows.loc[dup, "lane"]
     rows = apply_stats(rows, pc, pa, priors, f_recent)
     rows = apply_extra(rows, extra)
+    rows = rows.merge(rt, on=["venue", "date", "toban"], how="left")
+    del rt
     del pc, pa
     gc.collect()
     rows = add_race_features(rows, with_ex=True)

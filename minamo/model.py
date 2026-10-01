@@ -41,6 +41,7 @@ FACTOR_LABELS = {
     "exh_st": "展示ST",
     "original": "オリジナル展示",
     "form": "最近の調子",
+    "racetime": "レースタイム",
     "flying": "F持ち",
     "grade": "級別",
     "wind": "風",

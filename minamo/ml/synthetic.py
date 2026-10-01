@@ -71,6 +71,8 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
                     "toban": r["toban"], "grade": r["grade"],
                     "start_rank": srank[i] if rng.random() > 0.2 else "",
                     "st": f"{sts[i]:.2f}", "st_hundredths": round(sts[i] * 100), "finish": finish[i],
+                    "race_time_ms": round(108500 + 700 * (finish[i] - 1) - 300 * mq[i] + rng.gauss(0, 500)) if finish[i] <= 4 else "",
+                    "series_title": f"{venue}-{d // 6}",
                     "race_f": "0", "race_l": "0", "motor_no": mnos[i] + 1, "result_status": "FINISHED",
                     "source_type": "SYN", "updated_at": f"{day}T12:00:00Z",
                 })

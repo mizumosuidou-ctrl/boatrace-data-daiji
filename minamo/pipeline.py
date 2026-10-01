@@ -16,7 +16,7 @@ from typing import Optional
 
 import requests
 
-from . import parsers, store, venue_original
+from . import parsers, racetime, store, venue_original
 from .analyst import analyze, fallback_analysis
 from .fetcher import Fetcher
 from .model import predict
@@ -62,6 +62,7 @@ class Pipeline:
     def __init__(self, fetcher: Optional[Fetcher] = None, ai_enabled: bool = True):
         self.fetcher = fetcher or Fetcher()
         self.ai_enabled = ai_enabled
+        self.racetimes = racetime.RaceTimes(self.fetcher, STATE_DIR, self._load)
 
     # ---- state files
     def _state_path(self, date: str, name: str) -> Path:
@@ -103,10 +104,13 @@ class Pipeline:
         self._save(date, "venues", {"venues": [asdict(v) for v in vdays]})
         log.info("%s: %d venues", date, len(vdays))
         for vd in vdays:
+            rt = None
             for rno in range(1, 13):
                 name = f"{vd.jcd}-{rno:02d}"
                 if self._load(date, name):
                     continue
+                if rt is None:
+                    rt = self._racetime(date, vd)
                 try:
                     card = parsers.parse_racelist(self.fetcher.racelist(date, vd.jcd, rno), date, vd.jcd, rno)
                 except requests.RequestException as exc:
@@ -117,11 +121,20 @@ class Pipeline:
                     continue
                 if not vd.title:
                     vd.title = card.title
+                card.racetime = rt
                 self._save(date, name, {"card": asdict(card)})
                 self.publish(date, vd.jcd, rno, vd)
         self._save(date, "venues", {"venues": [asdict(v) for v in vdays]})
         store.build_day(date, vdays)
         return vdays
+
+    def _racetime(self, date: str, vd: VenueDay) -> dict:
+        """節の前日までのレースタイム。取れなくても予想は続ける。"""
+        try:
+            return self.racetimes.table(date, vd.jcd, vd.day_label)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("racetime %s %s: %s", date, vd.jcd, exc)
+            return {}
 
     # ---- per-minute tick
     def tick(self, date: str, now: Optional[datetime] = None) -> int:

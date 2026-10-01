@@ -239,6 +239,11 @@ def test_extra_features_reach_live(trained):
         Entry(boat=i + 1, toban=t, name="x", grade="B1", motor_no=int(motor["motor_no"]) if i == 0 else None) for i, t in enumerate(tobans)])
     df = pred.frame(card)
     assert df.loc[0, "n_m"] > 0 and df["n_90"].notna().all() and df["win_v"].notna().all()
+    # 節間のレースタイム：6人中の順位と、節の上位15位以内か
+    card.racetime = {"day": 3, "racers": {tobans[0]: [108000, 2, 3, 40], tobans[1]: [109500, 1, 20, 40]}}
+    df = ds.add_race_features(pred.frame(card), with_ex=False)
+    assert list(df["rt_rank_race"][:2]) == [1, 2] and df.loc[1, "rt_best_gap"] == pytest.approx(1.5)
+    assert list(df["rt_top15"][:2]) == [1, 0] and np.isnan(df.loc[2, "rt_top15"]) and (df["rt_day"] == 3).all()
 
 
 def test_old_model_without_extra_tables_still_predicts(trained, tmp_path, monkeypatch):
@@ -261,3 +266,16 @@ def test_old_model_without_extra_tables_still_predicts(trained, tmp_path, monkey
     card = RaceCard(date="20250315", jcd="12", rno=1, entries=[Entry(boat=i + 1, toban=t, name="x", grade="B1") for i, t in enumerate(tobans)])
     df = pred.frame(card)
     assert (df["n_m"] == 0).all()
+
+
+def test_racetime_stats_use_only_prior_days_of_same_series():
+    rows = []
+    for day, ms in (("20250101", 110000), ("20250102", 108000), ("20250103", 109000), ("20250105", 107000)):
+        rows.append({"venue": "12", "date": pd.Timestamp(day), "toban": "a", "race_time_ms": ms, "series_title": "X"})
+        rows.append({"venue": "12", "date": pd.Timestamp(day), "toban": "b", "race_time_ms": 109500, "series_title": "X"})
+    rt = ds.racetime_stats(pd.DataFrame(rows)).set_index(["date", "toban"])
+    a = rt.xs("a", level="toban")
+    assert np.isnan(a.loc["2025-01-01", "rt_best"]) and a.loc["2025-01-01", "rt_day"] == 1
+    assert a.loc["2025-01-02", "rt_best"] == 110000 and a.loc["2025-01-02", "rt_series_rank"] == 2
+    assert a.loc["2025-01-03", "rt_best"] == 108000 and a.loc["2025-01-03", "rt_series_rank"] == 1 and a.loc["2025-01-03", "rt_n"] == 2
+    assert a.loc["2025-01-05", "rt_day"] == 1 and np.isnan(a.loc["2025-01-05", "rt_best"])  # 日が空いたら別の節

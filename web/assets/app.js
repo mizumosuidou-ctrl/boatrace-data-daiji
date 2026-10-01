@@ -338,7 +338,7 @@ function scrollCellsToNow(root) {
 /* ------------------------------------------------------------ race */
 const WIND_DIR = (n) => (n ? ((n - 1) * 22.5) : null);
 const FACTOR_KEYS_MODEL = [["skill", "選手力"], ["local", "当地"], ["motor", "モーター"], ["boat", "ボート"], ["start", "平均ST"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["flying", "F"], ["grade", "級別"], ["wind", "風"]];
-const FACTOR_KEYS_ML = [["course", "コース"], ["start", "スタート力"], ["tenkai", "展開(ST順差)"], ["skill", "選手力"], ["local", "当地"], ["form", "調子"], ["motor", "モーター"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["original", "ｵﾘｼﾞﾅﾙ展示"], ["flying", "F"]];
+const FACTOR_KEYS_ML = [["course", "コース"], ["start", "スタート力"], ["tenkai", "展開(ST順差)"], ["skill", "選手力"], ["local", "当地"], ["form", "調子"], ["racetime", "ﾚｰｽﾀｲﾑ"], ["motor", "モーター"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["original", "ｵﾘｼﾞﾅﾙ展示"], ["flying", "F"]];
 const isML = (P) => String(P.engine || "").startsWith("lightgbm");
 const factorKeys = (P) => (isML(P) ? FACTOR_KEYS_ML : FACTOR_KEYS_MODEL);
 const ENGINE_LABEL = { "lightgbm-pre": "LightGBM · 展示前", "lightgbm-post": "LightGBM · 展示反映", model: "統計モデル" };
@@ -366,6 +366,7 @@ function sheetHtml(race) {
   const cols = [
     ["全国勝率", "nat_win", false, 2], ["全国2連", "nat_2", false, 1], ["当地勝率", "loc_win", false, 2],
     ["モーター2連", "motor_2", false, 1], ["ボート2連", "boat_2", false, 1], ["平均ST", "avg_st", true, 2],
+    ...(E.some((e) => e.rt_series_rank != null) ? [["節ﾀｲﾑ順", "rt_series_rank", true, 0], ["節ﾍﾞｽﾄ", "rt_best", true, 1]] : []),
     ["展示T", "exhibition_time", true, 2], ["展示ST", "ex_st", true, 2],
     // オリジナル展示（場の公式サイト）。区間が場ごとに違うので、色付けはレース内の順位だけ
     ...[["一周", "lap_time", true, 2], ["まわり足", "turn_time", true, 2], ["直線", "straight_time", true, 2]].filter(([, k]) => E.some((e) => e[k] != null)),
@@ -379,6 +380,7 @@ function sheetHtml(race) {
       let v = e[k];
       let cls = lb === null ? "" : rankClass(col(k).map((x) => (k === "ex_st" && x != null ? Math.abs(x) : x)), i, lb);
       if (k === "ex_st" && v != null && v < 0) return `<td class="f">F${Math.abs(v).toFixed(2).slice(1)}</td>`;
+      if (k === "rt_best" && v != null) return `<td class="${cls}">${Math.floor(v / 60)}'${String(Math.floor(v % 60)).padStart(2, "0")}"${Math.round((v * 10) % 10)}</td>`;
       if (k === "loc_win" && !v) return `<td class="muted">--</td>`;
       return `<td class="${cls}">${fmt(v, d)}</td>`;
     }).join("")}

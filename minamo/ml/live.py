@@ -47,13 +47,21 @@ class MLPredictor:
         entries = [e for e in card.entries if not e.absent]
         if len(courses) < len(entries) or len(set(courses.values())) != len(courses):
             courses = {e.boat: e.boat for e in entries}
+        rt = getattr(card, "racetime", None) or {}
+        rt_racers = rt.get("racers") or {}
         rows = []
         for e in entries:
             b = be.get(e.boat)
+            r = rt_racers.get(e.toban)
             rows.append({
                 "race_id": "live", "date": self.stats_date, "venue": card.jcd, "lane": e.boat,
                 "course": courses[e.boat], "toban": e.toban, "grade_o": ds.GRADE_ORD.get(e.grade, np.nan),
                 "motor_no": str(e.motor_no) if e.motor_no else np.nan,
+                "rt_day": rt.get("day", np.nan),
+                "rt_n": r[1] if r else (0.0 if rt else np.nan),
+                "rt_best": r[0] if r else np.nan,
+                "rt_series_rank": r[2] if r else np.nan,
+                "rt_series_n": r[3] if r else np.nan,
                 "motor_2": e.motor_2, "f_recent": float(e.f_count or 0),
                 "ex_time": b.exhibition_time if b else np.nan,
                 "ex_st": b.start_st if b else np.nan,
@@ -63,7 +71,8 @@ class MLPredictor:
                 "straight_time": getattr(b, "straight_time", None) if b else np.nan,
             })
         df = pd.DataFrame(rows)
-        for c in ("motor_2", "ex_time", "ex_st", "tilt", "lap_time", "turn_time", "straight_time"):
+        for c in ("motor_2", "ex_time", "ex_st", "tilt", "lap_time", "turn_time", "straight_time",
+                  "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n"):
             df[c] = pd.to_numeric(df[c], errors="coerce")
         for c, (lo, hi) in ds.ORIG_BOUNDS.items():
             df.loc[~df[c].between(lo, hi), c] = np.nan
