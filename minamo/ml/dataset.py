@@ -37,6 +37,23 @@ BASE_FEATURES = [
     "sr_inner_slowest_gap", "n_inner_slower",
     "course_winrate_prior",
 ]
+# 修正4で足した特徴量：当地成績・最近の調子・モーター実績（すべて前日まで）
+EXTRA_FEATURES = [
+    "n_v", "win_v", "top2_v",
+    "n_90", "win_90", "top2_90", "sr_90",
+    "n_m", "motor_res", "motor_kp",
+]
+# 節間のレースタイム（2日目以降。前日までの走りだけを使う）
+RT_FEATURES = [
+    "rt_day", "rt_n", "rt_best_gap", "rt_rank_race", "rt_series_rank", "rt_series_pct", "rt_top15",
+]
+RT_MS_RANGE = (90_000, 150_000)  # 1分30秒〜2分30秒の外は読み違いとして捨てる
+BASE_FEATURES_V1 = list(BASE_FEATURES)  # 修正3までの特徴量（比較用）
+BASE_FEATURES = BASE_FEATURES_V1 + EXTRA_FEATURES + RT_FEATURES
+FORM_DAYS = 90
+MOTOR_DAYS = None  # モーターは交換日で区切るので、今のモーターの全期間を使う（ボートレース日和と同じ）
+ABILITY_DAYS = 365  # 貢献Pの「選手の実力」＝そのモーターに乗る前、直近1年の勝率
+WIN_POINTS = {1: 10.0, 2: 8.0, 3: 6.0, 4: 4.0, 5: 2.0, 6: 1.0}  # 勝率の点数（失格などは0点）
 EX_FEATURES = [
     "ex_time_rel", "ex_time_rank", "ex_st", "ex_st_rank", "tilt",
     "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap",
@@ -51,11 +68,14 @@ ORIG_BOUNDS = {"lap_time": (15.0, 45.0), "turn_time": (3.0, 15.0), "straight_tim
 # 画面の「要因」表示用のまとまり
 FACTOR_GROUPS = {
     "course": ["course", "venue_i", "course_winrate_prior"],
-    "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order"],
+    "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order", "sr_90"],
     "tenkai": ["sr_gap_inner", "sr_gap_c1", "sr_gap_outer", "sr_inner_slowest_gap", "n_inner_slower",
                "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap", "combo_start_order"],
     "skill": ["grade_o", "win_c", "top2_c", "top3_c", "n_all", "win_all", "top2_all"],
-    "motor": ["motor_2", "motor_2_rel"],
+    "motor": ["motor_2", "motor_2_rel", "n_m", "motor_res", "motor_kp"],
+    "local": ["n_v", "win_v", "top2_v"],
+    "form": ["n_90", "win_90", "top2_90"],
+    "racetime": RT_FEATURES,
     "exhibition": ["ex_time_rel", "ex_time_rank", "tilt"],
     "exh_st": ["ex_st", "ex_st_rank"],
     "original": ORIG_FEATURES,
@@ -99,7 +119,12 @@ def _race_id(df: pd.DataFrame) -> pd.Series:
 
 
 FACT_COLS = ["race_date", "venue", "race_no", "lane", "course", "toban", "grade", "start_rank",
-             "st", "st_hundredths", "finish", "race_f", "updated_at"]
+             "st", "st_hundredths", "finish", "race_f", "updated_at", "motor_no", "race_time_ms", "series_title"]
+
+
+def motor_key(s: pd.Series) -> pd.Series:
+    """モーター番号を '12' のような文字にそろえる（読めなければ NaN）。"""
+    return _num(s).map(lambda v: str(int(v)) if v == v and v > 0 else np.nan)
 
 
 def _compact(chunk: pd.DataFrame) -> pd.DataFrame:
@@ -114,6 +139,9 @@ def _compact(chunk: pd.DataFrame) -> pd.DataFrame:
     out["st_sec"] = chunk["st"].map(parse_st).astype("float32")
     out["race_f"] = chunk["race_f"].fillna("").astype(str).str.lower().isin(["1", "true", "t", "f"])
     out["updated_at"] = chunk["updated_at"]
+    out["motor_no"] = motor_key(chunk["motor_no"])
+    out["race_time_ms"] = _num(chunk["race_time_ms"]).astype("float32")
+    out["series_title"] = chunk["series_title"].astype("category")
     out = out.dropna(subset=["race_date", "venue", "race_no", "lane", "toban"])
     for c in ["race_date", "venue", "grade"]:
         out[c] = out[c].astype("category")
@@ -132,7 +160,7 @@ def load_facts(path: Path) -> pd.DataFrame:
             part = part[part["race_date"].astype(str) >= since]
         parts.append(part)
     df = pd.concat(parts, ignore_index=True)
-    for c in ["race_date", "venue", "grade"]:
+    for c in ["race_date", "venue", "grade", "series_title"]:
         df[c] = df[c].astype(str).replace("nan", np.nan)
     df = df[df["lane"].between(1, 6)]
     df["race_no"] = df["race_no"].astype(int)
@@ -150,6 +178,10 @@ def load_facts(path: Path) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["race_date"], format="%Y%m%d", errors="coerce")
     df = df.dropna(subset=["date"])
     df["grade_o"] = df["grade"].map(GRADE_ORD)
+    rt = df["race_time_ms"]
+    if rt.notna().any() and rt.median() < 1000:  # 秒で入っていたらミリ秒にそろえる
+        df["race_time_ms"] = rt * 1000
+    df.loc[~df["race_time_ms"].between(*RT_MS_RANGE), "race_time_ms"] = np.nan
     return df.reset_index(drop=True)
 
 
@@ -202,10 +234,11 @@ def load_original(path: Optional[Path]) -> pd.DataFrame:
 
 
 def load_motors(path: Optional[Path]) -> pd.DataFrame:
-    cols = ["race_id", "lane", "motor_2"]
+    cols = ["race_id", "lane", "motor_2", "motor_no_m"]
     if not path or not Path(path).exists():
         return pd.DataFrame(columns=cols)
     mo = pd.read_csv(path, dtype=str)
+    mo["motor_no_m"] = motor_key(mo["motor_no"]) if "motor_no" in mo else np.nan
     mo["race_date"] = mo["race_date"].str.replace("-", "", regex=False).str[:8]
     mo["venue"] = mo["venue"].str.zfill(2)
     mo["race_no"] = _num(mo["race_no"])
@@ -219,6 +252,67 @@ def load_motors(path: Optional[Path]) -> pd.DataFrame:
     if mo["motor_2"].dropna().between(0, 1).mean() > 0.9:
         mo["motor_2"] *= 100
     return mo[cols]
+
+
+# モーターの交換日（新モーターの使用開始日）。データから見つけたものに加えて、調べた日付も使う。
+# ※ネット上の一覧から写したもの。データから見つけた日と30日以内なら、データの日を使う。
+KNOWN_MOTOR_SWAPS = {
+    "01": ["20251227"], "02": ["20250806"], "03": ["20260511"], "04": ["20250609"], "05": ["20260418"],
+    "06": ["20260409"], "07": ["20250719"], "08": ["20251111"], "09": ["20251222"], "10": ["20250307"],
+    "11": ["20260408"], "12": ["20260323"], "13": ["20260417"], "14": ["20260411"], "15": ["20250903"],
+    "16": ["20251217"], "17": ["20251019"], "18": ["20260420"], "19": ["20260429"], "20": ["20251126"],
+    "21": ["20260416"], "22": ["20260218"], "23": ["20250905"], "24": ["20260524"],
+}
+SWAP_ZERO_FRAC = 0.6  # その日のモーター2連率の6割以上が 0 → 新モーターの初日
+SWAP_MIN_GAP_DAYS = 200
+
+
+def detect_motor_swaps(motors: pd.DataFrame) -> dict[str, list[str]]:
+    """モーター2連率がいっせいに 0 に戻った日を、場ごとに交換日として見つける。"""
+    if motors is None or not len(motors) or "motor_2" not in motors:
+        return {}
+    d = pd.DataFrame({"date": motors["race_id"].str[:8], "venue": motors["race_id"].str[9:11], "m2": motors["motor_2"]})
+    g = d.groupby(["venue", "date"])["m2"].agg(n="size", zero=lambda x: float((x <= 0.5).mean())).reset_index()
+    out: dict[str, list[str]] = {}
+    for venue, v in g.sort_values("date").groupby("venue"):
+        prev_zero, found = None, []
+        for date, n, zero in zip(v["date"], v["n"], v["zero"]):
+            if n >= 6 and zero >= SWAP_ZERO_FRAC and prev_zero is not None and prev_zero < 0.3:
+                if not found or (pd.Timestamp(date) - pd.Timestamp(found[-1])).days >= SWAP_MIN_GAP_DAYS:
+                    found.append(date)
+            prev_zero = zero
+        if found:
+            out[venue] = found
+    return out
+
+
+def motor_swaps(motors: Optional[pd.DataFrame]) -> dict[str, list[str]]:
+    """データから見つけた交換日＋調べた交換日（近いものは1つにまとめる）。"""
+    found = detect_motor_swaps(motors)
+    out = {}
+    for venue in sorted(set(found) | set(KNOWN_MOTOR_SWAPS)):
+        dates = list(found.get(venue, []))
+        for k in KNOWN_MOTOR_SWAPS.get(venue, []):
+            if all(abs((pd.Timestamp(k) - pd.Timestamp(x)).days) > 30 for x in dates):
+                dates.append(k)
+        out[venue] = sorted(dates)
+    return out
+
+
+def motor_era(venue: pd.Series, date: pd.Series, swaps: dict[str, list[str]]) -> pd.Series:
+    """場×日ごとに「何回目のモーターか」（交換日より前のデータと混ざらないように）。"""
+    ds = date.dt.strftime("%Y%m%d") if hasattr(date, "dt") else date.astype(str)
+    out = pd.Series(0, index=venue.index)
+    for v, dates in swaps.items():
+        mask = venue == v
+        if mask.any():
+            out[mask] = np.searchsorted(np.array(sorted(dates)), ds[mask].to_numpy(), side="right")
+    return out
+
+
+def era_motor_key(motor_no: pd.Series, era: pd.Series) -> pd.Series:
+    """'12' と 交換回数 2 → '12@2'。番号が無ければ NaN。"""
+    return pd.Series([f"{m}@{e}" if isinstance(m, str) else np.nan for m, e in zip(motor_no, era)], index=motor_no.index)
 
 
 # ------------------------------------------------------------------ as-of stats
@@ -309,6 +403,153 @@ def recent_f_counts(facts: pd.DataFrame, days: int = F_WINDOW_DAYS) -> pd.Series
     return pd.Series(np.clip(look["prior"].fillna(0).values - old, 0, None), index=facts.index)
 
 
+def asof(daily: pd.DataFrame, keys: list[str], vals: list[str], window_days: Optional[int] = None,
+         next_date: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+    """日次の合計（keys×date）から「その日より前」の合計を作る。window_days があれば直近その日数だけ。
+
+    next_date を渡すと、全期間の最終日の翌日の行（当日予想用）も加える。
+    """
+    d = daily[keys + ["date"] + vals]
+    if next_date is not None:
+        extra = d[keys].drop_duplicates().assign(date=next_date)
+        for v in vals:
+            extra[v] = 0.0
+        d = pd.concat([d, extra], ignore_index=True)
+    d = d.sort_values(keys + ["date"]).reset_index(drop=True)
+    cum = d.groupby(keys, sort=False)[vals].cumsum()
+    out = d[keys + ["date"]].copy()
+    out[vals] = (cum - d[vals]).to_numpy()
+    if window_days:
+        c = d[keys + ["date"]].copy()
+        c[vals] = cum.to_numpy()
+        look = d[keys + ["date"]].copy()
+        look["_i"] = np.arange(len(look))
+        look["date"] = look["date"] - pd.Timedelta(days=window_days)
+        old = pd.merge_asof(look.sort_values("date"), c.sort_values("date"), on="date", by=keys, direction="backward")
+        old = old.sort_values("_i")[vals].fillna(0).to_numpy()
+        out[vals] = out[vals].to_numpy() - old
+    return out
+
+
+def extra_stats(facts: pd.DataFrame, next_date: Optional[pd.Timestamp] = None) -> dict[str, pd.DataFrame]:
+    """当地成績（選手×場）・最近の調子（選手、直近90日）・モーター実績（場×モーター、交換後の全期間）。"""
+    f = facts[["toban", "venue", "date", "course", "finish", "start_rank", "motor_no"]].copy().reset_index(drop=True)
+    f["one"] = 1.0
+    f["win"] = (f["finish"] == 1).astype(float)
+    f["top2"] = (f["finish"] <= 2).astype(float)
+    f["sr_ok"] = f["start_rank"].notna().astype(float)
+    f["sr_sum"] = f["start_rank"].fillna(0).astype(float)
+    # モーターはコースの有利不利を差し引いた2連対（コース平均との差）
+    top2_by_course = f.groupby(f["course"].astype(int))["top2"].mean()
+    f["res"] = f["top2"] - f["course"].astype(int).map(top2_by_course).astype(float)
+    # モーター貢献P（ボートレース日和と同じ考え方）：
+    #   そのモーターに乗った走りの勝率点 − 乗る前の直近1年の、その選手の勝率
+    # 選手の実力を差し引くので、強い選手が乗っただけで良く見えることがない
+    f["pts"] = f["finish"].map(WIN_POINTS).fillna(0.0).astype(float)
+    g = f.groupby(["toban", "date"], as_index=False)[["one", "pts"]].sum()
+    ab = asof(g, ["toban"], ["one", "pts"], ABILITY_DAYS).rename(columns={"one": "ab_n", "pts": "ab_pts"})
+    # 実力は「その節が始まる前」の値（節の途中の好走を実力に混ぜない）
+    vd = meetings(facts)
+    f = f.merge(vd[["venue", "date", "rt_day"]], on=["venue", "date"], how="left")
+    f["start"] = f["date"] - pd.to_timedelta(f["rt_day"].fillna(1) - 1, unit="D")
+    f = f.merge(ab.rename(columns={"date": "start"}), on=["toban", "start"], how="left")
+    own = f[["toban", "date"]].merge(ab, on=["toban", "date"], how="left")  # 初日に走っていなければその日の値
+    f["ab_n"] = f["ab_n"].fillna(pd.Series(own["ab_n"].to_numpy(), index=f.index))
+    f["ab_pts"] = f["ab_pts"].fillna(pd.Series(own["ab_pts"].to_numpy(), index=f.index))
+    ability = (f["ab_pts"] / f["ab_n"]).where(f["ab_n"] >= 10)
+    f["kp_ok"] = ability.notna().astype(float)
+    f["kp_sum"] = (f["pts"] - ability).fillna(0.0)
+    out = {}
+    g = f.groupby(["toban", "venue", "date"], as_index=False)[["one", "win", "top2"]].sum()
+    out["local"] = asof(g, ["toban", "venue"], ["one", "win", "top2"], None, next_date).rename(
+        columns={"one": "v_one", "win": "v_win", "top2": "v_top2"})
+    g = f.groupby(["toban", "date"], as_index=False)[["one", "win", "top2", "sr_ok", "sr_sum"]].sum()
+    out["form"] = asof(g, ["toban"], ["one", "win", "top2", "sr_ok", "sr_sum"], FORM_DAYS, next_date).rename(
+        columns={"one": "f_one", "win": "f_win", "top2": "f_top2", "sr_ok": "f_sr_ok", "sr_sum": "f_sr_sum"})
+    m = f.dropna(subset=["motor_no"])
+    g = m.groupby(["venue", "motor_no", "date"], as_index=False)[["one", "res", "kp_ok", "kp_sum"]].sum()
+    out["motor"] = asof(g, ["venue", "motor_no"], ["one", "res", "kp_ok", "kp_sum"], MOTOR_DAYS, next_date).rename(
+        columns={"one": "m_one", "res": "m_res", "kp_ok": "m_kp_ok", "kp_sum": "m_kp_sum"})
+    return out
+
+
+def apply_extra(rows: pd.DataFrame, tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """行（toban, venue, motor_no, date）に extra_stats を付ける。apply_stats の後に呼ぶ。"""
+    rows = rows.merge(tables["local"], on=["toban", "venue", "date"], how="left")
+    rows = rows.merge(tables["form"], on=["toban", "date"], how="left")
+    if "motor_no" not in rows:
+        rows["motor_no"] = np.nan
+    rows["motor_no"] = rows["motor_no"].map(lambda v: v if isinstance(v, str) else None).astype(object)
+    rows = rows.merge(tables["motor"], on=["venue", "motor_no", "date"], how="left")
+    k = SMOOTH
+    z = lambda c: rows[c].fillna(0) if c in rows else 0.0  # 古い学習結果（表なし）でも動くように
+    rows["n_v"] = z("v_one")
+    rows["win_v"] = (z("v_win") + k * rows["win_all"]) / (z("v_one") + k)
+    rows["top2_v"] = (z("v_top2") + k * rows["top2_all"]) / (z("v_one") + k)
+    rows["n_90"] = z("f_one")
+    rows["win_90"] = (z("f_win") + k * rows["win_all"]) / (z("f_one") + k)
+    rows["top2_90"] = (z("f_top2") + k * rows["top2_all"]) / (z("f_one") + k)
+    rows["sr_90"] = (z("f_sr_sum") + k * rows["sr_all"]) / (z("f_sr_ok") + k)
+    rows["n_m"] = z("m_one")
+    rows["motor_res"] = z("m_res") / (z("m_one") + k)
+    rows["motor_kp"] = z("m_kp_sum") / (z("m_kp_ok") + k)  # 走数が少ないうちは0（ふつう）に寄せる
+    # 画面表示用（ボートレース日和の貢献Pと同じ目盛り。5走未満は出さない）
+    rows["motor_kp_raw"] = (z("m_kp_sum") / z("m_kp_ok")).where(z("m_kp_ok") >= 5) if "m_kp_ok" in rows else np.nan
+    drop = [c for c in rows.columns if c[:2] in ("v_", "f_", "m_") and c not in ("f_recent",)]
+    return rows.drop(columns=drop)
+
+
+def meetings(facts: pd.DataFrame) -> pd.DataFrame:
+    """場×日ごとの節番号（meet）と何日目（rt_day）。日が空くか節の名前が変わったら別の節。"""
+    title = facts["series_title"] if "series_title" in facts else pd.Series(np.nan, index=facts.index)
+    vd = facts[["venue", "date"]].assign(series_title=title).groupby(["venue", "date"], as_index=False)["series_title"].first()
+    vd = vd.sort_values(["venue", "date"]).reset_index(drop=True)
+    gap = vd.groupby("venue")["date"].diff() != pd.Timedelta(days=1)
+    prev = vd.groupby("venue")["series_title"].shift()
+    changed = vd["series_title"].notna() & prev.notna() & (vd["series_title"] != prev)
+    vd["meet"] = (gap | changed).cumsum()
+    vd["rt_day"] = vd.groupby("meet").cumcount() + 1
+    return vd
+
+
+def racetime_stats(facts: pd.DataFrame) -> pd.DataFrame:
+    """節間のレースタイム（前日までの走り）を、場×日×選手ごとに作る。
+
+    節＝同じ場で日付が続いている間（節の名前が変わったら別の節）。
+    rt_day 何日目 / rt_n これまでのタイム数 / rt_best 自己ベスト(ms) /
+    rt_series_rank 節の全出場選手の中での順位 / rt_series_n 順位の付いた人数
+    """
+    f = facts[["venue", "date", "toban", "race_time_ms"]]
+    vd = meetings(facts)
+    f = f.merge(vd[["venue", "date", "meet"]], on=["venue", "date"])
+    t = f.dropna(subset=["race_time_ms"])
+    daily = t.groupby(["meet", "toban", "date"], as_index=False)["race_time_ms"].agg(d_min="min", d_cnt="count")
+    daily = daily.sort_values(["meet", "toban", "date"])
+    daily["rt_best"] = daily.groupby(["meet", "toban"])["d_min"].cummin()
+    daily["rt_n"] = daily.groupby(["meet", "toban"])["d_cnt"].cumsum()
+    grid = f[["meet", "toban"]].drop_duplicates().merge(vd[["venue", "date", "meet", "rt_day"]], on="meet")
+    grid = pd.merge_asof(grid.sort_values("date"), daily[["meet", "toban", "date", "rt_best", "rt_n"]].sort_values("date"),
+                         on="date", by=["meet", "toban"], allow_exact_matches=False)  # 当日の走りは使わない
+    grid["rt_n"] = grid["rt_n"].fillna(0)
+    grid["rt_series_rank"] = grid.groupby(["meet", "date"])["rt_best"].rank(method="min")
+    grid["rt_series_n"] = grid.groupby(["meet", "date"])["rt_best"].transform("count")
+    return grid[["venue", "date", "toban", "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n"]]
+
+
+def add_racetime(df: pd.DataFrame) -> pd.DataFrame:
+    """節間タイムを、レース内の比較（6人中の順位・ベストとの差）と上位15位以内に直す。"""
+    for c in ("rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n"):
+        if c not in df:
+            df[c] = np.nan
+    best = pd.to_numeric(df["rt_best"], errors="coerce")
+    g = best.groupby(df["race_id"])
+    df["rt_best_gap"] = (best - g.transform("min")) / 1000.0
+    df["rt_rank_race"] = g.rank(method="min")
+    df["rt_series_pct"] = df["rt_series_rank"] / df["rt_series_n"]
+    df["rt_top15"] = (df["rt_series_rank"] <= 15).astype(float).where(df["rt_series_rank"].notna())
+    return df
+
+
 # ------------------------------------------------------------------ within-race relations
 
 
@@ -348,6 +589,7 @@ def add_race_features(df: pd.DataFrame, with_ex: bool) -> pd.DataFrame:
     if "motor_2" not in df:
         df["motor_2"] = np.nan
     df["motor_2_rel"] = df["motor_2"] - df.groupby("race_id")["motor_2"].transform("mean")
+    df = add_racetime(df)
     if with_ex:
         df["ex_time_rel"] = df["ex_time"] - df.groupby("race_id")["ex_time"].transform("mean")
         df["ex_time_rank"] = df.groupby("race_id")["ex_time"].rank(method="average")
@@ -377,8 +619,8 @@ def add_original(df: pd.DataFrame) -> pd.DataFrame:
 # ------------------------------------------------------------------ build
 
 
-def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame]:
-    """学習用の表（1行＝1艇）と、平滑化の基準・当日予想用の累積（全期間）を返す。"""
+def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame, dict]:
+    """学習用の表（1行＝1艇）と、平滑化の基準・当日予想用の累積（全期間）・当日予想用の追加成績を返す。"""
     import gc
 
     raw_dir = Path(raw_dir)
@@ -390,22 +632,36 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     facts = facts[facts["race_id"].isin(good)].reset_index(drop=True)
     del ok, good
 
+    motors = load_motors(raw_dir / "motors.csv")
+    if len(motors):  # 実績にモーター番号が無いレースは、モーター表の番号で補う
+        facts = facts.merge(motors[["race_id", "lane", "motor_no_m"]], on=["race_id", "lane"], how="left")
+        facts["motor_no"] = facts["motor_no"].fillna(facts.pop("motor_no_m"))
+    # モーターは1年に1回交換される。交換日より前の同じ番号のモーターとは別物として数える
+    swaps = motor_swaps(motors)
+    facts["motor_no"] = era_motor_key(facts["motor_no"], motor_era(facts["venue"], facts["date"], swaps))
+
     priors = course_priors(facts)
     pc, pa = racer_stats(facts)
     pc_tot, pa_tot = totals(facts, pc, pa)
     f_recent = recent_f_counts(facts)
+    nxt = facts["date"].max() + pd.Timedelta(days=1)
+    extra = extra_stats(facts, next_date=nxt)
+    rt = racetime_stats(facts)
 
-    rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank"]].copy()
+    rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank", "motor_no"]].copy()
     del facts
     gc.collect()
     rows = rows.merge(load_exhibition(raw_dir / "exhibition.csv"), on=["race_id", "lane"], how="left")
-    rows = rows.merge(load_motors(raw_dir / "motors.csv"), on=["race_id", "lane"], how="left")
+    rows = rows.merge(motors.drop(columns=["motor_no_m"]), on=["race_id", "lane"], how="left")
     rows = rows.merge(load_original(raw_dir / "original.csv"), on=["race_id", "lane"], how="left")
     # 予想に使う進入：展示進入があればそれ、無ければ実際の進入
     rows["course"] = rows["ex_course"].where(rows["ex_course"].between(1, 6), rows["course"])
     dup = rows.groupby("race_id")["course"].transform(lambda s: s.duplicated(keep=False).any())
     rows.loc[dup, "course"] = rows.loc[dup, "lane"]
     rows = apply_stats(rows, pc, pa, priors, f_recent)
+    rows = apply_extra(rows, extra)
+    rows = rows.merge(rt, on=["venue", "date", "toban"], how="left")
+    del rt
     del pc, pa
     gc.collect()
     rows = add_race_features(rows, with_ex=True)
@@ -418,7 +674,9 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
         if rows[c].dtype == "float64":
             rows[c] = rows[c].astype("float32")
     gc.collect()
-    return rows, priors, pc_tot, pa_tot
+    live_tables = {k: t[t["date"] == nxt].drop(columns=["date"]) for k, t in extra.items()}
+    priors["motor_swaps"] = swaps
+    return rows, priors, pc_tot, pa_tot, live_tables
 
 
 def totals(facts: pd.DataFrame, pc: pd.DataFrame | None = None, pa: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:

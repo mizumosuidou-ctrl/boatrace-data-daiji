@@ -15,6 +15,8 @@ COPY (
     payload->>'race_f'            AS race_f,
     payload->>'race_l'            AS race_l,
     payload->>'motor_no'          AS motor_no,
+    payload->>'race_time_ms'      AS race_time_ms,
+    payload->>'series_title'      AS series_title,
     payload->>'result_status'     AS result_status,
     payload->>'source_type'       AS source_type,
     COALESCE(payload->>'updated_at', source_updated_at) AS updated_at

@@ -42,19 +42,50 @@ def normalize(df: pd.DataFrame, raw: np.ndarray) -> np.ndarray:
     return (s / s.groupby(df["race_id"]).transform("sum")).to_numpy()
 
 
-def trifecta_top(p: dict[int, float], k: int) -> list[tuple[int, int, int]]:
+def trifecta_probs(p: dict[int, float], decay: float = PL_DECAY) -> list[tuple[tuple[int, int, int], float]]:
     boats = list(p)
-    soft = {b: p[b] ** PL_DECAY for b in boats}
+    soft = {b: p[b] ** decay for b in boats}
     tot = sum(p.values())
     out = []
     for a, b, c in permutations(boats, 3):
         r1 = sum(soft[x] for x in boats if x != a)
         out.append(((a, b, c), p[a] / tot * soft[b] / r1 * soft[c] / (r1 - soft[b])))
     out.sort(key=lambda x: -x[1])
-    return [x[0] for x in out[:k]]
+    return out
 
 
-def evaluate(df: pd.DataFrame, prob: np.ndarray) -> dict:
+def trifecta_top(p: dict[int, float], k: int, decay: float = PL_DECAY) -> list[tuple[int, int, int]]:
+    return [x[0] for x in trifecta_probs(p, decay)[:k]]
+
+
+def _races(df: pd.DataFrame, prob: np.ndarray):
+    """(1着確率の辞書, 実際の1-2-3着) をレースごとに返す。"""
+    d = df[["race_id", "lane", "finish"]].copy()
+    d["p"] = prob
+    for _, g in d.groupby("race_id"):
+        order = g.dropna(subset=["finish"]).sort_values("finish")
+        if len(order) < 3 or list(order["finish"].iloc[:3]) != [1, 2, 3]:
+            continue
+        yield dict(zip(g["lane"], g["p"])), tuple(order["lane"].iloc[:3])
+
+
+def tune_decay(df: pd.DataFrame, prob: np.ndarray, max_races: int = 6000) -> float:
+    """2着・3着の決まりやすさ（平坦化の強さ）を、調整用の期間で3連単が一番当たる値に合わせる。"""
+    races = list(_races(df, prob))[-max_races:]
+    if len(races) < 200:
+        return PL_DECAY
+    best, best_ll = PL_DECAY, -np.inf
+    for decay in np.arange(0.55, 1.01, 0.05):
+        ll = 0.0
+        for p, actual in races:
+            probs = dict(trifecta_probs(p, decay))
+            ll += np.log(max(probs.get(actual, 0.0), 1e-9))
+        if ll > best_ll:
+            best, best_ll = float(round(decay, 2)), ll
+    return best
+
+
+def evaluate(df: pd.DataFrame, prob: np.ndarray, decay: float = PL_DECAY) -> dict:
     d = df[["race_id", "lane", "finish"]].copy()
     d["p"] = prob
     win_p = d.loc[d["finish"] == 1, "p"]
@@ -62,12 +93,8 @@ def evaluate(df: pd.DataFrame, prob: np.ndarray) -> dict:
     res = {"races": int(d["race_id"].nunique()), "logloss": float(-np.log(np.clip(win_p, 1e-9, 1)).mean()), "fav_win": float((fav["finish"] == 1).mean())}
     hits = {1: 0, 5: 0, 10: 0}
     n = 0
-    for _, g in d.groupby("race_id"):
-        order = g.dropna(subset=["finish"]).sort_values("finish")
-        if len(order) < 3 or list(order["finish"].iloc[:3]) != [1, 2, 3]:
-            continue
-        actual = tuple(order["lane"].iloc[:3])
-        top = trifecta_top(dict(zip(g["lane"], g["p"])), 10)
+    for p, actual in _races(df, prob):
+        top = trifecta_top(p, 10, decay)
         n += 1
         for k in hits:
             hits[k] += int(actual in top[:k])
@@ -89,7 +116,7 @@ def _fit(train: pd.DataFrame, valid: pd.DataFrame, feats: list[str]):
 def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45) -> dict:
     raw_dir, out_dir = Path(raw_dir), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    rows, priors, pc_tot, pa_tot = ds.build(raw_dir)
+    rows, priors, pc_tot, pa_tot, live_tables = ds.build(raw_dir)
     rows["course"] = rows["course"].astype(int)
     last = rows["date"].max()
     test_start = last - pd.Timedelta(days=test_days)
@@ -99,15 +126,24 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     te = rows[rows["date"] >= test_start]
     log.info("rows=%d train=%d valid=%d test=%d", len(rows), len(tr), len(va), len(te))
 
-    pre_feats = ds.BASE_FEATURES
-    post_feats = ds.BASE_FEATURES + ds.EX_FEATURES
-    pre = _fit(tr, va, pre_feats)
-
+    # 修正3までの特徴量と、当地・調子・モーター実績を足したものを、同じ検証期間で比べる
+    pre_v1 = _fit(tr, va, ds.BASE_FEATURES_V1)
+    pre_v2 = _fit(tr, va, ds.BASE_FEATURES)
     base = normalize(te, te["course_winrate_prior"].to_numpy())
-    metrics = {
-        "baseline": evaluate(te, base),
-        "pre": evaluate(te, normalize(te, pre.predict(te[pre_feats]))),
-    }
+    metrics = {"baseline": evaluate(te, base)}
+    m_v1 = evaluate(te, normalize(te, pre_v1.predict(te[ds.BASE_FEATURES_V1])))
+    m_v2 = evaluate(te, normalize(te, pre_v2.predict(te[ds.BASE_FEATURES])))
+    extra_adopt = m_v2["logloss"] < m_v1["logloss"]
+    base_feats = ds.BASE_FEATURES if extra_adopt else ds.BASE_FEATURES_V1
+    pre = pre_v2 if extra_adopt else pre_v1
+    metrics["pre_v1"] = m_v1
+    pre_feats = base_feats
+    post_feats = base_feats + ds.EX_FEATURES
+
+    # 3連単の2着・3着の平坦化を、調整用期間で合わせる（検証期間は使わない）
+    decay = tune_decay(va, normalize(va, pre.predict(va[pre_feats])))
+    metrics["pre"] = evaluate(te, normalize(te, pre.predict(te[pre_feats])), decay)
+    metrics["pre_fixed_decay"] = m_v2 if extra_adopt else m_v1
 
     # 展示後モデル：展示データがある期間だけで、前60%学習・次15%調整・最後25%検証
     post, post_adopt, orig_adopt = None, False, False
@@ -122,8 +158,8 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         log.info("exhibition rows=%d train=%d valid=%d test=%d", len(ex_rows), len(tr_x), len(va_x), len(te_x))
         post = _fit(tr_x, va_x, post_feats)
         metrics["baseline_ex_races"] = evaluate(te_x, normalize(te_x, te_x["course_winrate_prior"].to_numpy()))
-        metrics["pre_ex_races"] = evaluate(te_x, normalize(te_x, pre.predict(te_x[pre_feats])))
-        metrics["post"] = evaluate(te_x, normalize(te_x, post.predict(te_x[post_feats])))
+        metrics["pre_ex_races"] = evaluate(te_x, normalize(te_x, pre.predict(te_x[pre_feats])), decay)
+        metrics["post"] = evaluate(te_x, normalize(te_x, post.predict(te_x[post_feats])), decay)
         post_adopt = metrics["post"]["logloss"] < metrics["pre_ex_races"]["logloss"]
 
         # オリジナル展示（一周・まわり足・直線）：データがある期間で前60%学習・次15%調整・最後25%検証。
@@ -138,9 +174,9 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
             orig_feats = post_feats + ds.ORIG_FEATURES
             post_n = _fit(tr_o, va_o, post_feats)
             post_o = _fit(tr_o, va_o, orig_feats)
-            metrics["orig_pre"] = evaluate(te_o, normalize(te_o, pre.predict(te_o[pre_feats])))
-            metrics["orig_post"] = evaluate(te_o, normalize(te_o, post_n.predict(te_o[post_feats])))
-            metrics["orig_post_orig"] = evaluate(te_o, normalize(te_o, post_o.predict(te_o[orig_feats])))
+            metrics["orig_pre"] = evaluate(te_o, normalize(te_o, pre.predict(te_o[pre_feats])), decay)
+            metrics["orig_post"] = evaluate(te_o, normalize(te_o, post_n.predict(te_o[post_feats])), decay)
+            metrics["orig_post_orig"] = evaluate(te_o, normalize(te_o, post_o.predict(te_o[orig_feats])), decay)
             if metrics["orig_post_orig"]["logloss"] < min(metrics["orig_post"]["logloss"], metrics["orig_pre"]["logloss"]):
                 post, post_feats, post_adopt, orig_adopt = post_o, orig_feats, True, True
 
@@ -154,6 +190,8 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     # 当日予想用の累積（全期間）
     pc_tot.to_csv(out_dir / "stats_course.csv.gz", index=False)
     pa_tot.to_csv(out_dir / "stats_racer.csv.gz", index=False)
+    for name, t in live_tables.items():
+        t.to_csv(out_dir / f"stats_{name}.csv.gz", index=False)
 
     adopt = metrics["pre"]["logloss"] < metrics["baseline"]["logloss"]
     meta = {
@@ -164,6 +202,8 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         "post_features": post_feats if post is not None and post_adopt else None,
         "post_adopt": bool(post_adopt),
         "orig_adopt": bool(orig_adopt),
+        "extra_adopt": bool(extra_adopt),
+        "pl_decay": decay,
         "priors": priors,
         "metrics": metrics,
         "importance": {k: round(float(v), 1) for k, v in imp.head(15).items()},
@@ -180,15 +220,26 @@ def summary_ja(meta: dict) -> str:
         "",
         f"{'':14}{'1着的中':>8}{'3連単1点':>9}{'5点':>7}{'10点':>7}{'対数損失':>9}",
     ]
-    names = {"baseline": "基準(コース)", "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
+    names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
              "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後",
              "orig_pre": "└直近 展示前", "orig_post": "└直近 展示後", "orig_post_orig": "└直近 +ｵﾘｼﾞﾅﾙ"}
-    for key in ("baseline", "pre", "baseline_ex_races", "pre_ex_races", "post", "orig_pre", "orig_post", "orig_post_orig"):
+    for key in ("baseline", "pre_v1", "pre", "baseline_ex_races", "pre_ex_races", "post", "orig_pre", "orig_post", "orig_post_orig"):
         if key in m:
             r = m[key]
             lines.append(f"{names[key]:<14}{r['fav_win']*100:7.1f}%{r['tri_top1']*100:8.1f}%{r['tri_top5']*100:6.1f}%{r['tri_top10']*100:6.1f}%{r['logloss']:9.3f}")
     lines.append("")
     lines.append("効いている要素（上位）: " + "、".join(list(meta["importance"])[:8]))
+    if "pre_v1" in m:
+        lines.append("当地成績・最近の調子・モーター実績: " + ("使う（入れた方が良い）" if meta.get("extra_adopt") else "使わない（入れても良くならない）"))
+        lines.append(f"3連単の2着・3着の平坦化: {meta.get('pl_decay')}（これまで {PL_DECAY}）")
+    swaps = (meta.get("priors") or {}).get("motor_swaps") or {}
+    if swaps:
+        from ..venues import venue
+
+        lines.append("モーター交換日（これより前のモーターとは別に数える）:")
+        items = [f"{venue(j).name} " + "・".join(f"{d[:4]}/{d[4:6]}/{d[6:]}" for d in ds_) for j, ds_ in sorted(swaps.items())]
+        for i in range(0, len(items), 4):
+            lines.append("  " + "　".join(items[i:i + 4]))
     lines.append("採用: " + ("する（基準より良い）" if meta["adopt"] else "しない（基準を下回った）"))
     if "post" in m:
         lines.append("展示後モデル: " + ("使う（同じレースで展示前より良い）" if meta.get("post_adopt") else "使わない（展示前の方が良い）"))

@@ -71,7 +71,8 @@ def test_training_beats_course_baseline(trained):
     m = meta["metrics"]
     assert m["pre"]["logloss"] < m["baseline"]["logloss"]
     assert meta["adopt"] is True
-    assert json.loads((out / "meta.json").read_text())["pre_features"] == ds.BASE_FEATURES
+    saved = json.loads((out / "meta.json").read_text())
+    assert saved["pre_features"] == (ds.BASE_FEATURES if saved["extra_adopt"] else ds.BASE_FEATURES_V1)
 
 
 def meta_orig(out):
@@ -213,3 +214,111 @@ def test_original_features_within_race():
     assert out.loc[1, "lap_rank"] == 1 and out.loc[1, "lap_rel"] < 0
     assert out.loc[6:, "lap_rel"].isna().all()  # 3艇しかないレースは使わない
     assert out["straight_rel"].isna().all()
+
+
+def test_asof_window_uses_only_prior_days_in_window():
+    d = pd.DataFrame({"toban": ["a"] * 3, "date": pd.to_datetime(["2025-01-01", "2025-03-01", "2025-05-01"]), "win": [1.0, 1.0, 1.0]})
+    out = ds.asof(d, ["toban"], ["win"], window_days=90, next_date=pd.Timestamp("2025-05-02"))
+    got = dict(zip(out["date"].dt.strftime("%m%d"), out["win"]))
+    assert got == {"0101": 0, "0301": 1, "0501": 1, "0502": 2}  # 当日分は入れず、90日より前は落とす
+
+
+def test_extra_features_reach_live(trained):
+    out, meta = trained
+    assert meta["pl_decay"] and 0.5 <= meta["pl_decay"] <= 1.0
+    for name in ("local", "form", "motor"):
+        assert (out / f"stats_{name}.csv.gz").exists()
+    from minamo.ml import live
+
+    pred = live.MLPredictor(out)
+    motors = pd.read_csv(out / "stats_motor.csv.gz", dtype=str)
+    era = motors.apply(lambda r: r["motor_no"].endswith(f"@{pred.motor_era(r['venue'], '20250315')}"), axis=1)
+    motor = motors[era].iloc[0]  # 学習の最終日時点で使われているモーター
+    tobans = list(pd.read_csv(out / "stats_local.csv.gz", dtype=str)["toban"].unique()[:6])
+    from minamo.models import Entry, RaceCard
+
+    card = RaceCard(date="20250315", jcd=motor["venue"], rno=1, entries=[
+        Entry(boat=i + 1, toban=t, name="x", grade="B1", motor_no=int(motor["motor_no"].split("@")[0]) if i == 0 else None) for i, t in enumerate(tobans)])
+    df = pred.frame(card)
+    assert df.loc[0, "n_m"] > 0 and df["n_90"].notna().all() and df["win_v"].notna().all()
+    # 節間のレースタイム：6人中の順位と、節の上位15位以内か
+    card.racetime = {"day": 3, "racers": {tobans[0]: [108000, 2, 3, 40], tobans[1]: [109500, 1, 20, 40]}}
+    df = ds.add_race_features(pred.frame(card), with_ex=False)
+    assert list(df["rt_rank_race"][:2]) == [1, 2] and df.loc[1, "rt_best_gap"] == pytest.approx(1.5)
+    assert list(df["rt_top15"][:2]) == [1, 0] and np.isnan(df.loc[2, "rt_top15"]) and (df["rt_day"] == 3).all()
+
+
+def test_old_model_without_extra_tables_still_predicts(trained, tmp_path, monkeypatch):
+    import shutil
+
+    from minamo.ml import live
+    from minamo.models import Entry, RaceCard
+
+    out, _ = trained
+    old = tmp_path / "old"
+    shutil.copytree(out, old)
+    for name in ("local", "form", "motor"):
+        (old / f"stats_{name}.csv.gz").unlink()
+    meta = json.loads((old / "meta.json").read_text())
+    meta["pre_features"], meta["post_features"] = ds.BASE_FEATURES_V1, None
+    meta.pop("pl_decay")
+    (old / "meta.json").write_text(json.dumps(meta))
+    tobans = list(pd.read_csv(old / "stats_course.csv.gz", dtype={"toban": str})["toban"].unique()[:6])
+    pred = live.MLPredictor(old)
+    card = RaceCard(date="20250315", jcd="12", rno=1, entries=[Entry(boat=i + 1, toban=t, name="x", grade="B1") for i, t in enumerate(tobans)])
+    df = pred.frame(card)
+    assert (df["n_m"] == 0).all()
+
+
+def test_racetime_stats_use_only_prior_days_of_same_series():
+    rows = []
+    for day, ms in (("20250101", 110000), ("20250102", 108000), ("20250103", 109000), ("20250105", 107000)):
+        rows.append({"venue": "12", "date": pd.Timestamp(day), "toban": "a", "race_time_ms": ms, "series_title": "X"})
+        rows.append({"venue": "12", "date": pd.Timestamp(day), "toban": "b", "race_time_ms": 109500, "series_title": "X"})
+    rt = ds.racetime_stats(pd.DataFrame(rows)).set_index(["date", "toban"])
+    a = rt.xs("a", level="toban")
+    assert np.isnan(a.loc["2025-01-01", "rt_best"]) and a.loc["2025-01-01", "rt_day"] == 1
+    assert a.loc["2025-01-02", "rt_best"] == 110000 and a.loc["2025-01-02", "rt_series_rank"] == 2
+    assert a.loc["2025-01-03", "rt_best"] == 108000 and a.loc["2025-01-03", "rt_series_rank"] == 1 and a.loc["2025-01-03", "rt_n"] == 2
+    assert a.loc["2025-01-05", "rt_day"] == 1 and np.isnan(a.loc["2025-01-05", "rt_best"])  # 日が空いたら別の節
+
+
+def test_motor_contribution_point_subtracts_racer_ability():
+    # 選手aは1年間ずっと3着（勝率6点）。モーター7に乗った節では1着（10点）→ 貢献P +4
+    rows = []
+    for i in range(30):
+        day = pd.Timestamp("2025-01-01") + pd.Timedelta(days=i)
+        rows.append({"toban": "a", "venue": "12", "date": day, "course": 1, "finish": 3, "start_rank": 1, "motor_no": "1@0"})
+    for i in range(3):
+        day = pd.Timestamp("2025-03-01") + pd.Timedelta(days=i)
+        rows.append({"toban": "a", "venue": "12", "date": day, "course": 1, "finish": 1, "start_rank": 1, "motor_no": "7@0"})
+    t = ds.extra_stats(pd.DataFrame(rows), next_date=pd.Timestamp("2025-03-04"))["motor"]
+    m7 = t[(t["motor_no"] == "7@0") & (t["date"] == pd.Timestamp("2025-03-04"))].iloc[0]
+    assert m7["m_kp_ok"] == 3 and m7["m_kp_sum"] / m7["m_kp_ok"] == pytest.approx(4.0)
+    first = t[(t["motor_no"] == "7@0") & (t["date"] == pd.Timestamp("2025-03-01"))].iloc[0]
+    assert first["m_kp_ok"] == 0  # 当日の走りは使わない
+
+
+def test_motor_swap_splits_old_and_new_motors(monkeypatch):
+    # 2025/3/10 にモーター2連率がいっせいに 0 → 交換日。前後の同じ番号は別のモーター
+    rid = [f"202503{d:02d}-12-01" for d in (8, 9, 10, 11)]
+    motors = pd.DataFrame({"race_id": [r for r in rid for _ in range(6)],
+                           "motor_2": [35.0] * 12 + [0.0] * 6 + [30.0] * 6})
+    monkeypatch.setattr(ds, "KNOWN_MOTOR_SWAPS", {})
+    assert ds.motor_swaps(motors) == {"12": ["20250310"]}
+    dates = pd.Series(pd.to_datetime(["2025-03-09", "2025-03-10", "2025-06-01"]))
+    era = ds.motor_era(pd.Series(["12"] * 3), dates, {"12": ["20250310"]})
+    assert list(ds.era_motor_key(pd.Series(["5", "5", None]), era)) [:2] == ["5@0", "5@1"]
+
+
+def test_pipeline_records_motor_swap(tmp_path, monkeypatch):
+    from minamo import pipeline
+    from minamo.ml import live
+
+    monkeypatch.setattr(pipeline, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(live, "SWAP_FILE", tmp_path / "motor_swaps.json")
+    pipe = pipeline.Pipeline(fetcher=object(), ai_enabled=False)
+    for rno in (1, 2):
+        pipe._save("20261001", f"12-{rno:02d}", {"card": {"entries": [{"motor_2": 0.0}] * 6}})
+    pipe._check_motor_swap("20261001", "12")
+    assert live._live_swaps() == {"12": ["20261001"]}
