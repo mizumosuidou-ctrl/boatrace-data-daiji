@@ -560,6 +560,7 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .chart .bar-ret.lo { fill: var(--muted); opacity: .6; }
 .chart .ref { stroke: var(--hit); stroke-dasharray: 4 4; }
 .chart .line { fill: none; stroke: var(--accent-2); stroke-width: 2; }
+.chart .dot { fill: none; stroke: var(--accent-2); stroke-width: 7; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .calib { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 14px; }
 .calib .panel { padding: 20px; }
 .calib h4 { margin: 0; font-size: 20px; font-weight: 900; }

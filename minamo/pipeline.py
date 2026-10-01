@@ -104,13 +104,20 @@ class Pipeline:
         self._save(date, "venues", {"venues": [asdict(v) for v in vdays]})
         log.info("%s: %d venues", date, len(vdays))
         for vd in vdays:
-            rt = None
+            rt, rt_tried = None, False  # 失敗しても1場につき1回だけ試す
             for rno in range(1, 13):
                 name = f"{vd.jcd}-{rno:02d}"
-                if self._load(date, name):
+                saved = self._load(date, name)
+                if saved:
+                    # レースタイムを取る前（古いプログラムや取得失敗）に保存した出走表には、ここで足す
+                    if "racetime" not in saved["card"] and not saved.get("result"):
+                        if not rt_tried:
+                            rt, rt_tried = self._racetime(date, vd), True
+                        if rt is not None:
+                            saved["card"]["racetime"] = rt
+                            self._save(date, name, saved)
+                            self.publish(date, vd.jcd, rno, vd)
                     continue
-                if rt is None:
-                    rt = self._racetime(date, vd)
                 try:
                     card = parsers.parse_racelist(self.fetcher.racelist(date, vd.jcd, rno), date, vd.jcd, rno)
                 except requests.RequestException as exc:
@@ -121,8 +128,13 @@ class Pipeline:
                     continue
                 if not vd.title:
                     vd.title = card.title
-                card.racetime = rt
-                self._save(date, name, {"card": asdict(card)})
+                if not rt_tried:
+                    rt, rt_tried = self._racetime(date, vd), True
+                card.racetime = rt or {}
+                saved = asdict(card)
+                if rt is None:
+                    del saved["racetime"]  # 取れなかった：次の sync で取り直す
+                self._save(date, name, {"card": saved})
                 self.publish(date, vd.jcd, rno, vd)
         self._save(date, "venues", {"venues": [asdict(v) for v in vdays]})
         for vd in vdays:
@@ -145,13 +157,13 @@ class Pipeline:
             store.write_json(path, swaps)
             log.info("motor swap detected: %s %s", jcd, date)
 
-    def _racetime(self, date: str, vd: VenueDay) -> dict:
-        """節の前日までのレースタイム。取れなくても予想は続ける。"""
+    def _racetime(self, date: str, vd: VenueDay) -> Optional[dict]:
+        """節の前日までのレースタイム。取れなくても予想は続ける（そのときは None）。"""
         try:
             return self.racetimes.table(date, vd.jcd, vd.day_label)
         except Exception as exc:  # noqa: BLE001
             log.warning("racetime %s %s: %s", date, vd.jcd, exc)
-            return {}
+            return None
 
     # ---- per-minute tick
     def tick(self, date: str, now: Optional[datetime] = None) -> int:

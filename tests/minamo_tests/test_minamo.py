@@ -242,6 +242,37 @@ def test_pipeline_full_day(sandbox):
     assert len(fetcher.calls) == n
 
 
+def test_sync_adds_racetime_to_cards_saved_without_it(sandbox):
+    """古いプログラムや取得失敗でレースタイム無しのまま保存された出走表に、次の sync で足す。"""
+    from minamo.pipeline import Pipeline
+
+    pipe = Pipeline(fetcher=FakeFetcher(), ai_enabled=False)
+    date = "20261001"
+
+    def broken(*a):
+        raise RuntimeError("down")
+
+    pipe.racetimes.table = broken
+    pipe.sync_day(date)
+    assert "racetime" not in pipe._load(date, "12-12")["card"]  # 取れなかったので印を付けない
+    race_file = sandbox / "data" / date / "12-12.json"
+    toban = json.loads(race_file.read_text())["entries"][0]["toban"]
+    assert json.loads(race_file.read_text())["entries"][0]["rt_best"] is None
+
+    calls = []
+
+    def table(*a):
+        calls.append(a)
+        return {"day": 3, "racers": {toban: [108900, 2, 1, 40]}}
+
+    pipe.racetimes.table = table
+    pipe.sync_day(date)
+    e = json.loads(race_file.read_text())["entries"][0]
+    assert e["rt_best"] == pytest.approx(108.9) and e["rt_series_rank"] == 1
+    pipe.sync_day(date)
+    assert len(calls) == 1  # 足したあとは取り直さない
+
+
 def test_demo_generation(sandbox):
     from minamo.demo import generate_day
 
