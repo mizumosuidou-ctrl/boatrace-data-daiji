@@ -37,6 +37,16 @@ BASE_FEATURES = [
     "sr_inner_slowest_gap", "n_inner_slower",
     "course_winrate_prior",
 ]
+# 修正4で足した特徴量：当地成績・最近の調子・モーター実績（すべて前日まで）
+EXTRA_FEATURES = [
+    "n_v", "win_v", "top2_v",
+    "n_90", "win_90", "top2_90", "sr_90",
+    "n_m", "motor_res",
+]
+BASE_FEATURES_V1 = list(BASE_FEATURES)  # 修正3までの特徴量（比較用）
+BASE_FEATURES = BASE_FEATURES_V1 + EXTRA_FEATURES
+FORM_DAYS = 90
+MOTOR_DAYS = 180
 EX_FEATURES = [
     "ex_time_rel", "ex_time_rank", "ex_st", "ex_st_rank", "tilt",
     "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap",
@@ -51,11 +61,13 @@ ORIG_BOUNDS = {"lap_time": (15.0, 45.0), "turn_time": (3.0, 15.0), "straight_tim
 # 画面の「要因」表示用のまとまり
 FACTOR_GROUPS = {
     "course": ["course", "venue_i", "course_winrate_prior"],
-    "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order"],
+    "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order", "sr_90"],
     "tenkai": ["sr_gap_inner", "sr_gap_c1", "sr_gap_outer", "sr_inner_slowest_gap", "n_inner_slower",
                "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap", "combo_start_order"],
     "skill": ["grade_o", "win_c", "top2_c", "top3_c", "n_all", "win_all", "top2_all"],
-    "motor": ["motor_2", "motor_2_rel"],
+    "motor": ["motor_2", "motor_2_rel", "n_m", "motor_res"],
+    "local": ["n_v", "win_v", "top2_v"],
+    "form": ["n_90", "win_90", "top2_90"],
     "exhibition": ["ex_time_rel", "ex_time_rank", "tilt"],
     "exh_st": ["ex_st", "ex_st_rank"],
     "original": ORIG_FEATURES,
@@ -99,7 +111,12 @@ def _race_id(df: pd.DataFrame) -> pd.Series:
 
 
 FACT_COLS = ["race_date", "venue", "race_no", "lane", "course", "toban", "grade", "start_rank",
-             "st", "st_hundredths", "finish", "race_f", "updated_at"]
+             "st", "st_hundredths", "finish", "race_f", "updated_at", "motor_no"]
+
+
+def motor_key(s: pd.Series) -> pd.Series:
+    """モーター番号を '12' のような文字にそろえる（読めなければ NaN）。"""
+    return _num(s).map(lambda v: str(int(v)) if v == v and v > 0 else np.nan)
 
 
 def _compact(chunk: pd.DataFrame) -> pd.DataFrame:
@@ -114,6 +131,7 @@ def _compact(chunk: pd.DataFrame) -> pd.DataFrame:
     out["st_sec"] = chunk["st"].map(parse_st).astype("float32")
     out["race_f"] = chunk["race_f"].fillna("").astype(str).str.lower().isin(["1", "true", "t", "f"])
     out["updated_at"] = chunk["updated_at"]
+    out["motor_no"] = motor_key(chunk["motor_no"])
     out = out.dropna(subset=["race_date", "venue", "race_no", "lane", "toban"])
     for c in ["race_date", "venue", "grade"]:
         out[c] = out[c].astype("category")
@@ -202,10 +220,11 @@ def load_original(path: Optional[Path]) -> pd.DataFrame:
 
 
 def load_motors(path: Optional[Path]) -> pd.DataFrame:
-    cols = ["race_id", "lane", "motor_2"]
+    cols = ["race_id", "lane", "motor_2", "motor_no_m"]
     if not path or not Path(path).exists():
         return pd.DataFrame(columns=cols)
     mo = pd.read_csv(path, dtype=str)
+    mo["motor_no_m"] = motor_key(mo["motor_no"]) if "motor_no" in mo else np.nan
     mo["race_date"] = mo["race_date"].str.replace("-", "", regex=False).str[:8]
     mo["venue"] = mo["venue"].str.zfill(2)
     mo["race_no"] = _num(mo["race_no"])
@@ -309,6 +328,82 @@ def recent_f_counts(facts: pd.DataFrame, days: int = F_WINDOW_DAYS) -> pd.Series
     return pd.Series(np.clip(look["prior"].fillna(0).values - old, 0, None), index=facts.index)
 
 
+def asof(daily: pd.DataFrame, keys: list[str], vals: list[str], window_days: Optional[int] = None,
+         next_date: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+    """日次の合計（keys×date）から「その日より前」の合計を作る。window_days があれば直近その日数だけ。
+
+    next_date を渡すと、全期間の最終日の翌日の行（当日予想用）も加える。
+    """
+    d = daily[keys + ["date"] + vals]
+    if next_date is not None:
+        extra = d[keys].drop_duplicates().assign(date=next_date)
+        for v in vals:
+            extra[v] = 0.0
+        d = pd.concat([d, extra], ignore_index=True)
+    d = d.sort_values(keys + ["date"]).reset_index(drop=True)
+    cum = d.groupby(keys, sort=False)[vals].cumsum()
+    out = d[keys + ["date"]].copy()
+    out[vals] = (cum - d[vals]).to_numpy()
+    if window_days:
+        c = d[keys + ["date"]].copy()
+        c[vals] = cum.to_numpy()
+        look = d[keys + ["date"]].copy()
+        look["_i"] = np.arange(len(look))
+        look["date"] = look["date"] - pd.Timedelta(days=window_days)
+        old = pd.merge_asof(look.sort_values("date"), c.sort_values("date"), on="date", by=keys, direction="backward")
+        old = old.sort_values("_i")[vals].fillna(0).to_numpy()
+        out[vals] = out[vals].to_numpy() - old
+    return out
+
+
+def extra_stats(facts: pd.DataFrame, next_date: Optional[pd.Timestamp] = None) -> dict[str, pd.DataFrame]:
+    """当地成績（選手×場）・最近の調子（選手、直近90日）・モーター実績（場×モーター、直近180日）。"""
+    f = facts[["toban", "venue", "date", "course", "finish", "start_rank", "motor_no"]].copy()
+    f["one"] = 1.0
+    f["win"] = (f["finish"] == 1).astype(float)
+    f["top2"] = (f["finish"] <= 2).astype(float)
+    f["sr_ok"] = f["start_rank"].notna().astype(float)
+    f["sr_sum"] = f["start_rank"].fillna(0).astype(float)
+    # モーターはコースの有利不利を差し引いた2連対（コース平均との差）
+    top2_by_course = f.groupby(f["course"].astype(int))["top2"].mean()
+    f["res"] = f["top2"] - f["course"].astype(int).map(top2_by_course).astype(float)
+    out = {}
+    g = f.groupby(["toban", "venue", "date"], as_index=False)[["one", "win", "top2"]].sum()
+    out["local"] = asof(g, ["toban", "venue"], ["one", "win", "top2"], None, next_date).rename(
+        columns={"one": "v_one", "win": "v_win", "top2": "v_top2"})
+    g = f.groupby(["toban", "date"], as_index=False)[["one", "win", "top2", "sr_ok", "sr_sum"]].sum()
+    out["form"] = asof(g, ["toban"], ["one", "win", "top2", "sr_ok", "sr_sum"], FORM_DAYS, next_date).rename(
+        columns={"one": "f_one", "win": "f_win", "top2": "f_top2", "sr_ok": "f_sr_ok", "sr_sum": "f_sr_sum"})
+    m = f.dropna(subset=["motor_no"])
+    g = m.groupby(["venue", "motor_no", "date"], as_index=False)[["one", "res"]].sum()
+    out["motor"] = asof(g, ["venue", "motor_no"], ["one", "res"], MOTOR_DAYS, next_date).rename(
+        columns={"one": "m_one", "res": "m_res"})
+    return out
+
+
+def apply_extra(rows: pd.DataFrame, tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """行（toban, venue, motor_no, date）に extra_stats を付ける。apply_stats の後に呼ぶ。"""
+    rows = rows.merge(tables["local"], on=["toban", "venue", "date"], how="left")
+    rows = rows.merge(tables["form"], on=["toban", "date"], how="left")
+    if "motor_no" not in rows:
+        rows["motor_no"] = np.nan
+    rows["motor_no"] = rows["motor_no"].map(lambda v: v if isinstance(v, str) else None).astype(object)
+    rows = rows.merge(tables["motor"], on=["venue", "motor_no", "date"], how="left")
+    k = SMOOTH
+    z = lambda c: rows[c].fillna(0) if c in rows else 0.0  # 古い学習結果（表なし）でも動くように
+    rows["n_v"] = z("v_one")
+    rows["win_v"] = (z("v_win") + k * rows["win_all"]) / (z("v_one") + k)
+    rows["top2_v"] = (z("v_top2") + k * rows["top2_all"]) / (z("v_one") + k)
+    rows["n_90"] = z("f_one")
+    rows["win_90"] = (z("f_win") + k * rows["win_all"]) / (z("f_one") + k)
+    rows["top2_90"] = (z("f_top2") + k * rows["top2_all"]) / (z("f_one") + k)
+    rows["sr_90"] = (z("f_sr_sum") + k * rows["sr_all"]) / (z("f_sr_ok") + k)
+    rows["n_m"] = z("m_one")
+    rows["motor_res"] = z("m_res") / (z("m_one") + k)
+    drop = [c for c in rows.columns if c[:2] in ("v_", "f_", "m_") and c not in ("f_recent",)]
+    return rows.drop(columns=drop)
+
+
 # ------------------------------------------------------------------ within-race relations
 
 
@@ -377,8 +472,8 @@ def add_original(df: pd.DataFrame) -> pd.DataFrame:
 # ------------------------------------------------------------------ build
 
 
-def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame]:
-    """学習用の表（1行＝1艇）と、平滑化の基準・当日予想用の累積（全期間）を返す。"""
+def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame, dict]:
+    """学習用の表（1行＝1艇）と、平滑化の基準・当日予想用の累積（全期間）・当日予想用の追加成績を返す。"""
     import gc
 
     raw_dir = Path(raw_dir)
@@ -390,22 +485,30 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     facts = facts[facts["race_id"].isin(good)].reset_index(drop=True)
     del ok, good
 
+    motors = load_motors(raw_dir / "motors.csv")
+    if len(motors):  # 実績にモーター番号が無いレースは、モーター表の番号で補う
+        facts = facts.merge(motors[["race_id", "lane", "motor_no_m"]], on=["race_id", "lane"], how="left")
+        facts["motor_no"] = facts["motor_no"].fillna(facts.pop("motor_no_m"))
+
     priors = course_priors(facts)
     pc, pa = racer_stats(facts)
     pc_tot, pa_tot = totals(facts, pc, pa)
     f_recent = recent_f_counts(facts)
+    nxt = facts["date"].max() + pd.Timedelta(days=1)
+    extra = extra_stats(facts, next_date=nxt)
 
-    rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank"]].copy()
+    rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank", "motor_no"]].copy()
     del facts
     gc.collect()
     rows = rows.merge(load_exhibition(raw_dir / "exhibition.csv"), on=["race_id", "lane"], how="left")
-    rows = rows.merge(load_motors(raw_dir / "motors.csv"), on=["race_id", "lane"], how="left")
+    rows = rows.merge(motors.drop(columns=["motor_no_m"]), on=["race_id", "lane"], how="left")
     rows = rows.merge(load_original(raw_dir / "original.csv"), on=["race_id", "lane"], how="left")
     # 予想に使う進入：展示進入があればそれ、無ければ実際の進入
     rows["course"] = rows["ex_course"].where(rows["ex_course"].between(1, 6), rows["course"])
     dup = rows.groupby("race_id")["course"].transform(lambda s: s.duplicated(keep=False).any())
     rows.loc[dup, "course"] = rows.loc[dup, "lane"]
     rows = apply_stats(rows, pc, pa, priors, f_recent)
+    rows = apply_extra(rows, extra)
     del pc, pa
     gc.collect()
     rows = add_race_features(rows, with_ex=True)
@@ -418,7 +521,8 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
         if rows[c].dtype == "float64":
             rows[c] = rows[c].astype("float32")
     gc.collect()
-    return rows, priors, pc_tot, pa_tot
+    live_tables = {k: t[t["date"] == nxt].drop(columns=["date"]) for k, t in extra.items()}
+    return rows, priors, pc_tot, pa_tot, live_tables
 
 
 def totals(facts: pd.DataFrame, pc: pd.DataFrame | None = None, pa: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:

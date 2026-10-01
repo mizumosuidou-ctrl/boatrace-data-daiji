@@ -40,6 +40,7 @@ FACTOR_LABELS = {
     "exhibition": "展示タイム",
     "exh_st": "展示ST",
     "original": "オリジナル展示",
+    "form": "最近の調子",
     "flying": "F持ち",
     "grade": "級別",
     "wind": "風",
@@ -156,7 +157,7 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
             f["wind"] = -0.07 * (wind - 4) if c == 1 else 0.03 * (wind - 4)
         scores.append(BoatScore(boat=e.boat, course=c, score=sum(f.values()), factors=f))
 
-    engine, shadow = "model", {}
+    engine, shadow, decay = "model", {}, PL_DECAY
     ml = _ml_result(card, before)
     if ml and all(s.boat in ml["boats"] for s in scores):
         tot = sum(math.exp(s.score) for s in scores)
@@ -167,6 +168,7 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
             s.factors = m["factors"]
             s.start_order = m["start_order"]
         engine = ml["engine"]
+        decay = ml.get("pl_decay") or PL_DECAY  # 学習で合わせた値
 
     strengths = {s.boat: math.exp(s.score) for s in scores}
     total = sum(strengths.values())
@@ -175,7 +177,7 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
 
     # Plackett-Luce（2着以降は強さを平坦化）
     boats = [s.boat for s in scores]
-    soft = {b: strengths[b] ** PL_DECAY for b in boats}
+    soft = {b: strengths[b] ** decay for b in boats}
     tri: dict[str, float] = {}
     ex: dict[str, float] = {}
     for a, b, c in permutations(boats, 3):

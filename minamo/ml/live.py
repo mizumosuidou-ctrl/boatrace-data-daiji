@@ -29,6 +29,12 @@ class MLPredictor:
         self.pc = pd.read_csv(self.dir / "stats_course.csv.gz", dtype={"toban": str}, parse_dates=["date"])
         self.pa = pd.read_csv(self.dir / "stats_racer.csv.gz", dtype={"toban": str}, parse_dates=["date"])
         self.stats_date = self.pc["date"].iloc[0] if len(self.pc) else pd.Timestamp("2000-01-01")
+        # 当地成績・最近の調子・モーター実績（修正4。無ければ空）
+        self.extra = {}
+        for name, keys in (("local", ["toban", "venue"]), ("form", ["toban"]), ("motor", ["venue", "motor_no"])):
+            path = self.dir / f"stats_{name}.csv.gz"
+            t = pd.read_csv(path, dtype={k: str for k in keys}) if path.exists() else pd.DataFrame(columns=keys)
+            self.extra[name] = t.assign(date=self.stats_date)
         self.mtime = (self.dir / "meta.json").stat().st_mtime
 
     @property
@@ -47,6 +53,7 @@ class MLPredictor:
             rows.append({
                 "race_id": "live", "date": self.stats_date, "venue": card.jcd, "lane": e.boat,
                 "course": courses[e.boat], "toban": e.toban, "grade_o": ds.GRADE_ORD.get(e.grade, np.nan),
+                "motor_no": str(e.motor_no) if e.motor_no else np.nan,
                 "motor_2": e.motor_2, "f_recent": float(e.f_count or 0),
                 "ex_time": b.exhibition_time if b else np.nan,
                 "ex_st": b.start_st if b else np.nan,
@@ -61,6 +68,7 @@ class MLPredictor:
         for c, (lo, hi) in ds.ORIG_BOUNDS.items():
             df.loc[~df[c].between(lo, hi), c] = np.nan
         df = ds.apply_stats(df, self.pc, self.pa, self.meta["priors"])
+        df = ds.apply_extra(df, self.extra)
         return df
 
     def predict(self, card, before=None) -> Optional[dict]:
@@ -93,7 +101,7 @@ class MLPredictor:
                 "start_order": float(df[order].iloc[i]),
                 "n_c": int(df["n_c"].iloc[i]),
             }
-        return {"engine": "lightgbm-post" if use_post else "lightgbm-pre", "boats": out}
+        return {"engine": "lightgbm-post" if use_post else "lightgbm-pre", "boats": out, "pl_decay": self.meta.get("pl_decay")}
 
 
 _cached: Optional[MLPredictor] = None

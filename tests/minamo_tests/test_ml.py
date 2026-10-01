@@ -71,7 +71,8 @@ def test_training_beats_course_baseline(trained):
     m = meta["metrics"]
     assert m["pre"]["logloss"] < m["baseline"]["logloss"]
     assert meta["adopt"] is True
-    assert json.loads((out / "meta.json").read_text())["pre_features"] == ds.BASE_FEATURES
+    saved = json.loads((out / "meta.json").read_text())
+    assert saved["pre_features"] == (ds.BASE_FEATURES if saved["extra_adopt"] else ds.BASE_FEATURES_V1)
 
 
 def meta_orig(out):
@@ -213,3 +214,50 @@ def test_original_features_within_race():
     assert out.loc[1, "lap_rank"] == 1 and out.loc[1, "lap_rel"] < 0
     assert out.loc[6:, "lap_rel"].isna().all()  # 3艇しかないレースは使わない
     assert out["straight_rel"].isna().all()
+
+
+def test_asof_window_uses_only_prior_days_in_window():
+    d = pd.DataFrame({"toban": ["a"] * 3, "date": pd.to_datetime(["2025-01-01", "2025-03-01", "2025-05-01"]), "win": [1.0, 1.0, 1.0]})
+    out = ds.asof(d, ["toban"], ["win"], window_days=90, next_date=pd.Timestamp("2025-05-02"))
+    got = dict(zip(out["date"].dt.strftime("%m%d"), out["win"]))
+    assert got == {"0101": 0, "0301": 1, "0501": 1, "0502": 2}  # 当日分は入れず、90日より前は落とす
+
+
+def test_extra_features_reach_live(trained):
+    out, meta = trained
+    assert meta["pl_decay"] and 0.5 <= meta["pl_decay"] <= 1.0
+    for name in ("local", "form", "motor"):
+        assert (out / f"stats_{name}.csv.gz").exists()
+    from minamo.ml import live
+
+    pred = live.MLPredictor(out)
+    motor = pd.read_csv(out / "stats_motor.csv.gz", dtype=str).iloc[0]
+    tobans = list(pd.read_csv(out / "stats_local.csv.gz", dtype=str)["toban"].unique()[:6])
+    from minamo.models import Entry, RaceCard
+
+    card = RaceCard(date="20250315", jcd=motor["venue"], rno=1, entries=[
+        Entry(boat=i + 1, toban=t, name="x", grade="B1", motor_no=int(motor["motor_no"]) if i == 0 else None) for i, t in enumerate(tobans)])
+    df = pred.frame(card)
+    assert df.loc[0, "n_m"] > 0 and df["n_90"].notna().all() and df["win_v"].notna().all()
+
+
+def test_old_model_without_extra_tables_still_predicts(trained, tmp_path, monkeypatch):
+    import shutil
+
+    from minamo.ml import live
+    from minamo.models import Entry, RaceCard
+
+    out, _ = trained
+    old = tmp_path / "old"
+    shutil.copytree(out, old)
+    for name in ("local", "form", "motor"):
+        (old / f"stats_{name}.csv.gz").unlink()
+    meta = json.loads((old / "meta.json").read_text())
+    meta["pre_features"], meta["post_features"] = ds.BASE_FEATURES_V1, None
+    meta.pop("pl_decay")
+    (old / "meta.json").write_text(json.dumps(meta))
+    tobans = list(pd.read_csv(old / "stats_course.csv.gz", dtype={"toban": str})["toban"].unique()[:6])
+    pred = live.MLPredictor(old)
+    card = RaceCard(date="20250315", jcd="12", rno=1, entries=[Entry(boat=i + 1, toban=t, name="x", grade="B1") for i, t in enumerate(tobans)])
+    df = pred.frame(card)
+    assert (df["n_m"] == 0).all()

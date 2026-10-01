@@ -27,6 +27,8 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
             "st": [st + rng.gauss(0, 0.01) for _ in range(6)],
         })
     facts, exh, motors, orig = [], [], [], []
+    # 場ごとのモーター（実力は隠れていて、2連率の表示は半分くらいしか当てにならない）
+    pool = {f"{v:02d}": [rng.gauss(0, 1) for _ in range(40)] for v in range(1, 25)}
     d0 = date(2025, 1, 1)
     for d in range(days):
         day = (d0 + timedelta(days=d)).strftime("%Y%m%d")
@@ -37,11 +39,13 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
             sts = [max(0.01, rng.gauss(r["st"][c], 0.03)) for c, r in enumerate(field)]
             order = sorted(range(6), key=lambda i: sts[i])
             srank = {i: order.index(i) + 1 for i in range(6)}
-            motor = [rng.gauss(35, 8) for _ in range(6)]
+            mnos = rng.sample(range(40), 6)
+            mq = [pool[venue][m] for m in mnos]
+            motor = [35 + 4 * q + rng.gauss(0, 6) for q in mq]
             feel = [rng.gauss(0, 1) for _ in range(6)]  # その日の足（オリジナル展示にだけ表れる）
             util = []
             for i, r in enumerate(field):
-                u = COURSE_BASE[i] + r["skill"] + (motor[i] - 35) * 0.02 + 0.5 * feel[i]
+                u = COURSE_BASE[i] + r["skill"] + 0.35 * mq[i] + 0.5 * feel[i]
                 u -= 0.35 * (srank[i] - 3.5)
                 if i > 0 and srank[i] + 2 <= srank[i - 1]:
                     u += 0.9  # 内の隣より2つ以上早い → 攻めが決まる
@@ -67,7 +71,7 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
                     "toban": r["toban"], "grade": r["grade"],
                     "start_rank": srank[i] if rng.random() > 0.2 else "",
                     "st": f"{sts[i]:.2f}", "st_hundredths": round(sts[i] * 100), "finish": finish[i],
-                    "race_f": "0", "race_l": "0", "motor_no": 10 + i, "result_status": "FINISHED",
+                    "race_f": "0", "race_l": "0", "motor_no": mnos[i] + 1, "result_status": "FINISHED",
                     "source_type": "SYN", "updated_at": f"{day}T12:00:00Z",
                 })
                 exh.append({
@@ -86,7 +90,7 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
                         "captured_at": "0000-biyori",
                     })
                 motors.append({
-                    "race_date": day, "venue": venue, "race_no": rno, "lane": lane, "motor_no": 10 + i,
+                    "race_date": day, "venue": venue, "race_no": rno, "lane": lane, "motor_no": mnos[i] + 1,
                     "motor_2": f"{motor[i]:.1f}", "motor_win": "", "motor_rank": "", "captured_at": f"{day}T09:00:00Z",
                 })
     out_dir = Path(out_dir)
