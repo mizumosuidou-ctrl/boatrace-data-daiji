@@ -26,7 +26,7 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
             "skill": rng.gauss(0, 0.5),
             "st": [st + rng.gauss(0, 0.01) for _ in range(6)],
         })
-    facts, exh, motors = [], [], []
+    facts, exh, motors, orig = [], [], [], []
     d0 = date(2025, 1, 1)
     for d in range(days):
         day = (d0 + timedelta(days=d)).strftime("%Y%m%d")
@@ -38,9 +38,10 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
             order = sorted(range(6), key=lambda i: sts[i])
             srank = {i: order.index(i) + 1 for i in range(6)}
             motor = [rng.gauss(35, 8) for _ in range(6)]
+            feel = [rng.gauss(0, 1) for _ in range(6)]  # その日の足（オリジナル展示にだけ表れる）
             util = []
             for i, r in enumerate(field):
-                u = COURSE_BASE[i] + r["skill"] + (motor[i] - 35) * 0.02
+                u = COURSE_BASE[i] + r["skill"] + (motor[i] - 35) * 0.02 + 0.5 * feel[i]
                 u -= 0.35 * (srank[i] - 3.5)
                 if i > 0 and srank[i] + 2 <= srank[i - 1]:
                     u += 0.9  # 内の隣より2つ以上早い → 攻めが決まる
@@ -75,6 +76,15 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
                     "ex_st": f"{max(0.01, sts[i] + rng.gauss(0, 0.03)):.2f}", "ex_course": lane, "tilt": "-0.5",
                     "weight": "52.0", "parts_exchange": "", "captured_at": f"{day}T11:00:00Z",
                 })
+                if d >= days * 0.55:  # 直近だけ（ボートレース日和の6か月分のつもり）
+                    orig.append({
+                        "race_date": day, "venue": venue, "race_no": rno, "lane": lane, "toban": r["toban"],
+                        "exhibition_time": "", "ex_st": "", "ex_course": "", "tilt": "", "weight": "",
+                        "lap_time": f"{37.8 - 0.25 * feel[i] + rng.gauss(0, 0.15):.2f}",
+                        "turn_time": f"{5.9 - 0.12 * feel[i] + rng.gauss(0, 0.08):.2f}",
+                        "straight_time": "" if venue == "12" else f"{6.9 - 0.04 * feel[i] + rng.gauss(0, 0.05):.2f}",
+                        "captured_at": "0000-biyori",
+                    })
                 motors.append({
                     "race_date": day, "venue": venue, "race_no": rno, "lane": lane, "motor_no": 10 + i,
                     "motor_2": f"{motor[i]:.1f}", "motor_win": "", "motor_rank": "", "captured_at": f"{day}T09:00:00Z",
@@ -84,3 +94,4 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
     pd.DataFrame(facts).to_csv(out_dir / "facts.csv", index=False)
     pd.DataFrame(exh).to_csv(out_dir / "exhibition.csv", index=False)
     pd.DataFrame(motors).to_csv(out_dir / "motors.csv", index=False)
+    pd.DataFrame(orig).to_csv(out_dir / "original.csv", index=False)

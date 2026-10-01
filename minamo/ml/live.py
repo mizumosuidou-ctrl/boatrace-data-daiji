@@ -51,10 +51,15 @@ class MLPredictor:
                 "ex_time": b.exhibition_time if b else np.nan,
                 "ex_st": b.start_st if b else np.nan,
                 "tilt": b.tilt if b else np.nan,
+                "lap_time": getattr(b, "lap_time", None) if b else np.nan,
+                "turn_time": getattr(b, "turn_time", None) if b else np.nan,
+                "straight_time": getattr(b, "straight_time", None) if b else np.nan,
             })
         df = pd.DataFrame(rows)
-        for c in ("motor_2", "ex_time", "ex_st", "tilt"):
+        for c in ("motor_2", "ex_time", "ex_st", "tilt", "lap_time", "turn_time", "straight_time"):
             df[c] = pd.to_numeric(df[c], errors="coerce")
+        for c, (lo, hi) in ds.ORIG_BOUNDS.items():
+            df.loc[~df[c].between(lo, hi), c] = np.nan
         df = ds.apply_stats(df, self.pc, self.pa, self.meta["priors"])
         return df
 
@@ -66,7 +71,7 @@ class MLPredictor:
             df = ds.add_race_features(df, with_ex=use_post)
             feats = self.meta["post_features"] if use_post else self.meta["pre_features"]
             booster = self.post if use_post else self.pre
-            X = df[feats].astype(float)
+            X = df.reindex(columns=feats).astype(float)
             raw = booster.predict(X)
             p = np.clip(raw, 1e-6, 1 - 1e-6)
             p = p / p.sum()

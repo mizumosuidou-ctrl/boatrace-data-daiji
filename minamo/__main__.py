@@ -5,6 +5,9 @@
   python -m minamo tick [YYYYMMDD]  1回だけ直前情報・結果を更新
   python -m minamo demo [--days N]  架空データでサイトを確認
   python -m minamo serve [--port]   web/ をローカル配信
+  python -m minamo ml-train         LightGBMを学習（var/ml/raw のCSVから）
+  python -m minamo ml-backfill      過去の展示データを公式サイトから取り寄せる
+  python -m minamo ml-original      過去のオリジナル展示をボートレース日和から取り寄せる
 """
 from __future__ import annotations
 
@@ -34,6 +37,13 @@ def main() -> None:
     mlt.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
     mlt.add_argument("--test-days", type=int, default=90)
     sub.add_parser("ml-synthetic", help="動作確認用の架空CSVを var/ml/raw に作る")
+    mlb = sub.add_parser("ml-backfill", help="過去の展示データを公式サイトから取り寄せる（1秒1件）")
+    mlb.add_argument("--from", dest="date_from", default="20250101")
+    mlb.add_argument("--to", dest="date_to", default="20991231")
+    mlb.add_argument("--limit", type=int, default=None)
+    mlo = sub.add_parser("ml-original", help="過去のオリジナル展示（一周・まわり足・直線）をボートレース日和から取り寄せる（3〜5秒に1件）")
+    mlo.add_argument("--days", type=int, default=183, help="さかのぼる日数（既定 183＝約6か月）")
+    mlo.add_argument("--limit", type=int, default=None)
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -45,11 +55,17 @@ def main() -> None:
 
         generate(days=args.days, venues=args.venues)
         print(f"demo data written to {store.DATA_DIR}")
-    elif args.cmd in ("ml-train", "ml-synthetic"):
-        from .ml import live, synthetic, train
+    elif args.cmd in ("ml-train", "ml-synthetic", "ml-backfill", "ml-original"):
+        from .ml import backfill, biyori, live, synthetic, train
 
         raw = Path(getattr(args, "raw", None) or live.ML_DIR / "raw")
-        if args.cmd == "ml-synthetic":
+        if args.cmd == "ml-original":
+            n = biyori.run(raw, days=args.days, limit=args.limit)
+            print(f"取り寄せ完了: オリジナル展示ありのレース {n} 件")
+        elif args.cmd == "ml-backfill":
+            n = backfill.run(raw, args.date_from, args.date_to, args.limit)
+            print(f"取り寄せ完了: 展示ありのレース {n} 件")
+        elif args.cmd == "ml-synthetic":
             synthetic.generate(raw)
             print(f"synthetic CSV written to {raw}")
         else:

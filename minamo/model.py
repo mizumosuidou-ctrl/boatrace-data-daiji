@@ -39,6 +39,7 @@ FACTOR_LABELS = {
     "tenkai": "展開(ST順差)",
     "exhibition": "展示タイム",
     "exh_st": "展示ST",
+    "original": "オリジナル展示",
     "flying": "F持ち",
     "grade": "級別",
     "wind": "風",

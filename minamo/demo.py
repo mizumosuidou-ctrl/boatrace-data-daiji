@@ -81,12 +81,17 @@ def _before(rng: random.Random, entries: list[Entry]) -> BeforeInfo:
     boat_by_course = {c: e.boat for c, e in zip(courses, entries)}
     course_of = {b: c for c, b in boat_by_course.items()}
     bes = []
+    orig = rng.random() < 0.5  # オリジナル展示を出している場のつもり
     for e in entries:
         base = 6.78 - (e.motor_2 - 36) * 0.0025 + rng.gauss(0, 0.045)
         st = round(max(0.01, rng.gauss(e.avg_st or 0.16, 0.04)), 2)
         if rng.random() < 0.03:
             st = -0.02
-        bes.append(BeforeEntry(boat=e.boat, weight=e.weight, exhibition_time=round(base, 2), tilt=rng.choice([-0.5, -0.5, 0.0, 0.5]), course=course_of[e.boat], start_st=st))
+        feel = (6.78 - base) * 10 + rng.gauss(0, 0.3)
+        bes.append(BeforeEntry(boat=e.boat, weight=e.weight, exhibition_time=round(base, 2), tilt=rng.choice([-0.5, -0.5, 0.0, 0.5]), course=course_of[e.boat], start_st=st,
+                               lap_time=round(37.8 - 0.25 * feel + rng.gauss(0, 0.15), 2) if orig else None,
+                               turn_time=round(5.9 - 0.12 * feel + rng.gauss(0, 0.08), 2) if orig else None,
+                               straight_time=round(6.9 - 0.04 * feel + rng.gauss(0, 0.05), 2) if orig else None))
     return BeforeInfo(
         entries=bes,
         weather=rng.choice(["晴", "晴", "曇り", "曇り", "雨"]),

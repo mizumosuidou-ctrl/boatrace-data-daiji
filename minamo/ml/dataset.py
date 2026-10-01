@@ -42,6 +42,11 @@ EX_FEATURES = [
     "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap",
     "combo_start_order",
 ]
+# オリジナル展示（一周・まわり足・直線）。場ごとに区間が違うので、レース内の差と順位だけ
+ORIG_FEATURES = [
+    "lap_rel", "lap_rank", "turn_rel", "turn_rank", "straight_rel", "straight_rank",
+]
+ORIG_BOUNDS = {"lap_time": (15.0, 45.0), "turn_time": (3.0, 15.0), "straight_time": (5.0, 10.0)}
 
 # 画面の「要因」表示用のまとまり
 FACTOR_GROUPS = {
@@ -53,6 +58,7 @@ FACTOR_GROUPS = {
     "motor": ["motor_2", "motor_2_rel"],
     "exhibition": ["ex_time_rel", "ex_time_rank", "tilt"],
     "exh_st": ["ex_st", "ex_st_rank"],
+    "original": ORIG_FEATURES,
     "flying": ["f_recent"],
 }
 
@@ -149,9 +155,16 @@ def load_facts(path: Path) -> pd.DataFrame:
 
 def load_exhibition(path: Optional[Path]) -> pd.DataFrame:
     cols = ["race_id", "lane", "ex_time", "ex_st", "ex_course", "tilt"]
-    if not path or not Path(path).exists():
+    frames = []
+    if path and Path(path).exists():
+        frames.append(pd.read_csv(path, dtype=str))
+    for name in ("exhibition_backfill.csv", "original.csv"):  # 公式サイト・ボートレース日和から取り寄せた過去分
+        extra = Path(path).with_name(name) if path else None
+        if extra and extra.exists():
+            frames.append(pd.read_csv(extra, dtype=str))
+    if not frames:
         return pd.DataFrame(columns=cols)
-    ex = pd.read_csv(path, dtype=str)
+    ex = pd.concat(frames, ignore_index=True)
     ex["race_date"] = ex["race_date"].str.replace("-", "", regex=False).str[:8]
     ex["venue"] = ex["venue"].str.zfill(2)
     ex["race_no"] = _num(ex["race_no"])
@@ -166,6 +179,26 @@ def load_exhibition(path: Optional[Path]) -> pd.DataFrame:
     ex["ex_course"] = _num(ex["ex_course"])
     ex["tilt"] = _num(ex["tilt"])
     return ex[cols]
+
+
+def load_original(path: Optional[Path]) -> pd.DataFrame:
+    """ボートレース日和から取り寄せたオリジナル展示（一周・まわり足・直線）。"""
+    cols = ["race_id", "lane"] + list(ORIG_BOUNDS)
+    if not path or not Path(path).exists():
+        return pd.DataFrame(columns=cols)
+    o = pd.read_csv(path, dtype=str, usecols=lambda c: c in {"race_date", "venue", "race_no", "lane", *ORIG_BOUNDS})
+    o["race_date"] = o["race_date"].str.replace("-", "", regex=False).str[:8]
+    o["venue"] = o["venue"].str.zfill(2)
+    o["race_no"] = _num(o["race_no"])
+    o["lane"] = _num(o["lane"])
+    o = o.dropna(subset=["race_date", "venue", "race_no", "lane"])
+    o = o.drop_duplicates(["race_date", "venue", "race_no", "lane"], keep="last")
+    o["race_id"] = _race_id(o)
+    o["lane"] = o["lane"].astype(int)
+    for c, (lo, hi) in ORIG_BOUNDS.items():
+        o[c] = _num(o.get(c, pd.Series(index=o.index, dtype=float)))
+        o.loc[~o[c].between(lo, hi), c] = np.nan
+    return o[cols]
 
 
 def load_motors(path: Optional[Path]) -> pd.DataFrame:
@@ -324,6 +357,20 @@ def add_race_features(df: pd.DataFrame, with_ex: bool) -> pd.DataFrame:
         # 過去のスタート順位と展示STの順位を合わせた予想スタート順
         combo = 0.5 * df["pred_start_order"] + 0.5 * df["ex_st_rank"].fillna(df["pred_start_order"])
         df["combo_start_order"] = combo.groupby(df["race_id"]).rank(method="average")
+        add_original(df)
+    return df
+
+
+def add_original(df: pd.DataFrame) -> pd.DataFrame:
+    """一周・まわり足・直線を、同じレースの平均との差と順位に直す（速いほど小さい）。"""
+    for col, name in (("lap_time", "lap"), ("turn_time", "turn"), ("straight_time", "straight")):
+        if col not in df:
+            df[col] = np.nan
+        v = pd.to_numeric(df[col], errors="coerce")
+        g = v.groupby(df["race_id"])
+        enough = g.transform("count") >= 4  # 4艇以上そろったレースだけ
+        df[f"{name}_rel"] = (v - g.transform("mean")).where(enough)
+        df[f"{name}_rank"] = g.rank(method="average").where(enough)
     return df
 
 
@@ -353,6 +400,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     gc.collect()
     rows = rows.merge(load_exhibition(raw_dir / "exhibition.csv"), on=["race_id", "lane"], how="left")
     rows = rows.merge(load_motors(raw_dir / "motors.csv"), on=["race_id", "lane"], how="left")
+    rows = rows.merge(load_original(raw_dir / "original.csv"), on=["race_id", "lane"], how="left")
     # 予想に使う進入：展示進入があればそれ、無ければ実際の進入
     rows["course"] = rows["ex_course"].where(rows["ex_course"].between(1, 6), rows["course"])
     dup = rows.groupby("race_id")["course"].transform(lambda s: s.duplicated(keep=False).any())
@@ -363,7 +411,8 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows = add_race_features(rows, with_ex=True)
     rows["win"] = (rows["finish"] == 1).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
-    keep = set(BASE_FEATURES + EX_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "has_ex", "course"])
+    rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":

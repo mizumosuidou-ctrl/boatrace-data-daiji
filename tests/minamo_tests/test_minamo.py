@@ -187,6 +187,15 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "STATE_DIR", tmp_path / "state")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    # 場の公式サイト（オリジナル展示）には行かず、決まった値を返す
+    calls = []
+
+    def fake_original(jcd, date, rno, today):
+        calls.append((jcd, date, rno))
+        return [{"course": b, "name": None, "lap_time": 37.5 + b / 10, "turn_time": 5.8, "straight_time": None} for b in range(1, 7)]
+
+    monkeypatch.setattr(pipeline.venue_original, "fetch", fake_original)
+    monkeypatch.setattr(pipeline, "_ORIG_CALLS", calls, raising=False)
     return tmp_path
 
 
@@ -211,8 +220,14 @@ def test_pipeline_full_day(sandbox):
     race = json.loads(race_file.read_text())
     assert race["stage"] == "exhibition" and race["weather"]["wind_speed"] == 6
     assert race["odds"] and race["entries"][3]["ex_course"] == 3
+    assert race["entries"][0]["lap_time"] == pytest.approx(37.6) and race["entries"][0]["straight_time"] is None
     # 直後は再取得しない（間隔制御）
     assert pipe.tick(date, deadline - timedelta(minutes=19)) == 0
+    # オリジナル展示は一度取れたら取り直さない
+    from minamo import pipeline as pl
+
+    assert pipe.tick(date, deadline - timedelta(minutes=10)) == 1
+    assert len(pl._ORIG_CALLS) == 1
     # 締切後：結果を照合
     assert pipe.tick(date, deadline + timedelta(minutes=10)) == 1
     race = json.loads(race_file.read_text())

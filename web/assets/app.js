@@ -338,7 +338,7 @@ function scrollCellsToNow(root) {
 /* ------------------------------------------------------------ race */
 const WIND_DIR = (n) => (n ? ((n - 1) * 22.5) : null);
 const FACTOR_KEYS_MODEL = [["skill", "選手力"], ["local", "当地"], ["motor", "モーター"], ["boat", "ボート"], ["start", "平均ST"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["flying", "F"], ["grade", "級別"], ["wind", "風"]];
-const FACTOR_KEYS_ML = [["course", "コース"], ["start", "スタート力"], ["tenkai", "展開(ST順差)"], ["skill", "選手力"], ["motor", "モーター"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["flying", "F"]];
+const FACTOR_KEYS_ML = [["course", "コース"], ["start", "スタート力"], ["tenkai", "展開(ST順差)"], ["skill", "選手力"], ["motor", "モーター"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["original", "ｵﾘｼﾞﾅﾙ展示"], ["flying", "F"]];
 const isML = (P) => String(P.engine || "").startsWith("lightgbm");
 const factorKeys = (P) => (isML(P) ? FACTOR_KEYS_ML : FACTOR_KEYS_MODEL);
 const ENGINE_LABEL = { "lightgbm-pre": "LightGBM · 展示前", "lightgbm-post": "LightGBM · 展示反映", model: "統計モデル" };
@@ -366,7 +366,10 @@ function sheetHtml(race) {
   const cols = [
     ["全国勝率", "nat_win", false, 2], ["全国2連", "nat_2", false, 1], ["当地勝率", "loc_win", false, 2],
     ["モーター2連", "motor_2", false, 1], ["ボート2連", "boat_2", false, 1], ["平均ST", "avg_st", true, 2],
-    ["展示T", "exhibition_time", true, 2], ["展示ST", "ex_st", true, 2], ["チルト", "tilt", null, 1], ["体重", "weight", null, 1],
+    ["展示T", "exhibition_time", true, 2], ["展示ST", "ex_st", true, 2],
+    // オリジナル展示（場の公式サイト）。区間が場ごとに違うので、色付けはレース内の順位だけ
+    ...[["一周", "lap_time", true, 2], ["まわり足", "turn_time", true, 2], ["直線", "straight_time", true, 2]].filter(([, k]) => E.some((e) => e[k] != null)),
+    ["チルト", "tilt", null, 1], ["体重", "weight", null, 1],
   ];
   const fmt = (v, d) => (v == null || v === 0 && d === 2 && false ? "--" : typeof v === "number" ? v.toFixed(d) : "--");
   const rows = E.map((e, i) => `<tr>

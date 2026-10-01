@@ -110,7 +110,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     }
 
     # 展示後モデル：展示データがある期間だけで、前60%学習・次15%調整・最後25%検証
-    post, post_adopt = None, False
+    post, post_adopt, orig_adopt = None, False, False
     ex_rows = rows[rows["has_ex"]]
     ex_dates = np.sort(ex_rows["date"].unique())
     if len(ex_rows) > 3000 and len(ex_dates) >= 20:
@@ -125,6 +125,24 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         metrics["pre_ex_races"] = evaluate(te_x, normalize(te_x, pre.predict(te_x[pre_feats])))
         metrics["post"] = evaluate(te_x, normalize(te_x, post.predict(te_x[post_feats])))
         post_adopt = metrics["post"]["logloss"] < metrics["pre_ex_races"]["logloss"]
+
+        # オリジナル展示（一周・まわり足・直線）：データがある期間で前60%学習・次15%調整・最後25%検証。
+        # 同じ分け方で「オリジナル展示なし」も作り直し、同じレースで比べる。
+        o_dates = np.sort(ex_rows.loc[ex_rows["has_orig"], "date"].unique())
+        if ex_rows["has_orig"].sum() > 3000 and len(o_dates) >= 20:
+            cv_o, ct_o = o_dates[int(len(o_dates) * 0.60)], o_dates[int(len(o_dates) * 0.75)]
+            tr_o = ex_rows[ex_rows["date"] < cv_o]
+            va_o = ex_rows[(ex_rows["date"] >= cv_o) & (ex_rows["date"] < ct_o)]
+            te_o = ex_rows[ex_rows["date"] >= ct_o]
+            log.info("original rows=%d train=%d valid=%d test=%d", int(ex_rows["has_orig"].sum()), len(tr_o), len(va_o), len(te_o))
+            orig_feats = post_feats + ds.ORIG_FEATURES
+            post_n = _fit(tr_o, va_o, post_feats)
+            post_o = _fit(tr_o, va_o, orig_feats)
+            metrics["orig_pre"] = evaluate(te_o, normalize(te_o, pre.predict(te_o[pre_feats])))
+            metrics["orig_post"] = evaluate(te_o, normalize(te_o, post_n.predict(te_o[post_feats])))
+            metrics["orig_post_orig"] = evaluate(te_o, normalize(te_o, post_o.predict(te_o[orig_feats])))
+            if metrics["orig_post_orig"]["logloss"] < min(metrics["orig_post"]["logloss"], metrics["orig_pre"]["logloss"]):
+                post, post_feats, post_adopt, orig_adopt = post_o, orig_feats, True, True
 
     imp = pd.Series(pre.feature_importance("gain"), index=pre_feats).sort_values(ascending=False)
     pre.save_model(str(out_dir / "model_pre.txt"))
@@ -145,6 +163,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         "pre_features": pre_feats,
         "post_features": post_feats if post is not None and post_adopt else None,
         "post_adopt": bool(post_adopt),
+        "orig_adopt": bool(orig_adopt),
         "priors": priors,
         "metrics": metrics,
         "importance": {k: round(float(v), 1) for k, v in imp.head(15).items()},
@@ -162,8 +181,9 @@ def summary_ja(meta: dict) -> str:
         f"{'':14}{'1着的中':>8}{'3連単1点':>9}{'5点':>7}{'10点':>7}{'対数損失':>9}",
     ]
     names = {"baseline": "基準(コース)", "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
-             "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後"}
-    for key in ("baseline", "pre", "baseline_ex_races", "pre_ex_races", "post"):
+             "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後",
+             "orig_pre": "└直近 展示前", "orig_post": "└直近 展示後", "orig_post_orig": "└直近 +ｵﾘｼﾞﾅﾙ"}
+    for key in ("baseline", "pre", "baseline_ex_races", "pre_ex_races", "post", "orig_pre", "orig_post", "orig_post_orig"):
         if key in m:
             r = m[key]
             lines.append(f"{names[key]:<14}{r['fav_win']*100:7.1f}%{r['tri_top1']*100:8.1f}%{r['tri_top5']*100:6.1f}%{r['tri_top10']*100:6.1f}%{r['logloss']:9.3f}")
@@ -172,4 +192,6 @@ def summary_ja(meta: dict) -> str:
     lines.append("採用: " + ("する（基準より良い）" if meta["adopt"] else "しない（基準を下回った）"))
     if "post" in m:
         lines.append("展示後モデル: " + ("使う（同じレースで展示前より良い）" if meta.get("post_adopt") else "使わない（展示前の方が良い）"))
+    if "orig_post_orig" in m:
+        lines.append("オリジナル展示（一周・まわり足・直線）: " + ("使う（入れた方が良い）" if meta.get("orig_adopt") else "使わない（入れても良くならない）"))
     return "\n".join(lines)

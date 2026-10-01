@@ -16,7 +16,7 @@ from typing import Optional
 
 import requests
 
-from . import parsers, store
+from . import parsers, store, venue_original
 from .analyst import analyze, fallback_analysis
 from .fetcher import Fetcher
 from .model import predict
@@ -28,6 +28,7 @@ STATE_DIR = Path(os.environ.get("MINAMO_STATE_DIR", Path(__file__).resolve().par
 PRE_WINDOW = timedelta(minutes=int(os.environ.get("MINAMO_PRE_WINDOW_MIN", "30")))
 BEFORE_REFRESH = timedelta(minutes=int(os.environ.get("MINAMO_BEFORE_REFRESH_MIN", "4")))
 RESULT_DELAY = timedelta(minutes=int(os.environ.get("MINAMO_RESULT_DELAY_MIN", "6")))
+ORIG_TRIES = 4  # オリジナル展示を場のサイトに取りに行く回数（展示後、数分おき）
 AI_EARLY = os.environ.get("MINAMO_AI_EARLY", "0") == "1"  # 出走表段階でもClaudeを呼ぶか
 
 
@@ -156,16 +157,40 @@ class Pipeline:
     def _refresh(self, date: str, vd: VenueDay, rno: int, st: dict, now: datetime) -> None:
         before = parsers.parse_beforeinfo(self.fetcher.beforeinfo(date, vd.jcd, rno))
         odds = parsers.parse_odds3t(self.fetcher.odds3t(date, vd.jcd, rno))
+        card = _card_from(st["card"])
+        new_orig = before.complete and self._original(date, vd.jcd, rno, st, card, now)
+        for b in before.entries:
+            o = (st.get("orig") or {}).get(str(b.boat)) or {}
+            b.lap_time, b.turn_time, b.straight_time = o.get("lap_time"), o.get("turn_time"), o.get("straight_time")
         st["before"] = asdict(before)
         st["odds"] = odds or st.get("odds")
         st["before_at"] = now.isoformat()
-        if before.complete and st.get("ai_stage") != "exhibition":
-            card = _card_from(st["card"])
+        if before.complete and (st.get("ai_stage") != "exhibition" or new_orig):
             pred = predict(card, before, odds or None)
             st["ai"] = analyze(card, before, pred, odds or None) if self.ai_enabled else analyze_offline(card, before, pred, odds)
             st["ai_stage"] = "exhibition"
         self._save(date, f"{vd.jcd}-{rno:02d}", st)
         self.publish(date, vd.jcd, rno, vd)
+
+    def _original(self, date: str, jcd: str, rno: int, st: dict, card: RaceCard, now: datetime) -> bool:
+        """場の公式サイトからオリジナル展示（一周・まわり足・直線）を取る。新しく取れたら True。"""
+        tries = st.get("orig_tries", 0)
+        if st.get("orig") or tries >= ORIG_TRIES:
+            return False
+        try:
+            rows = venue_original.fetch(jcd, date, rno, now.strftime("%Y%m%d"))
+        except Exception as exc:  # noqa: BLE001 — 場のサイトの不調で予想を止めない
+            log.warning("original exhibition %s %s %dR: %s", date, jcd, rno, exc)
+            rows = []
+        if rows is None:  # 対応していない場
+            st["orig_tries"] = ORIG_TRIES
+            return False
+        st["orig_tries"] = tries + 1
+        got = venue_original.by_boat(rows, card.entries)
+        if not got:
+            return False
+        st["orig"] = {str(b): v for b, v in got.items()}
+        return True
 
     def _settle(self, date: str, vd: VenueDay, rno: int, st: dict) -> bool:
         tries = st.get("result_tries", 0)

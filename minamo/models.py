@@ -56,6 +56,10 @@ class BeforeEntry:
     tilt: Optional[float] = None
     course: Optional[int] = None  # 展示進入コース
     start_st: Optional[float] = None  # 展示ST（Fは負値）
+    # 各場の公式サイトのオリジナル展示（場ごとに区間が違うのでレース内で比べる）
+    lap_time: Optional[float] = None  # 一周（桐生は半周）
+    turn_time: Optional[float] = None  # まわり足
+    straight_time: Optional[float] = None  # 直線
 
 
 @dataclass

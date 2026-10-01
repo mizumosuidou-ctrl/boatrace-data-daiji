@@ -26,6 +26,7 @@ SYSTEM_PROMPT = """あなたはボートレース（競艇）の予想家「MINA
 
 方針:
 - 展開は「予想スタート順」の差を軸に読む。内側の艇より早く出る艇は攻め（まくり・まくり差し）、1コースが遅れると逃げが崩れる。
+- 一周・まわり足・直線（オリジナル展示）は場ごとに計測区間が違う。同じレース内の比較（速い・遅い）だけに使う。
 - 数字に根拠のない断定はしない。データにない情報（選手の私生活、噂など）は書かない。
 - 統計モデルと意見が異なる場合は、その理由をデータで示す。
 - 見出しは28字以内で、レースの核心を突く一文にする。
@@ -73,6 +74,7 @@ def race_brief(card: RaceCard, before: Optional[BeforeInfo], pred: Prediction, o
             "当地勝率": e.loc_win, "モーター2連率": e.motor_2, "ボート2連率": e.boat_2,
             "展示タイム": b.exhibition_time if b else None, "チルト": b.tilt if b else None,
             "展示進入": b.course if b else None, "展示ST": b.start_st if b else None,
+            "一周": b.lap_time if b else None, "まわり足": b.turn_time if b else None, "直線": b.straight_time if b else None,
             "モデル1着率": round(s.win, 3), "モデル3連対率": round(s.top3, 3),
             "予想スタート順": s.start_order,
             "主な加点": {FACTOR_LABELS[k]: round(x, 2) for k, x in s.factors.items() if abs(x) >= 0.08 and k != "course"},

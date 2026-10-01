@@ -98,6 +98,9 @@ def build_race(
             "tilt": b.tilt if b else None,
             "ex_course": b.course if b else None,
             "ex_st": b.start_st if b else None,
+            "lap_time": b.lap_time if b else None,
+            "turn_time": b.turn_time if b else None,
+            "straight_time": b.straight_time if b else None,
         })
         entries.append(d)
     top_combos = [c for c, _ in pred.trifecta[:40]]
