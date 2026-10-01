@@ -128,7 +128,7 @@ function pickHero(races, now) {
 function ribbon(win) {
   const segs = win.map((p, i) => {
     const b = i + 1;
-    const wide = p > 0.14 ? "wide" : "";
+    const wide = p > 0.14 ? "wide" : p < 0.085 ? "tiny" : "";  // 細い区画は％を隠して艇番だけ見せる
     return `<div class="ribbon-seg ${wide}" data-b="${b}" style="${cVar(b)} flex-grow:${Math.max(p, 0.02)}" title="${b}号艇 1着率 ${pct(p, 1)}%"><span class="boatno">${b}</span><span class="pct">${pct(p)}%</span></div>`;
   }).join("");
   return `<div class="ribbon"><div class="ribbon-bar" role="img" aria-label="各艇の1着確率">${segs}</div><div class="ribbon-legend"><span>Win probability</span><span>Model × Claude</span></div></div>`;

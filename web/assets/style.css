@@ -294,6 +294,8 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 }
 .ribbon-seg .boatno { font-family: var(--f-display); font-weight: 900; font-size: 26px; }
 .ribbon-seg .pct { font-family: var(--f-mono); font-size: 12px; font-weight: 700; }
+.ribbon-seg.tiny { justify-content: center; padding: 0; min-width: 34px; }
+.ribbon-seg.tiny .pct { display: none; }
 .ribbon-seg[data-b="2"] { box-shadow: inset 0 0 0 1px rgba(255,255,255,.25); }
 .ribbon-legend { display: flex; justify-content: space-between; margin-top: 8px; font-family: var(--f-mono); font-size: 10px; letter-spacing: .14em; color: var(--muted); text-transform: uppercase; }
 
