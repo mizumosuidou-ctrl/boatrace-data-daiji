@@ -102,22 +102,36 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     pre_feats = ds.BASE_FEATURES
     post_feats = ds.BASE_FEATURES + ds.EX_FEATURES
     pre = _fit(tr, va, pre_feats)
-    tr_x, va_x, te_x = (x[x["has_ex"]] for x in (tr, va, te))
-    post = _fit(tr_x, va_x, post_feats) if len(tr_x) > 1000 and len(va_x) > 100 else None
 
     base = normalize(te, te["course_winrate_prior"].to_numpy())
     metrics = {
         "baseline": evaluate(te, base),
         "pre": evaluate(te, normalize(te, pre.predict(te[pre_feats]))),
     }
-    if post is not None and len(te_x):
-        metrics["post"] = evaluate(te_x, normalize(te_x, post.predict(te_x[post_feats])))
+
+    # 展示後モデル：展示データがある期間だけで、前60%学習・次15%調整・最後25%検証
+    post, post_adopt = None, False
+    ex_rows = rows[rows["has_ex"]]
+    ex_dates = np.sort(ex_rows["date"].unique())
+    if len(ex_rows) > 3000 and len(ex_dates) >= 20:
+        cut_valid = ex_dates[int(len(ex_dates) * 0.60)]
+        cut_test = ex_dates[int(len(ex_dates) * 0.75)]
+        tr_x = ex_rows[ex_rows["date"] < cut_valid]
+        va_x = ex_rows[(ex_rows["date"] >= cut_valid) & (ex_rows["date"] < cut_test)]
+        te_x = ex_rows[ex_rows["date"] >= cut_test]
+        log.info("exhibition rows=%d train=%d valid=%d test=%d", len(ex_rows), len(tr_x), len(va_x), len(te_x))
+        post = _fit(tr_x, va_x, post_feats)
         metrics["baseline_ex_races"] = evaluate(te_x, normalize(te_x, te_x["course_winrate_prior"].to_numpy()))
+        metrics["pre_ex_races"] = evaluate(te_x, normalize(te_x, pre.predict(te_x[pre_feats])))
+        metrics["post"] = evaluate(te_x, normalize(te_x, post.predict(te_x[post_feats])))
+        post_adopt = metrics["post"]["logloss"] < metrics["pre_ex_races"]["logloss"]
 
     imp = pd.Series(pre.feature_importance("gain"), index=pre_feats).sort_values(ascending=False)
     pre.save_model(str(out_dir / "model_pre.txt"))
-    if post is not None:
+    if post is not None and post_adopt:
         post.save_model(str(out_dir / "model_post.txt"))
+    elif (out_dir / "model_post.txt").exists():
+        (out_dir / "model_post.txt").unlink()
 
     # 当日予想用の累積（全期間）
     pc_tot.to_csv(out_dir / "stats_course.csv.gz", index=False)
@@ -129,7 +143,8 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         "data_range": [rows["race_date"].min(), rows["race_date"].max()],
         "test_from": test_start.strftime("%Y%m%d"),
         "pre_features": pre_feats,
-        "post_features": post_feats if post is not None else None,
+        "post_features": post_feats if post is not None and post_adopt else None,
+        "post_adopt": bool(post_adopt),
         "priors": priors,
         "metrics": metrics,
         "importance": {k: round(float(v), 1) for k, v in imp.head(15).items()},
@@ -146,12 +161,15 @@ def summary_ja(meta: dict) -> str:
         "",
         f"{'':14}{'1着的中':>8}{'3連単1点':>9}{'5点':>7}{'10点':>7}{'対数損失':>9}",
     ]
-    names = {"baseline": "基準(コース)", "pre": "LightGBM展示前", "baseline_ex_races": "基準(展示有)", "post": "LightGBM展示後"}
-    for key in ("baseline", "pre", "baseline_ex_races", "post"):
+    names = {"baseline": "基準(コース)", "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
+             "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後"}
+    for key in ("baseline", "pre", "baseline_ex_races", "pre_ex_races", "post"):
         if key in m:
             r = m[key]
             lines.append(f"{names[key]:<14}{r['fav_win']*100:7.1f}%{r['tri_top1']*100:8.1f}%{r['tri_top5']*100:6.1f}%{r['tri_top10']*100:6.1f}%{r['logloss']:9.3f}")
     lines.append("")
     lines.append("効いている要素（上位）: " + "、".join(list(meta["importance"])[:8]))
     lines.append("採用: " + ("する（基準より良い）" if meta["adopt"] else "しない（基準を下回った）"))
+    if "post" in m:
+        lines.append("展示後モデル: " + ("使う（同じレースで展示前より良い）" if meta.get("post_adopt") else "使わない（展示前の方が良い）"))
     return "\n".join(lines)
