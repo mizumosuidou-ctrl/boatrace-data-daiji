@@ -109,6 +109,7 @@ def race_brief(card: RaceCard, before: Optional[BeforeInfo], pred: Prediction, o
         "出走": boats,
         "モデル": {
             "イン逃げ指数": pred.escape or None,
+            "風の補正": pred.wind or None,
             "確信度": pred.confidence, "評価": pred.tier,
             "エンジン": "LightGBM（過去約18万レースのスタート順位・展開から学習）" if pred.engine.startswith("lightgbm") else "統計モデル",
             "決まり手分布": {k: round(x, 2) for k, x in pred.scenario.items()},
@@ -186,6 +187,9 @@ def fallback_analysis(card: RaceCard, pred: Prediction) -> dict:
         points.append(f"イン逃げ指数 {esc['index']}点（{label}）")
     if has_so:
         points.append("予想スタート順位 " + "→".join(str(b.boat) for b in order))
+    if pred.wind and pred.wind.get("category"):
+        w = pred.wind
+        points.append(f"風 {w['category']}{' ' + str(int(w['speed'])) + 'm' if w.get('speed') else ''}{'（安定板）' if w.get('stabilizer') else ''}を反映")
     points.append("相手 " + "".join(_circled(b.boat) for b in partners[:3]) if partners else f"{top.boat}号艇 1着率{top.win*100:.0f}%")
     second = rival[0] if rival else ranked[1]
     return {

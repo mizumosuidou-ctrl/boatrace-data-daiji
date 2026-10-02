@@ -73,6 +73,7 @@ class BeforeInfo:
     wave_cm: Optional[float] = None
     air_temp: Optional[float] = None
     water_temp: Optional[float] = None
+    stabilizer: Optional[bool] = None  # 安定板使用（ページに「安定板使用」と出ているか）
 
     @property
     def complete(self) -> bool:

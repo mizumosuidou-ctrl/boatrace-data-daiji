@@ -262,6 +262,7 @@ def parse_beforeinfo(html: str) -> BeforeInfo:
             if m:
                 info.wind_dir = int(m.group(1))
                 break
+    info.stabilizer = "安定板使用" in soup.get_text()
     return info
 
 
