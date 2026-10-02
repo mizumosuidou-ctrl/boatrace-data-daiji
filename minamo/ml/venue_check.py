@@ -8,6 +8,8 @@
   4. ①の平均スタート順位が早い／遅いときの、①の1着率と、負けたときに2・3着に残る率
   5. そのコースの3連対率（直近1年・10走以上）が70%以上の選手が、実際に3着以内に入った率
   6. 攻めた艇（②③④で一番早く、①より早い）の外隣が2・3着以内に入る率
+  7. オリジナル展示（一周・回り足・直線）のレース内の順位ごとの、1着率と3着以内率
+  8. ①の級別（A1〜B2）と風（弱い風・強い向かい風・強い追い風）ごとの、①の1着率
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from ..venues import VENUES
+from . import dataset as ds
 from . import formation_table as ft
 from . import series as series_mod
 from . import wind_table
@@ -62,6 +65,8 @@ def build(raw: Path, venue: str) -> str:
     name = VENUES[venue].name if venue in VENUES else venue
     weather = wind_table.load_weather(raw)[["race_id", "category", "speed"]]
     top3 = _course_top3(allf[allf["venue"] == venue])
+    orig = ds.load_original(raw / "original.csv")
+    cls = _classes(raw, venue)
     lines = [f"{name}：{df['date'].min().date()}〜{df['date'].max().date()}  {df['race_id'].nunique():,}レース"
              "（女子＝全員女子のレース）", "数字は1〜6コースの1着率（%）"]
 
@@ -130,7 +135,67 @@ def build(raw: Path, venue: str) -> str:
             lines.append("5. そのコースの3連対率70%以上（直近1年・10走以上）の選手 → 実際に3着以内")
             lines.append(f"  全体 {100 * (hi['finish'] <= 3).mean():5.1f}%  ({len(hi)}走)　" + " ".join(
                 f"{c}C {100 * (g['finish'] <= 3).mean():.0f}%({len(g)})" for c, g in hi.groupby("course")))
+        # 7. オリジナル展示の順位
+        o = part.merge(orig, on=["race_id", "lane"], how="inner")
+        if len(o):
+            lines.append("7. オリジナル展示の順位（レース内・速い順）→ 1着率 ／ 3着以内率")
+            for col, tag in (("lap_time", "一周"), ("turn_time", "回り足"), ("straight_time", "直線")):
+                v = pd.to_numeric(o[col], errors="coerce")
+                enough = v.groupby(o["race_id"]).transform("count") >= 5
+                rk = v.groupby(o["race_id"]).rank(method="min").where(enough)
+                if not rk.notna().any():
+                    continue
+                cells = []
+                for r in range(1, 7):
+                    m = rk == r
+                    if m.sum():
+                        cells.append(f"{r}位 {100 * (o.loc[m, 'finish'] == 1).mean():.0f}/{100 * (o.loc[m, 'finish'] <= 3).mean():.0f}")
+                top2 = rk <= 2
+                lines.append(f"  {wind_table._pad(tag, 8)}{' '.join(cells)}  （{int(enough.sum() / 6)}R前後）")
+                lines.append(f"  {wind_table._pad('', 8)}2位以内の3着以内 {100 * (o.loc[top2, 'finish'] <= 3).mean():.1f}%"
+                             f" ／ 3位以下 {100 * (o.loc[rk >= 3, 'finish'] <= 3).mean():.1f}%")
+        # 8. ①の級別 × 風
+        c1 = part[part["course"] == 1].merge(cls, on=["race_id", "lane"], how="left").merge(weather, on="race_id", how="left")
+        if c1["klass"].notna().any():
+            lines.append("8. ①の級別 × 風 → ①1着率（レース数）")
+            bands = (("無風〜2m", lambda d: (d["category"] == "無風") | d["speed"].between(1, 2)),
+                     ("向かい風5m以上", lambda d: (d["category"] == "向かい風") & (d["speed"] >= 5)),
+                     ("追い風5m以上", lambda d: (d["category"] == "追い風") & (d["speed"] >= 5)))
+            for k in ("A1", "A2", "B1", "B2"):
+                g = c1[c1["klass"] == k]
+                if not len(g):
+                    continue
+                cells = []
+                for tag, f in bands:
+                    m = f(g)
+                    if m.sum():
+                        cells.append(f"{tag} {100 * (g.loc[m, 'finish'] == 1).mean():.1f}%({int(m.sum())})")
+                lines.append(f"  {k}  " + "  ".join(cells))
     return "\n".join(lines)
+
+
+def _classes(raw: Path, venue: str) -> pd.DataFrame:
+    """その場の、艇ごとの選手の級別（A1・A2・B1・B2）。"""
+    cols = ["race_date", "venue", "race_no", "lane", "grade", "updated_at"]
+    parts = []
+    for chunk in pd.read_csv(Path(raw) / "facts.csv", dtype=str, usecols=lambda c: c in set(cols), chunksize=300_000):
+        chunk = chunk[chunk["venue"].str.zfill(2) == venue]
+        if len(chunk):
+            parts.append(chunk)
+    if not parts:
+        return pd.DataFrame(columns=["race_id", "lane", "klass"])
+    f = pd.concat(parts, ignore_index=True)
+    f["race_date"] = f["race_date"].str.replace("-", "", regex=False).str[:8]
+    f["venue"] = venue
+    f["race_no"] = pd.to_numeric(f["race_no"], errors="coerce")
+    f["lane"] = pd.to_numeric(f["lane"], errors="coerce")
+    f = f.dropna(subset=["race_no", "lane"])
+    if "updated_at" in f:
+        f = f.sort_values("updated_at", na_position="first")
+    f = f.drop_duplicates(["race_date", "race_no", "lane"], keep="last")
+    f["race_id"] = ds._race_id(f)
+    f["lane"] = f["lane"].astype(int)
+    return f.rename(columns={"grade": "klass"})[["race_id", "lane", "klass"]]
 
 
 def _course_top3(df: pd.DataFrame) -> pd.DataFrame:
