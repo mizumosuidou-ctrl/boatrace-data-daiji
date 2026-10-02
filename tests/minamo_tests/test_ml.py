@@ -627,7 +627,8 @@ def test_venue_check_report(tmp_path):
     synthetic.generate(tmp_path, days=40, races_per_day=24, n_racers=120)
     text = venue_check.build(tmp_path, "3")
     assert text.startswith("江戸川") and "1. 風" in text and "初日" in text and "イン逃げ率" in text and "外隣" in text
-    assert "7. オリジナル展示" in text and "8. ①の級別" in text and "9. ①の展示" in text and "最終日" in text
+    assert "7. 展示タイム・オリジナル展示" in text and "8. ①の級別" in text and "9. ①の展示" in text and "最終日" in text
+    assert "10. 風の方角" in text and "  展示  " in text
     assert "データなし" in venue_check.build(tmp_path, "99")
 
 
