@@ -207,6 +207,30 @@ def test_biyori_backfill_is_polite_and_resumes(tmp_path, monkeypatch):
     assert len(ex) == 6 and ex["ex_st"].min() == pytest.approx(-0.01)
 
 
+def test_biyori_stops_when_connections_keep_failing(tmp_path, monkeypatch):
+    """接続できない状態が続いたら、ブロックとみなして休み、それでもだめなら止まる（取れなかった分は次回取り直す）。"""
+    import requests
+    from minamo.ml import biyori
+
+    pd.DataFrame({"race_date": ["20260901"] * 12, "venue": ["24"] * 12, "race_no": range(1, 13)}).to_csv(tmp_path / "facts.csv", index=False)
+    sleeps = []
+    monkeypatch.setattr(biyori, "_sleep", sleeps.append)
+
+    class Down:
+        calls = 0
+
+        def chokuzen(self, venue, date, rno):
+            self.calls += 1
+            raise requests.ConnectionError("timed out")
+
+    client = Down()
+    assert biyori.run(tmp_path, days=183, client=client) == 0
+    # 4回は飛ばして進み、5回目でブロック扱い → 30分休む ×2 → 3回目で止まる
+    assert sleeps.count(biyori.BLOCK_SLEEP) == biyori.BLOCK_LIMIT - 1
+    assert client.calls == biyori.FAIL_LIMIT + 2 < 12
+    assert len(biyori.targets(tmp_path, 183, None, None)) == 12  # 何も記録していない
+
+
 def test_original_features_within_race():
     df = pd.DataFrame({"race_id": ["a"] * 6 + ["b"] * 6, "lap_time": [38.0, 37.5, 37.8, 38.2, 37.9, 38.1] + [37.0, 37.2, np.nan, np.nan, np.nan, 37.1],
                        "turn_time": [5.8] * 12})
