@@ -204,17 +204,20 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
     for s in scores:
         s.win = strengths[s.boat] / total
 
-    # Plackett-Luce（2着以降は強さを平坦化）
+    # Plackett-Luce（2着以降は強さを平坦化）。2着・3着の専用モデルがあれば、その割合だけ混ぜる
     boats = [s.boat for s in scores]
     soft = {b: strengths[b] ** decay for b in boats}
+    s2, s3 = soft, soft
+    w = float(ml.get("place_w") or 0.0) if ml and engine.startswith("lightgbm") else 0.0
+    if w > 0 and all("q" in ml["boats"].get(b, {}) for b in boats):
+        s2 = {b: soft[b] ** (1 - w) * ml["boats"][b]["q"][0] ** w for b in boats}
+        s3 = {b: soft[b] ** (1 - w) * ml["boats"][b]["q"][1] ** w for b in boats}
     tri: dict[str, float] = {}
     ex: dict[str, float] = {}
     for a, b, c in permutations(boats, 3):
         p1 = strengths[a] / total
-        rest1 = sum(soft[x] for x in boats if x != a)
-        p2 = soft[b] / rest1
-        rest2 = rest1 - soft[b]
-        p3 = soft[c] / rest2
+        p2 = s2[b] / sum(s2[x] for x in boats if x != a)
+        p3 = s3[c] / sum(s3[x] for x in boats if x not in (a, b))
         tri[f"{a}-{b}-{c}"] = p1 * p2 * p3
     if wind_adj and wind_adj.get("second"):
         _wind_second(tri, scores, wind_adj["second"])

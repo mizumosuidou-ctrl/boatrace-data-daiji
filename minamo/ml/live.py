@@ -51,6 +51,12 @@ class MLPredictor:
             path = self.dir / f"stats_{name}.csv.gz"
             if path.exists():
                 self.new[name] = pd.read_csv(path, dtype={"toban": str}).assign(date=self.stats_date)
+        # 2着・3着の専用モデル（採用されたときだけ）
+        self.place = {}
+        for name, info in (self.meta.get("place") or {}).items():
+            files = [self.dir / f"model_top2_{name}.txt", self.dir / f"model_top3_{name}.txt"]
+            if info.get("adopt") and all(f.exists() for f in files):
+                self.place[name] = (lgb.Booster(model_file=str(files[0])), lgb.Booster(model_file=str(files[1])), float(info["w"]))
         self.mtime = (self.dir / "meta.json").stat().st_mtime
 
     @property
@@ -122,6 +128,13 @@ class MLPredictor:
             p = np.clip(raw, 1e-6, 1 - 1e-6)
             p = p / p.sum()
             contrib = booster.predict(X, pred_contrib=True)[:, :-1]
+            q, place_w = None, 0.0
+            pl = self.place.get("post" if use_post else "pre")
+            if pl:
+                from .train import place_q
+
+                q = place_q(df, p, pl[0].predict(X), pl[1].predict(X))
+                place_w = pl[2]
         except Exception:  # noqa: BLE001 — 予想は統計モデルで続行できる
             log.exception("ML prediction failed for %s%02d", card.jcd, card.rno)
             return None
@@ -140,7 +153,10 @@ class MLPredictor:
                 "motor_kp": _num_or_none(df["motor_kp_raw"].iloc[i]),
                 "n_c": int(df["n_c"].iloc[i]),
             }
+            if q is not None:
+                out[int(boat)]["q"] = (float(q[i, 0]), float(q[i, 1]))  # ちょうど2着・ちょうど3着
         return {"engine": "lightgbm-post" if use_post else "lightgbm-pre", "boats": out, "pl_decay": self.meta.get("pl_decay"),
+                "place_w": place_w,
                 "wind": "wind_tail" in feats}  # 風をモデルが使っていれば、場の風の表では補正しない
 
 

@@ -795,9 +795,11 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     gc.collect()
     rows = add_race_features(rows, with_ex=True)
     rows["win"] = (rows["finish"] == 1).astype("int8")
+    rows["top2"] = (rows["finish"] <= 2).astype("int8")  # 2着・3着を別に学習するとき用
+    rows["top3"] = (rows["finish"] <= 3).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
     rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
-    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "has_ex", "has_orig", "course"])
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":
