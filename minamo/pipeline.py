@@ -29,6 +29,10 @@ STATE_DIR = Path(os.environ.get("MINAMO_STATE_DIR", Path(__file__).resolve().par
 PRE_WINDOW = timedelta(minutes=int(os.environ.get("MINAMO_PRE_WINDOW_MIN", "30")))
 BEFORE_REFRESH = timedelta(minutes=int(os.environ.get("MINAMO_BEFORE_REFRESH_MIN", "4")))
 RESULT_DELAY = timedelta(minutes=int(os.environ.get("MINAMO_RESULT_DELAY_MIN", "6")))
+# 結果の取り込み：最初の20回は毎分、そのあとは5分おきに、締切から12時間まで取り直す（あきらめない）
+RESULT_FAST_TRIES = 20
+RESULT_SLOW_EVERY = timedelta(minutes=5)
+RESULT_GIVE_UP = timedelta(hours=12)
 ORIG_TRIES = 4  # オリジナル展示を場のサイトに取りに行く回数（展示後、数分おき）
 AI_EARLY = os.environ.get("MINAMO_AI_EARLY", "0") == "1"  # 出走表段階でもClaudeを呼ぶか
 
@@ -186,8 +190,8 @@ class Pipeline:
                 hh, mm = map(int, card["deadline"].split(":"))
                 deadline = datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST)
                 try:
-                    if now >= deadline + RESULT_DELAY:
-                        if self._settle(date, vd, rno, st):
+                    if deadline + RESULT_DELAY <= now <= deadline + RESULT_GIVE_UP:
+                        if self._settle(date, vd, rno, st, now):
                             changed += 1
                     elif deadline - PRE_WINDOW <= now < deadline + timedelta(minutes=1):
                         last = st.get("before_at")
@@ -284,10 +288,13 @@ class Pipeline:
         st["orig"] = {str(b): v for b, v in got.items()}
         return True
 
-    def _settle(self, date: str, vd: VenueDay, rno: int, st: dict) -> bool:
+    def _settle(self, date: str, vd: VenueDay, rno: int, st: dict, now: Optional[datetime] = None) -> bool:
+        now = now or store.now_jst()
         tries = st.get("result_tries", 0)
-        if tries >= 20:
+        last = st.get("result_at")
+        if tries >= RESULT_FAST_TRIES and last and now - datetime.fromisoformat(last) < RESULT_SLOW_EVERY:
             return False
+        st["result_at"] = now.isoformat()
         result = parsers.parse_result(self.fetcher.result(date, vd.jcd, rno))
         st["result_tries"] = tries + 1
         if result.cancelled or (result.trifecta and len(result.rows) >= 3):
