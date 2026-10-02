@@ -8,9 +8,10 @@
   4. ①の平均スタート順位が早い／遅いときの、①の1着率と、負けたときに2・3着に残る率
   5. そのコースの3連対率（直近1年・10走以上）が70%以上の選手が、実際に3着以内に入った率
   6. 攻めた艇（②③④で一番早く、①より早い）の外隣が2・3着以内に入る率
-  7. オリジナル展示（一周・回り足・直線）のレース内の順位ごとの、1着率と3着以内率
+  7. 展示タイム・オリジナル展示（一周・回り足・直線）のレース内の順位ごとの、1着率と3着以内率
   8. ①の級別（A1〜B2）と風（弱い風・強い向かい風・強い追い風）ごとの、①の1着率
   9. ①の展示タイム・展示STがレースで1位かどうかと、①の1着率（級別ごとも）
+  10. 風の方角（北西など）ごとの、4m以上のときのコース別1着率
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from . import dataset as ds
 from . import formation_table as ft
 from . import series as series_mod
 from . import wind_table
+from .. import wind as wind_mod
 
 
 def _rates(g: pd.DataFrame) -> str:
@@ -78,7 +80,7 @@ def build(raw: Path, venue: str) -> str:
     female = df.groupby("race_id")["toban"].agg(lambda t: all(x in women for x in t))
     df["female"] = df["race_id"].map(female).astype(bool)
     name = VENUES[venue].name if venue in VENUES else venue
-    weather = wind_table.load_weather(raw)[["race_id", "category", "speed"]]
+    weather = wind_table.load_weather(raw)[["race_id", "category", "speed", "wind_from"]]
     top3 = _course_top3(allf[allf["venue"] == venue])
     orig = ds.load_original(raw / "original.csv")
     cls = _classes(raw, venue)
@@ -152,10 +154,19 @@ def build(raw: Path, venue: str) -> str:
             lines.append("5. そのコースの3連対率70%以上（直近1年・10走以上）の選手 → 実際に3着以内")
             lines.append(f"  全体 {100 * (hi['finish'] <= 3).mean():5.1f}%  ({len(hi)}走)　" + " ".join(
                 f"{c}C {100 * (g['finish'] <= 3).mean():.0f}%({len(g)})" for c, g in hi.groupby("course")))
-        # 7. オリジナル展示の順位
+        # 7. 展示タイム・オリジナル展示の順位
+        xr = part.merge(exr[["race_id", "lane", "ex_rank"]], on=["race_id", "lane"], how="inner")
         o = part.merge(orig, on=["race_id", "lane"], how="inner")
+        if len(xr) or len(o):
+            lines.append("7. 展示タイム・オリジナル展示の順位（レース内・速い順）→ 1着率 ／ 3着以内率")
+        if len(xr):
+            rk = xr["ex_rank"]
+            cells = [f"{r}位 {100 * (xr.loc[rk == r, 'finish'] == 1).mean():.0f}/{100 * (xr.loc[rk == r, 'finish'] <= 3).mean():.0f}"
+                     for r in range(1, 7) if (rk == r).sum()]
+            lines.append(f"  {wind_table._pad('展示', 8)}{' '.join(cells)}  （{xr['race_id'].nunique()}R）")
+            lines.append(f"  {wind_table._pad('', 8)}2位以内の3着以内 {100 * (xr.loc[rk <= 2, 'finish'] <= 3).mean():.1f}%"
+                         f" ／ 3位以下 {100 * (xr.loc[rk >= 3, 'finish'] <= 3).mean():.1f}%")
         if len(o):
-            lines.append("7. オリジナル展示の順位（レース内・速い順）→ 1着率 ／ 3着以内率")
             for col, tag in (("lap_time", "一周"), ("turn_time", "回り足"), ("straight_time", "直線")):
                 v = pd.to_numeric(o[col], errors="coerce")
                 enough = v.groupby(o["race_id"]).transform("count") >= 5
@@ -198,6 +209,15 @@ def build(raw: Path, venue: str) -> str:
                 if len(g):
                     by = "  ".join(f"{k} {100 * (gg['finish'] == 1).mean():.0f}%({len(gg)})" for k, gg in g.groupby("klass"))
                     lines.append(f"  {wind_table._pad(tag, 20)}{100 * (g['finish'] == 1).mean():5.1f}%({len(g)})  {by}")
+        # 10. 風の方角（4m以上）
+        wc = part.merge(weather[["race_id", "wind_from", "speed"]], on="race_id", how="inner")
+        wc = wc[wc["speed"] >= 4]
+        if wc["race_id"].nunique():
+            lines.append("10. 風の方角（吹いてくる方）ごと・4m以上 → 1〜6コース1着率（30R以上の方角だけ）")
+            for d in wind_mod.COMPASS:
+                g = wc[wc["wind_from"] == d]
+                if g["race_id"].nunique() >= 30:
+                    lines.append(f"  {wind_table._pad(d, 16)}{_rates(g)}")
     return "\n".join(lines)
 
 
@@ -205,14 +225,15 @@ def _ex_ranks(raw: Path) -> pd.DataFrame:
     """展示タイム・展示STがレースで1位か（同じなら両方1位。展示のFは一番早い扱い）。"""
     ex = ds.load_exhibition(raw / "exhibition.csv")
     if not len(ex):
-        return pd.DataFrame(columns=["race_id", "lane", "t1", "s1"])
+        return pd.DataFrame(columns=["race_id", "lane", "t1", "s1", "ex_rank"])
     ex = ex.dropna(subset=["ex_time"]).copy()
     ex["st"] = ex["ex_st"].clip(lower=0)
     n = ex.groupby("race_id")["lane"].transform("size")
     ex = ex[n >= 5]
-    ex["t1"] = ex.groupby("race_id")["ex_time"].rank(method="min") == 1
+    ex["ex_rank"] = ex.groupby("race_id")["ex_time"].rank(method="min")
+    ex["t1"] = ex["ex_rank"] == 1
     ex["s1"] = ex.groupby("race_id")["st"].rank(method="min") == 1
-    return ex[["race_id", "lane", "t1", "s1"]]
+    return ex[["race_id", "lane", "t1", "s1", "ex_rank"]]
 
 
 def _classes(raw: Path, venue: str) -> pd.DataFrame:
