@@ -384,7 +384,7 @@ def test_formation_tables_from_facts(tmp_path):
         assert v["escape"] == sum(v["second"].values()) and v["n"] - v["escape"] == sum(v["head"].values())
     assert sorted(v["rank"] for v in allt.values()) == list(range(1, len(allt) + 1))
     text = formation_table.format_table(data, "01")
-    assert "①〉②③④" in text and "逃げ" in text
+    assert "1>2-3-4" in text and "逃げ" in text
     cur = pd.read_csv(tmp_path / "ml" / "st_rank_course.csv.gz", dtype={"toban": str})
     assert cur["avg_sr"].between(1, 6).all()
     hit = formation_table.lookup(data, "01", "一般", max(allt, key=lambda k: allt[k]["n"]), min_n=1)
