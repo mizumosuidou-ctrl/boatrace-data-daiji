@@ -44,7 +44,8 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
             sts = [max(0.01, rng.gauss(r["st"][c] + (0.04 if hold[c] else 0.0), 0.03)) for c, r in enumerate(field)]
             frm, speed = rng.choice(wind_mod.COMPASS), rng.randint(0, 7)
             tail = wind_mod.components(wind_mod.icon_from_compass(venue, frm), speed)[0]
-            weather.append({"race_date": day, "venue": venue, "race_no": rno, "wind_from": frm, "wind_speed": speed, "wave_cm": speed})
+            weather.append({"race_date": day, "venue": venue, "race_no": rno, "wind_from": frm, "wind_speed": speed, "wave_cm": speed,
+                            "weather": "雨" if (d + k) % 5 == 0 else "晴"})
             order = sorted(range(6), key=lambda i: sts[i])
             srank = {i: order.index(i) + 1 for i in range(6)}
             mnos = rng.sample(range(40), 6)

@@ -629,7 +629,31 @@ def test_venue_check_report(tmp_path):
     assert text.startswith("江戸川") and "1. 風" in text and "初日" in text and "イン逃げ率" in text and "外隣" in text
     assert "7. 展示タイム・オリジナル展示" in text and "8. ①の級別" in text and "9. ①の展示" in text and "最終日" in text
     assert "10. 風の方角" in text and "  展示  " in text and "11. コースごと" in text and "12. イン逃げ" in text and "13. ②③④" in text and "14. 波" in text
+    assert "16. 条件ごと" in text and "18. 展示の組み合わせ" in text
     assert "データなし" in venue_check.build(tmp_path, "99")
+
+
+def test_venue_check_class_ranks_and_conditions():
+    """級別×コースの1位/2位の差と、雨のときのコース別成績が表に出る。"""
+    import pandas as pd
+
+    from minamo.ml import venue_check
+
+    rows = []
+    for i in range(40):
+        for lane in range(1, 7):
+            win = lane == 3 if i % 2 == 0 else lane == 1
+            rows.append({"race_id": f"r{i}", "lane": lane, "course": lane, "finish": 1 if win else lane + 1,
+                         "klass": "A1", "ex": 1 if lane == 3 and i % 2 == 0 else (2 if lane == 3 else lane % 3 + 3),
+                         "lap": 1.0, "turn": 1.0, "straight": 1.0})
+    br = pd.DataFrame(rows)
+    out = "\n".join(venue_check._class_ranks(br))
+    assert "A1 展示" in out and "3C 100/0(+100)" in out
+    part = br[["race_id", "lane", "course", "finish"]]
+    weather = pd.DataFrame({"race_id": [f"r{i}" for i in range(40)], "category": "追い風", "speed": 6.0})
+    waves = pd.DataFrame({"race_id": [f"r{i}" for i in range(40)], "wave_cm": 7.0})
+    out = "\n".join(venue_check._conditions(part, weather, waves, {f"r{i}" for i in range(20)}))
+    assert "追い風6m以上" in out and "波6cm以上" in out and "雨・雪" in out and "3C 50/" in out
 
 
 def test_odds_history_report(tmp_path):
