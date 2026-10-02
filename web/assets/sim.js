@@ -138,7 +138,7 @@ export function mountSim(canvas, race, opts = {}) {
     ctx.fillStyle = muted;
     ctx.font = `500 10px "JetBrains Mono", monospace`;
     ctx.textAlign = "center";
-    ctx.fillText("START", g.startX, g.laneTop + g.laneGap * 6.2 + 14);
+    ctx.fillText("スタート", g.startX, g.laneTop + g.laneGap * 6.2 + 14);
     // ターンマーク
     ctx.fillStyle = "#ff7a2f";
     ctx.beginPath(); ctx.arc(g.mark.x, g.mark.y, Math.max(6, g.laneGap * 0.22), 0, Math.PI * 2); ctx.fill();
