@@ -64,6 +64,7 @@ class Pipeline:
         self.fetcher = fetcher or Fetcher()
         self.ai_enabled = ai_enabled
         self.racetimes = racetime.RaceTimes(self.fetcher, STATE_DIR, self._load)
+        self._formations = None
 
     # ---- state files
     def _state_path(self, date: str, name: str) -> Path:
@@ -97,6 +98,7 @@ class Pipeline:
             self._save(date, f"{jcd}-{rno:02d}", st)
         payload = store.build_race(card, before, odds, pred, ai, result, vday)
         payload["odds2"] = st.get("odds2") or {}
+        payload["formation"] = self._formation(card, pred, vday)
         store.write_json(store.race_path(date, jcd, rno), payload)
         return payload
 
@@ -218,6 +220,20 @@ class Pipeline:
             st["ai_stage"] = "exhibition"
         self._save(date, f"{vd.jcd}-{rno:02d}", st)
         self.publish(date, vd.jcd, rno, vd)
+
+    def _formation(self, card: RaceCard, pred, vday: Optional[VenueDay]) -> Optional[dict]:
+        """スタート隊形トゥエルブと、その場・種類・隊形の過去成績（表が無ければ None）。"""
+        try:
+            if self._formations is None:
+                from .ml import formation_table, live
+
+                self._formations = formation_table.LiveTables(live.ML_DIR)
+            return self._formations.info(
+                card.jcd, {e.boat: e.toban for e in card.entries}, {b.boat: b.course for b in pred.boats},
+                card.title or (vday.title if vday else ""), vday.grade if vday else None,
+            )
+        except ImportError:
+            return None
 
     def _odds2(self, date: str, jcd: str, rno: int) -> dict[str, float]:
         """2連単オッズ。取れなくても予想は続ける。"""

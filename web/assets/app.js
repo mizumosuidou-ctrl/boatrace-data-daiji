@@ -356,6 +356,16 @@ const courseOf = (race) => Object.fromEntries(race.prediction.boats.map((b) => [
 const exEntry = (race) => race.stage === "exhibition";
 const courseTag = (c, boatNo, ex) => `<span class="ctag ${ex ? "" : "guess"} ${c !== boatNo ? "moved" : ""}" title="${ex ? "展示進入" : "枠なり想定"} ${c}コース">${c}<small>C</small></span>`;
 
+// スタート隊形トゥエルブ（予想手順 STEP②）と、その場・種類・隊形での過去の逃げ率と2着
+function formationLine(race) {
+  const f = race.formation;
+  if (!f) return "";
+  const s = f.stats;
+  const where = s ? `${s.scope === "ALL" ? "全場" : esc(race.venue.name)}・${esc(f.category)}` : "";
+  const sec = s && s.second ? Object.entries(s.second).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([c, p]) => `${"①②③④⑤⑥"[c - 1]}${pct(p)}%`).join(" ") : "";
+  return `隊形 <b>${esc(f.label)}</b>${s ? `（${where} 逃げ${pct(s.rate)}%・${s.rank}/12位）` : ""}<br>${sec ? `逃げたら2着 ${sec}<br>` : ""}`;
+}
+
 // 2連単オッズから見た「市場の1着の見込み」（1/オッズの割合）。予想手順 STEP⑥：人気順ではなく市場心理として見る
 function marketHead(race, b) {
   const o = race.odds2 || {};
@@ -532,7 +542,7 @@ async function renderRace(r, refresh = false) {
       <div class="side-stack">
         <div class="panel confidence-card rv" style="--i:3">
           ${P.escape && P.escape.index != null ? `<div class="ring">${ringSvg(P.escape.index)}<div class="ring-center"><div><b>${P.escape.index}</b><span>IN ESCAPE</span></div></div></div>
-          <div><div class="eyebrow">イン逃げ指数 · STEP 1</div><div class="tier" style="margin-top:8px">${esc(P.escape.label)}</div><div class="tier-note">1コース ${boat(P.escape.boat, "sm")} ${esc(E[P.escape.boat]?.name || "")} · 1着率 ${pct(P.escape.p)}%<br>${marketHead(race, P.escape.boat)}モデル確信度 ${P.confidence} · ${esc(P.tier)}</div></div>`
+          <div><div class="eyebrow">イン逃げ指数 · STEP 1</div><div class="tier" style="margin-top:8px">${esc(P.escape.label)}</div><div class="tier-note">1コース ${boat(P.escape.boat, "sm")} ${esc(E[P.escape.boat]?.name || "")} · 1着率 ${pct(P.escape.p)}%<br>${marketHead(race, P.escape.boat)}${formationLine(race)}モデル確信度 ${P.confidence} · ${esc(P.tier)}</div></div>`
           : `<div class="ring">${ringSvg(ai.confidence ?? P.confidence)}<div class="ring-center"><div><b>${ai.confidence ?? P.confidence}</b><span>CONFIDENCE</span></div></div></div>
           <div><div class="eyebrow">Race type</div><div class="tier" style="margin-top:8px">${tierOf(ai.confidence ?? P.confidence)}</div><div class="tier-note">モデル確信度 ${P.confidence} · ${esc(P.tier)}</div></div>`}
         </div>
