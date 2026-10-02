@@ -85,7 +85,7 @@ def main() -> None:
             data = json.loads((live.ML_DIR / "formation.json").read_text(encoding="utf-8"))
         else:
             data = formation_table.build(raw, live.ML_DIR)
-        print(f"{data['meta']['races']} races {data['meta']['data_range']}")
+        print(f"{data['meta']['races']} races {data['meta']['data_range']} {data['meta'].get('by_category', '')}")
         if args.venue:
             print(formation_table.format_table(data, args.venue.zfill(2), args.category))
     elif args.cmd == "serve":

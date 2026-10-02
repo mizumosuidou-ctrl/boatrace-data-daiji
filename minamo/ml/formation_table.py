@@ -134,6 +134,7 @@ def build(raw: Path, out_dir: Path) -> dict:
             tables.setdefault(scope, {})[cat] = t
     end = df["date"].max()
     meta = {"data_range": [str(races["date"].min().date()), str(races["date"].max().date())], "races": int(len(races)),
+            "by_category": {k: int(v) for k, v in races["category"].value_counts().items()},
             "window": WINDOW, "built_from": str(end.date())}
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "formation.json").write_text(json.dumps({"meta": meta, "tables": tables}, ensure_ascii=False), encoding="utf-8")
@@ -173,10 +174,11 @@ def lookup(data: Optional[dict], venue: str, cat: str, key: str, min_n: int = 20
     """当日用：その場・種類・隊形の表。数が少なければ全場の同じ種類で代わりに。"""
     if not data:
         return None
-    for scope in (venue, "ALL"):
-        v = data["tables"].get(scope, {}).get(cat, {}).get(key)
+    # その場のその種類 → 全場のその種類 → その場の一般戦 → 全場の一般戦
+    for scope, c in ((venue, cat), ("ALL", cat), (venue, "一般"), ("ALL", "一般")):
+        v = data["tables"].get(scope, {}).get(c, {}).get(key)
         if v and v["n"] >= min_n:
-            return {**v, "scope": scope, "rate": v["escape"] / v["n"]}
+            return {**v, "scope": scope, "category": c, "rate": v["escape"] / v["n"]}
     return None
 
 
@@ -224,7 +226,7 @@ class LiveTables:
         if st:
             esc, nes = st["escape"], st["n"] - st["escape"]
             out["stats"] = {
-                "scope": st["scope"], "n": st["n"], "escape": esc, "rate": round(st["rate"], 3), "rank": st.get("rank"),
+                "scope": st["scope"], "category": st["category"], "n": st["n"], "escape": esc, "rate": round(st["rate"], 3), "rank": st.get("rank"),
                 "second": {c: round(k / esc, 3) for c, k in st["second"].items()} if esc else {},
                 "head": {c: round(k / nes, 3) for c, k in st["head"].items()} if nes else {},
             }

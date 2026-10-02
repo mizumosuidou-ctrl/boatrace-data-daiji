@@ -361,7 +361,7 @@ function formationLine(race) {
   const f = race.formation;
   if (!f) return "";
   const s = f.stats;
-  const where = s ? `${s.scope === "ALL" ? "全場" : esc(race.venue.name)}・${esc(f.category)}` : "";
+  const where = s ? `${s.scope === "ALL" ? "全場" : esc(race.venue.name)}・${esc(s.category || f.category)}` : "";
   const sec = s && s.second ? Object.entries(s.second).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([c, p]) => `${"①②③④⑤⑥"[c - 1]}${pct(p)}%`).join(" ") : "";
   return `隊形 <b>${esc(f.label)}</b>${s ? `（${where} 逃げ${pct(s.rate)}%・${s.rank}/12位）` : ""}<br>${sec ? `逃げたら2着 ${sec}<br>` : ""}`;
 }

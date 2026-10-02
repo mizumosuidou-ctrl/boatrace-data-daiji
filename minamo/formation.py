@@ -10,6 +10,7 @@ gap：②③④で一番早い艇と①のスタート順位の差（正なら�
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Optional
 
 CIRCLED = "①②③④⑤⑥"
@@ -22,22 +23,30 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("正月・お盆", ("正月", "新春", "お年玉", "初夢", "盆", "ゴールデンウィーク", "GW")),
     ("SG", ("グランプリ", "クラシック", "オールスター", "グランドチャンピオン", "オーシャンカップ", "ボートレースメモリアル",
             "ボートレースダービー", "全日本選手権", "チャレンジカップ", "笹川賞", "総理大臣杯")),
-    ("G1", ("周年記念", "地区選手権", "ダイヤモンドカップ", "高松宮記念", "全日本王者決定戦", "競帝王", "太閤賞",
+    ("G1", ("地区選手権", "ダイヤモンドカップ", "高松宮記念", "全日本王者決定戦", "競帝王", "太閤賞",
             "海の王者", "モーターボート大賞", "スピードクイーン", "名人戦", "ダイヤモンドC")),
 )
 CATEGORIES = ("一般", "SG", "G1", "女子", "マスターズ", "ルーキーズ", "正月・お盆")
 
 
+# 「開設○周年記念」は、ボートレース場そのもの（どの場も開設45年以上）なら G1。場外発売場（BTS など）の周年は一般戦
+G1_ANNIVERSARY_YEARS = 45
+
+
 def category(title: Optional[str], grade: Optional[str] = None) -> str:
-    """大会名（と分かればグレード）からレースの種類を決める。決まらなければ「一般」。"""
-    t = re.sub(r"\s+", "", str(title or ""))
+    """レースの種類。グレードが分かれば（当日の公式サイト）SG・G1 はそれで決め、大会名は女子・マスターズなどの判定に使う。"""
+    t = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(title or "")))
+    g = unicodedata.normalize("NFKC", grade or "").upper().replace("Ⅰ", "1")
+    known = bool(g)
     for name, words in CATEGORY_RULES:
+        if known and name in ("SG", "G1"):
+            continue
         if any(w in t for w in words):
             return name
-    g = (grade or "").upper()
-    if g == "SG":
-        return "SG"
-    if g in ("G1", "PG1", "GI"):
+    if known:
+        return "SG" if g == "SG" else "G1" if g in ("G1", "PG1", "GI") else "一般"
+    m = re.search(r"(\d+)周年記念", t)
+    if m and int(m.group(1)) >= G1_ANNIVERSARY_YEARS:
         return "G1"
     return "一般"
 
