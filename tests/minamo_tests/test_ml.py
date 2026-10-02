@@ -565,11 +565,13 @@ def test_wind_tables_from_past_weather(tmp_path, monkeypatch):
     assert t["adopt"] and data["meta"]["overall"]["ll_wind"] < data["meta"]["overall"]["ll_base"]
     assert all(n >= wind_table.MIN_BIN for _, _, n in t["追い風"])  # どの区切りも十分なレース数
     assert t["追い風"][0][0] == 1 and t["n_calm"] > 0
-    # 当日の補正：過去データの表は「使う」になった場だけ。桐生はもらった表（boat-log）が先
+    # 当日の補正：過去データの表は「使う」になった場だけ。もらった表（boat-log）は切り替えたときだけ
     monkeypatch.setattr(wind, "LEARNED_PATH", tmp_path / wind_table.OUT_NAME)
     tail = wind.adjustment("02", 5, 3)
     assert tail["source"] == "過去データ" and tail["factors"][1] > 1.1
     assert wind.adjustment("02", 13, 3)["factors"][1] < 0.9
+    assert wind.adjustment("01", 5, 3) is None  # 桐生も自分のデータに統一（この架空データに桐生は無い）
+    monkeypatch.setattr(wind, "USE_GIVEN_TABLES", True)
     assert wind.adjustment("01", 5, 3)["source"] == "boat-log"
     assert wind.adjustment("03", 5, 3) is None
     report = wind_table.report(data)
