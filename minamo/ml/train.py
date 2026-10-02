@@ -6,6 +6,7 @@
   model_pre.txt / model_post.txt   展示前・展示後のモデル
   stats_course.csv.gz / stats_racer.csv.gz  当日予想用の累積成績
   meta.json                        特徴量・基準値・検証成績
+  test_preds.csv.gz                検証期間の1着確率（買い目の選び方を確かめる ev-check 用）
 """
 from __future__ import annotations
 
@@ -295,6 +296,18 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         place["post"] = _place_experiment(post_split, post, post_feats, decay, "post", out_dir, metrics)
     else:
         _place_experiment(None, None, None, decay, "post", out_dir, metrics)  # 古いファイルを消すだけ
+
+    # 買い目の選び方を過去のレースで確かめる用（ev-check）に、検証期間（学習に使っていない）の1着確率を残す
+    tp = te[["race_id", "lane", "finish"]].copy()
+    tp["p_pre"] = normalize(te, pre.predict(te[pre_feats]))
+    if post is not None and post_adopt:
+        te_p = post_split[2]
+        pp = te_p[["race_id", "lane"]].copy()
+        pp["p_post"] = normalize(te_p, post.predict(te_p[post_feats]))
+        tp = tp.merge(pp, on=["race_id", "lane"], how="left")
+    else:
+        tp["p_post"] = np.nan
+    tp.to_csv(out_dir / "test_preds.csv.gz", index=False)
 
     imp = pd.Series(pre.feature_importance("gain"), index=pre_feats).sort_values(ascending=False)
     pre.save_model(str(out_dir / "model_pre.txt"))

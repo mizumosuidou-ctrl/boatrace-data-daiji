@@ -13,3 +13,5 @@ echo "[formation] スタート隊形トゥエルブの表 ..."
 sudo docker compose run --rm worker python -m minamo formation
 echo "[wind] 場ごとの風の表 ..."
 sudo docker compose run --rm worker python -m minamo wind-table || echo "        （風の表は作れませんでした。前の表のまま続けます）"
+echo "[ev] 買い目の選び方の比べ（確率上位・期待値）..."
+sudo docker compose run --rm worker python -m minamo ev-check || echo "        （比べられませんでした。続けます）"
