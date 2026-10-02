@@ -15,6 +15,8 @@
   11. コースごとに、展示タイム・一周・回り足・直線の順位（1位・2位・3位以下）別の1着率
   12. イン逃げのときの2着のコースの割合（全部・弱い風・追い風3m以上・向かい風3m以上）
   13. ②③④の平均スタート順位（早い・中くらい・遅い）ごとの、そのコースの1着率と2連対率
+  14. 波の高さごとのコース別1着率
+  15. ④の平均スタート順位が③より0.5以上早いとき（④の攻めトリガー）の、④と⑤の成績
 """
 from __future__ import annotations
 
@@ -88,6 +90,7 @@ def build(raw: Path, venue: str) -> str:
     orig = ds.load_original(raw / "original.csv")
     cls = _classes(raw, venue)
     exr = _ex_ranks(raw)
+    waves = ds.load_weather(raw / "weather.csv")[["race_id", "wave_cm"]].dropna()
     lines = [f"{name}：{df['date'].min().date()}〜{df['date'].max().date()}  {df['race_id'].nunique():,}レース"
              "（女子＝全員女子のレース）", "数字は1〜6コースの1着率（%）"]
 
@@ -233,6 +236,25 @@ def build(raw: Path, venue: str) -> str:
                     cells.append(f"{tag} {100 * (g.loc[m, 'finish'] == 1).mean():.1f}/{100 * (g.loc[m, 'finish'] <= 2).mean():.1f}({int(m.sum())})")
             if cells:
                 lines.append(f"  {c}コース  " + "  ".join(cells))
+        # 14. 波の高さ
+        wv = part.merge(waves, on="race_id", how="inner")
+        if wv["race_id"].nunique():
+            lines.append("14. 波の高さ → 1〜6コース1着率")
+            for lo, hi, tag in ((0, 2, "0〜2cm"), (3, 5, "3〜5cm"), (6, 999, "6cm以上")):
+                g = wv[wv["wave_cm"].between(lo, hi)]
+                if g["race_id"].nunique() >= 20:
+                    lines.append(f"  {wind_table._pad(tag, 16)}{_rates(g)}")
+        # 15. ④の攻めトリガー（③より平均スタート順位が0.5以上早い）
+        if len(ok) and all(c in piv for c in (3, 4)):
+            r = piv.loc[ok]
+            f = fin.loc[ok]
+            trig = (r[3] - r[4]) >= 0.5
+            if trig.sum() >= 20:
+                lines.append("15. ④の平均スタート順位が③より0.5以上早いとき → ④・⑤の1着率 ／ 2連対率（レース数）")
+                for tag, m in (("早いとき", trig), ("それ以外", ~trig)):
+                    cells = [f"{c}C {100 * (f.loc[m, c] == 1).mean():.1f}/{100 * (f.loc[m, c] <= 2).mean():.1f}"
+                             for c in (4, 5) if c in f]
+                    lines.append(f"  {wind_table._pad(tag, 10)}{'  '.join(cells)}  ({int(m.sum())}R)")
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 12. 風ごとのイン逃げ時の2着
