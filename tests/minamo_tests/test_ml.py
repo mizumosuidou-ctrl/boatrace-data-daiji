@@ -624,5 +624,5 @@ def test_venue_check_report(tmp_path):
 
     synthetic.generate(tmp_path, days=40, races_per_day=24, n_racers=120)
     text = venue_check.build(tmp_path, "3")
-    assert text.startswith("江戸川") and "1. 風" in text and "初日" in text and "イン逃げ率" in text
+    assert text.startswith("江戸川") and "1. 風" in text and "初日" in text and "イン逃げ率" in text and "外隣" in text
     assert "データなし" in venue_check.build(tmp_path, "99")
