@@ -3,13 +3,14 @@
   python -m minamo venue-check --venue 03
 出すもの（その場の全レース。女子戦は別に数える）：
   1. 風の向き・強さごとの、コース別1着率
-  2. 初日と2日目以降の、コース別1着率
+  2. 初日・その間の日・最終日の、コース別1着率
   3. 隊形の差（②③④で一番早い艇と①の平均スタート順位の差）ごとの、イン逃げ率
   4. ①の平均スタート順位が早い／遅いときの、①の1着率と、負けたときに2・3着に残る率
   5. そのコースの3連対率（直近1年・10走以上）が70%以上の選手が、実際に3着以内に入った率
   6. 攻めた艇（②③④で一番早く、①より早い）の外隣が2・3着以内に入る率
   7. オリジナル展示（一周・回り足・直線）のレース内の順位ごとの、1着率と3着以内率
   8. ①の級別（A1〜B2）と風（弱い風・強い向かい風・強い追い風）ごとの、①の1着率
+  9. ①の展示タイム・展示STがレースで1位かどうかと、①の1着率（級別ごとも）
 """
 from __future__ import annotations
 
@@ -49,6 +50,19 @@ def _first_day(df: pd.DataFrame, raw: Path) -> pd.Series:
     return pd.Series(np.where(known.to_numpy(), first.to_numpy(), guess.fillna(False).to_numpy()), index=df.index).astype(bool)
 
 
+def _last_day(df: pd.DataFrame, raw: Path) -> pd.Series:
+    """最終日のレースか。公式の開催一覧の「最終日」、無ければ翌日に続きが無い日（節の名前が変わる日の前日）。"""
+    ser = series_mod.load(raw)[["race_date", "venue", "day_label"]]
+    label = df[["race_date", "venue"]].merge(ser, on=["race_date", "venue"], how="left")["day_label"].fillna("").astype(str)
+    vd = df[["venue", "date", "title"]].drop_duplicates(["venue", "date"]).sort_values(["venue", "date"])
+    gap = vd.groupby("venue")["date"].shift(-1) - vd["date"] != pd.Timedelta(days=1)
+    nxt = vd.groupby("venue")["title"].shift(-1)
+    vd["last"] = gap | (vd["title"].notna() & nxt.notna() & (vd["title"] != nxt))
+    guess = df[["venue", "date"]].merge(vd[["venue", "date", "last"]], on=["venue", "date"], how="left")["last"]
+    known = (label != "").to_numpy()
+    return pd.Series(np.where(known, label.str.contains("最終日").to_numpy(), guess.fillna(False).to_numpy()), index=df.index).astype(bool)
+
+
 def build(raw: Path, venue: str) -> str:
     raw = Path(raw)
     venue = venue.zfill(2)
@@ -60,6 +74,7 @@ def build(raw: Path, venue: str) -> str:
     ranks = ft.course_avg_rank(allf)
     df = df.merge(ranks[["toban", "course", "date", "avg_sr"]], on=["toban", "course", "date"], how="left")
     df["first_day"] = _first_day(df, raw)
+    df["last_day"] = _last_day(df, raw)
     female = df.groupby("race_id")["toban"].agg(lambda t: all(x in women for x in t))
     df["female"] = df["race_id"].map(female).astype(bool)
     name = VENUES[venue].name if venue in VENUES else venue
@@ -67,6 +82,7 @@ def build(raw: Path, venue: str) -> str:
     top3 = _course_top3(allf[allf["venue"] == venue])
     orig = ds.load_original(raw / "original.csv")
     cls = _classes(raw, venue)
+    exr = _ex_ranks(raw)
     lines = [f"{name}：{df['date'].min().date()}〜{df['date'].max().date()}  {df['race_id'].nunique():,}レース"
              "（女子＝全員女子のレース）", "数字は1〜6コースの1着率（%）"]
 
@@ -84,9 +100,10 @@ def build(raw: Path, venue: str) -> str:
             if g["race_id"].nunique():
                 lines.append(f"  {wind_table._pad(cat + tag, 16)}{_rates(g)}")
         # 2. 初日
-        lines.append("2. 初日と2日目以降")
+        lines.append("2. 初日・その間の日・最終日")
         lines.append(f"  {wind_table._pad('初日', 16)}{_rates(part[part['first_day']])}")
-        lines.append(f"  {wind_table._pad('2日目以降', 16)}{_rates(part[~part['first_day']])}")
+        lines.append(f"  {wind_table._pad('最終日', 16)}{_rates(part[part['last_day'] & ~part['first_day']])}")
+        lines.append(f"  {wind_table._pad('その間の日', 16)}{_rates(part[~part['first_day'] & ~part['last_day']])}")
         # 3. 隊形の差
         piv = part.pivot_table(index="race_id", columns="course", values="avg_sr", aggfunc="first")
         fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
@@ -171,7 +188,31 @@ def build(raw: Path, venue: str) -> str:
                     if m.sum():
                         cells.append(f"{tag} {100 * (g.loc[m, 'finish'] == 1).mean():.1f}%({int(m.sum())})")
                 lines.append(f"  {k}  " + "  ".join(cells))
+        # 9. ①の展示（タイム1位・展示ST1位）
+        e1 = part[part["course"] == 1].merge(exr, on=["race_id", "lane"], how="inner").merge(cls, on=["race_id", "lane"], how="left")
+        if len(e1):
+            lines.append("9. ①の展示タイム・展示STがレースで1位か → ①1着率（レース数）")
+            for tag, m in (("タイム1位＋ST1位", e1["t1"] & e1["s1"]), ("タイム1位だけ", e1["t1"] & ~e1["s1"]),
+                           ("ST1位だけ", ~e1["t1"] & e1["s1"]), ("どちらも1位でない", ~e1["t1"] & ~e1["s1"])):
+                g = e1[m]
+                if len(g):
+                    by = "  ".join(f"{k} {100 * (gg['finish'] == 1).mean():.0f}%({len(gg)})" for k, gg in g.groupby("klass"))
+                    lines.append(f"  {wind_table._pad(tag, 20)}{100 * (g['finish'] == 1).mean():5.1f}%({len(g)})  {by}")
     return "\n".join(lines)
+
+
+def _ex_ranks(raw: Path) -> pd.DataFrame:
+    """展示タイム・展示STがレースで1位か（同じなら両方1位。展示のFは一番早い扱い）。"""
+    ex = ds.load_exhibition(raw / "exhibition.csv")
+    if not len(ex):
+        return pd.DataFrame(columns=["race_id", "lane", "t1", "s1"])
+    ex = ex.dropna(subset=["ex_time"]).copy()
+    ex["st"] = ex["ex_st"].clip(lower=0)
+    n = ex.groupby("race_id")["lane"].transform("size")
+    ex = ex[n >= 5]
+    ex["t1"] = ex.groupby("race_id")["ex_time"].rank(method="min") == 1
+    ex["s1"] = ex.groupby("race_id")["st"].rank(method="min") == 1
+    return ex[["race_id", "lane", "t1", "s1"]]
 
 
 def _classes(raw: Path, venue: str) -> pd.DataFrame:
