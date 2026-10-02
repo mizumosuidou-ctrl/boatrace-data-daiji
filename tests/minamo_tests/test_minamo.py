@@ -449,3 +449,27 @@ def test_results_are_retried_after_many_failures(sandbox):
     n = len(fetcher.calls)
     pipe.tick(date, deadline + timedelta(hours=13))
     assert not any(c[0] == "result" for c in fetcher.calls[n:])
+
+
+def test_place_models_change_second_and_third(monkeypatch):
+    """2着・3着の専用モデルが「この艇は2着に来やすい」と言えば、その艇の2着の買い目が上がる。1着の確率は変わらない。"""
+    from minamo import model
+
+    card = parsers.parse_racelist(RACELIST_HTML, "20261001", "01", 12)
+    boats = [e.boat for e in card.entries if not e.absent]
+    p = {b: (0.5 if b == boats[0] else 0.1) for b in boats}
+
+    def fake(place_w):
+        return lambda card, before: {
+            "engine": "lightgbm-pre", "pl_decay": 0.82, "place_w": place_w,
+            "boats": {b: {"p": p[b], "factors": {}, "start_order": float(b),
+                          "q": (0.6 if b == boats[-1] else 0.08, 0.15)} for b in boats}}
+
+    monkeypatch.setattr(model, "_ml_result", fake(0.0))
+    plain = predict(card)
+    monkeypatch.setattr(model, "_ml_result", fake(0.5))
+    mixed = predict(card)
+    second = lambda pred: sum(v for k, v in pred.trifecta if k.split("-")[1] == str(boats[-1]))
+    assert second(mixed) > second(plain)
+    assert sum(v for _, v in mixed.trifecta) == pytest.approx(1.0)
+    assert [b.win for b in mixed.boats] == pytest.approx([b.win for b in plain.boats])
