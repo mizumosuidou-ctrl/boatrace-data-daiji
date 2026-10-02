@@ -195,6 +195,8 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
     strengths = {s.boat: math.exp(s.score) for s in scores}
     # 風の補正（場の風向き×風速別のコース別1着率。直前情報で風が分かってから）
     wind_adj = wind_mod.adjustment(card.jcd, before.wind_dir, before.wind_speed, getattr(before, "stabilizer", None)) if before else None
+    if ml and ml.get("wind") and engine == "lightgbm-post":
+        wind_adj = None  # 学習したモデルが風をもう使っている（二重に効かせない）
     if wind_adj:
         for s in scores:
             strengths[s.boat] *= wind_adj["factors"].get(s.course, 1.0)

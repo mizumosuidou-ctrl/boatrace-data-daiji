@@ -138,12 +138,24 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     pre = pre_v2 if extra_adopt else pre_v1
     metrics["pre_v1"] = m_v1
     pre_feats = base_feats
-    post_feats = base_feats + ds.EX_FEATURES
+
+    # 修正7：F持ちのスタート・壁を1つずつ足し、検証期間で良くなったものだけ残す
+    adopted = {}
+    best = m_v2 if extra_adopt else m_v1
+    for name, group in (("fhold", ds.FHOLD_FEATURES), ("wall", ds.WALL_FEATURES)):
+        feats = pre_feats + group
+        model = _fit(tr, va, feats)
+        m = evaluate(te, normalize(te, model.predict(te[feats])))
+        metrics[f"pre_{name}"] = m
+        adopted[name] = m["logloss"] < best["logloss"]
+        if adopted[name]:
+            pre, pre_feats, best = model, feats, m
+    post_feats = pre_feats + ds.EX_FEATURES
 
     # 3連単の2着・3着の平坦化を、調整用期間で合わせる（検証期間は使わない）
     decay = tune_decay(va, normalize(va, pre.predict(va[pre_feats])))
     metrics["pre"] = evaluate(te, normalize(te, pre.predict(te[pre_feats])), decay)
-    metrics["pre_fixed_decay"] = m_v2 if extra_adopt else m_v1
+    metrics["pre_fixed_decay"] = best
 
     # 展示後モデル：展示データがある期間だけで、前60%学習・次15%調整・最後25%検証
     post, post_adopt, orig_adopt = None, False, False
@@ -160,6 +172,15 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         metrics["baseline_ex_races"] = evaluate(te_x, normalize(te_x, te_x["course_winrate_prior"].to_numpy()))
         metrics["pre_ex_races"] = evaluate(te_x, normalize(te_x, pre.predict(te_x[pre_feats])), decay)
         metrics["post"] = evaluate(te_x, normalize(te_x, post.predict(te_x[post_feats])), decay)
+        # 風（展示後だけ。直前情報で分かる）
+        wind_feats = post_feats + ds.WIND_FEATURES
+        if te_x["wind_tail"].notna().mean() > 0.3:
+            post_w = _fit(tr_x, va_x, wind_feats)
+            metrics["post_wind"] = evaluate(te_x, normalize(te_x, post_w.predict(te_x[wind_feats])), decay)
+            adopted["wind"] = metrics["post_wind"]["logloss"] < metrics["post"]["logloss"]
+            if adopted["wind"]:
+                post, post_feats = post_w, wind_feats
+                metrics["post"] = metrics["post_wind"]
         post_adopt = metrics["post"]["logloss"] < metrics["pre_ex_races"]["logloss"]
 
         # オリジナル展示（一周・まわり足・直線）：データがある期間で前60%学習・次15%調整・最後25%検証。
@@ -203,6 +224,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         "post_adopt": bool(post_adopt),
         "orig_adopt": bool(orig_adopt),
         "extra_adopt": bool(extra_adopt),
+        "new_adopt": {k: bool(v) for k, v in adopted.items()},
         "pl_decay": decay,
         "priors": priors,
         "metrics": metrics,
@@ -220,10 +242,12 @@ def summary_ja(meta: dict) -> str:
         "",
         f"{'':14}{'1着的中':>8}{'3連単1点':>9}{'5点':>7}{'10点':>7}{'対数損失':>9}",
     ]
-    names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
-             "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後",
+    names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre_fhold": "＋F持ち", "pre_wall": "＋壁",
+             "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
+             "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後", "post_wind": "└展示後＋風",
              "orig_pre": "└直近 展示前", "orig_post": "└直近 展示後", "orig_post_orig": "└直近 +ｵﾘｼﾞﾅﾙ"}
-    for key in ("baseline", "pre_v1", "pre", "baseline_ex_races", "pre_ex_races", "post", "orig_pre", "orig_post", "orig_post_orig"):
+    for key in ("baseline", "pre_v1", "pre_fhold", "pre_wall", "pre", "baseline_ex_races", "pre_ex_races", "post", "post_wind",
+                "orig_pre", "orig_post", "orig_post_orig"):
         if key in m:
             r = m[key]
             lines.append(f"{names[key]:<14}{r['fav_win']*100:7.1f}%{r['tri_top1']*100:8.1f}%{r['tri_top5']*100:6.1f}%{r['tri_top10']*100:6.1f}%{r['logloss']:9.3f}")
@@ -232,6 +256,9 @@ def summary_ja(meta: dict) -> str:
     if "pre_v1" in m:
         lines.append("当地成績・最近の調子・モーター実績: " + ("使う（入れた方が良い）" if meta.get("extra_adopt") else "使わない（入れても良くならない）"))
         lines.append(f"3連単の2着・3着の平坦化: {meta.get('pl_decay')}（これまで {PL_DECAY}）")
+    labels = {"fhold": "F持ちのスタート順位", "wall": "壁（2〜6コースの選手が入ったときの1コース1着率）", "wind": "風（展示後）"}
+    for k, v in (meta.get("new_adopt") or {}).items():
+        lines.append(f"{labels.get(k, k)}: " + ("使う（入れた方が良い）" if v else "使わない（入れても良くならない）"))
     swaps = (meta.get("priors") or {}).get("motor_swaps") or {}
     if swaps:
         from ..venues import venue

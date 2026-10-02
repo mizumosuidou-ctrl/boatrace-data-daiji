@@ -72,7 +72,46 @@ def test_training_beats_course_baseline(trained):
     assert m["pre"]["logloss"] < m["baseline"]["logloss"]
     assert meta["adopt"] is True
     saved = json.loads((out / "meta.json").read_text())
-    assert saved["pre_features"] == (ds.BASE_FEATURES if saved["extra_adopt"] else ds.BASE_FEATURES_V1)
+    base = ds.BASE_FEATURES if saved["extra_adopt"] else ds.BASE_FEATURES_V1
+    added = [f for name, g in (("fhold", ds.FHOLD_FEATURES), ("wall", ds.WALL_FEATURES)) if saved["new_adopt"][name] for f in g]
+    assert saved["pre_features"] == base + added
+    for name in ("pre_fhold", "pre_wall"):
+        assert name in m
+    assert (out / "stats_fhold.csv.gz").exists() and (out / "stats_wall.csv.gz").exists()
+
+
+def test_fhold_and_wall_features(tmp_path):
+    """F持ちで遅くなる選手は sr_fgap がプラス、1コースがいつも勝つときに2コースにいた選手は壁が高い。"""
+    facts = []
+    for d in range(1, 21):
+        day = f"202501{d:02d}"
+        for rno in (1, 2):
+            for lane in range(1, 7):
+                sr = lane if lane > 1 else 1
+                if lane == 2:
+                    toban = "5000"
+                    sr = 6 if d > 10 else 2  # 11日目からF持ちで遅い
+                else:
+                    toban = str(6000 + lane * 10 + rno)
+                facts.append({"race_date": day, "venue": "01", "race_no": rno, "lane": lane, "course": lane, "toban": toban,
+                              "grade": "B1", "start_rank": sr, "st": "0.15", "st_hundredths": 15,
+                              "finish": lane, "race_f": "0", "updated_at": day})
+    pd.DataFrame(facts).to_csv(tmp_path / "facts.csv", index=False)
+    pd.DataFrame([{"race_date": f"202501{d:02d}", "toban": "5000", "f_count": int(d > 10)} for d in range(1, 21)]).to_csv(
+        tmp_path / "f_state.csv", index=False)
+    f = ds.load_facts(tmp_path / "facts.csv")
+    fs = ds.load_f_state(tmp_path / "f_state.csv")
+    nxt = f["date"].max() + pd.Timedelta(days=1)
+    t_f, g0 = ds.fhold_stats(f, fs, next_date=nxt)
+    t_w = ds.wall_stats(f, next_date=nxt)
+    rows = pd.DataFrame({"toban": ["5000", "6011"], "course_i": [2, 1], "date": [nxt, nxt], "f_hold": [1, 0],
+                         "race_id": ["r", "r"], "sr_c": [2.5, 1.5]})
+    out = ds.apply_new(rows, {"fhold": t_f[t_f["date"] == nxt], "wall": t_w[t_w["date"] == nxt]}, {"fgap": g0, "win": {1: 0.55}})
+    me = out[out["toban"] == "5000"].iloc[0]
+    assert me["sr_fgap"] > 1 and me["wall_self"] > 0.8
+    assert np.isnan(out[out["toban"] == "6011"].iloc[0]["wall_self"])  # 1コースの選手には壁が無い
+    ds.add_new_race_features(out)
+    assert out.loc[out["toban"] == "5000", "sr_c_f"].iloc[0] > 3 and out["wall_c2"].iloc[1] == pytest.approx(me["wall_self"])
 
 
 def meta_orig(out):
