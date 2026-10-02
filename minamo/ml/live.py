@@ -10,6 +10,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from .. import wind as wind_mod
 from . import dataset as ds
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,12 @@ class MLPredictor:
             path = self.dir / f"stats_{name}.csv.gz"
             t = pd.read_csv(path, dtype={k: str for k in keys}) if path.exists() else pd.DataFrame(columns=keys)
             self.extra[name] = t.assign(date=self.stats_date)
+        # 修正7：F持ちのスタートのずれ・壁（無ければ使わない）
+        self.new = {}
+        for name in ("fhold", "wall"):
+            path = self.dir / f"stats_{name}.csv.gz"
+            if path.exists():
+                self.new[name] = pd.read_csv(path, dtype={"toban": str}).assign(date=self.stats_date)
         self.mtime = (self.dir / "meta.json").stat().st_mtime
 
     @property
@@ -59,6 +66,7 @@ class MLPredictor:
         rt = getattr(card, "racetime", None) or {}
         rt_racers = rt.get("racers") or {}
         era = self.motor_era(card.jcd, card.date)
+        wind = wind_mod.components(before.wind_dir, before.wind_speed) if before else (np.nan, np.nan)
         rows = []
         for e in entries:
             b = be.get(e.boat)
@@ -72,7 +80,9 @@ class MLPredictor:
                 "rt_best": r[0] if r else np.nan,
                 "rt_series_rank": r[2] if r else np.nan,
                 "rt_series_n": r[3] if r else np.nan,
-                "motor_2": e.motor_2, "f_recent": float(e.f_count or 0),
+                "motor_2": e.motor_2, "f_recent": float(e.f_count or 0), "f_hold": float(e.f_count or 0),
+                "wind_tail": wind[0], "wind_cross": wind[1],
+                "wave_cm": getattr(before, "wave_cm", None) if before else np.nan,
                 "ex_time": b.exhibition_time if b else np.nan,
                 "ex_st": b.start_st if b else np.nan,
                 "tilt": b.tilt if b else np.nan,
@@ -82,12 +92,13 @@ class MLPredictor:
             })
         df = pd.DataFrame(rows)
         for c in ("motor_2", "ex_time", "ex_st", "tilt", "lap_time", "turn_time", "straight_time",
-                  "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n"):
+                  "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n", "wave_cm"):
             df[c] = pd.to_numeric(df[c], errors="coerce")
         for c, (lo, hi) in ds.ORIG_BOUNDS.items():
             df.loc[~df[c].between(lo, hi), c] = np.nan
         df = ds.apply_stats(df, self.pc, self.pa, self.meta["priors"])
         df = ds.apply_extra(df, self.extra)
+        df = ds.apply_new(df, self.new, self.meta["priors"])
         return df
 
     def motor_era(self, jcd: str, date: str) -> int:
@@ -129,7 +140,8 @@ class MLPredictor:
                 "motor_kp": _num_or_none(df["motor_kp_raw"].iloc[i]),
                 "n_c": int(df["n_c"].iloc[i]),
             }
-        return {"engine": "lightgbm-post" if use_post else "lightgbm-pre", "boats": out, "pl_decay": self.meta.get("pl_decay")}
+        return {"engine": "lightgbm-post" if use_post else "lightgbm-pre", "boats": out, "pl_decay": self.meta.get("pl_decay"),
+                "wind": "wind_tail" in feats}  # 風をモデルが使っていれば、場の風の表では補正しない
 
 
 def _num_or_none(v) -> Optional[float]:

@@ -33,6 +33,8 @@ VENUE_NORTH = {
 }
 COMPASS = ("北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東",
            "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西")
+# データベースには、方角ではなく種類の名前で入っているレースもある → その種類の真ん中の向きのアイコン
+CATEGORY_ICON = {"追い風": 5, "向かい風": 13, "左横風": 9, "右横風": 1}
 
 # 場ごとの表（％）。rates は 1〜6コースの1着率、bins は (この風速以上, rates)。
 VENUE_WIND: dict[str, dict] = {
@@ -94,10 +96,25 @@ def icon_from_compass(jcd: str, wind_from: Optional[str]) -> Optional[int]:
     """
     north = VENUE_NORTH.get(str(jcd).zfill(2))
     name = str(wind_from or "").strip().replace("の風", "")
+    if name in CATEGORY_ICON:
+        return CATEGORY_ICON[name]
     if north is None or name not in COMPASS:
         return None
     # 吹いていく向き＝吹いてくる方の反対（＋8目盛り）。画面の上からの目盛り（22.5度）で数える
     return (north - 1 + COMPASS.index(name) + 8) % 16 + 1
+
+
+def components(wind_dir: Optional[int], speed: Optional[float]) -> tuple[float, float]:
+    """(追い風の強さ, 右横風の強さ) m。向かい風・左横風はマイナス。1m未満は (0, 0)。分からなければ NaN。"""
+    nan = float("nan")
+    if speed is None or speed != speed:
+        return nan, nan
+    if speed < 1:
+        return 0.0, 0.0
+    if not wind_dir or wind_dir != wind_dir:
+        return nan, nan
+    a = math.radians((int(wind_dir) - 1) * 22.5)
+    return round(speed * math.sin(a), 3), round(speed * math.cos(a), 3)
 
 
 def _rates(table: dict, cat: str, speed: float, stabilizer: Optional[bool]) -> Optional[list[float]]:
