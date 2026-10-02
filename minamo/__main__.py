@@ -44,6 +44,10 @@ def main() -> None:
     mlo = sub.add_parser("ml-original", help="過去のオリジナル展示（一周・まわり足・直線）をボートレース日和から取り寄せる（3〜5秒に1件）")
     mlo.add_argument("--days", type=int, default=183, help="さかのぼる日数（既定 183＝約6か月）")
     mlo.add_argument("--limit", type=int, default=None)
+    mlf = sub.add_parser("formation", help="スタート隊形トゥエルブの分布表をデータベースの実績から作る")
+    mlf.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
+    mlf.add_argument("--venue", default=None, help="表示する場（例 01）。省略すると作るだけ")
+    mlf.add_argument("--category", default="一般", help="一般・SG・G1・女子・マスターズ・ルーキーズ・正月・お盆")
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -71,6 +75,14 @@ def main() -> None:
         else:
             meta = train.run(raw, live.ML_DIR, test_days=args.test_days)
             print(train.summary_ja(meta))
+    elif args.cmd == "formation":
+        from .ml import formation_table, live
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        data = formation_table.build(raw, live.ML_DIR)
+        print(f"{data['meta']['races']} races {data['meta']['data_range']}")
+        if args.venue:
+            print(formation_table.format_table(data, args.venue.zfill(2), args.category))
     elif args.cmd == "serve":
         root = Path(__file__).resolve().parent.parent / "web"
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))

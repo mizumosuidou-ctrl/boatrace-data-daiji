@@ -346,3 +346,46 @@ def test_pipeline_records_motor_swap(tmp_path, monkeypatch):
         pipe._save("20261001", f"12-{rno:02d}", {"card": {"entries": [{"motor_2": 0.0}] * 6}})
     pipe._check_motor_swap("20261001", "12")
     assert live._live_swaps() == {"12": ["20261001"]}
+
+
+def test_start_formation_twelve():
+    from minamo import formation as fm
+
+    f = fm.formation({1: 2.1, 2: 3.0, 3: 2.5, 4: 2.8})
+    assert f["label"] == "①〉③④②" and f["inner_top"] and f["gap"] == pytest.approx(0.4)
+    f = fm.formation({1: 3.2, 2: 3.0, 3: 2.5, 4: 2.8})  # ③が①より早い
+    assert f["label"] == "①〈③④②" and not f["inner_top"] and f["gap"] == pytest.approx(-0.7)
+    assert fm.formation({1: 2.5, 2: 2.5, 3: 2.5, 4: 3.0})["label"] == "①〉②③④"  # 同じ数字は内側が上
+    assert fm.formation({1: 2.0, 2: None, 3: 2.5, 4: 3.0}) is None
+    assert len(set(fm.ALL_KEYS)) == 12 and fm.label_of("1<342") == "①〈③④②"
+
+
+def test_race_category_from_title():
+    from minamo import formation as fm
+
+    assert fm.category("ヴィーナスシリーズ第14戦 スターダム杯") == "女子"
+    assert fm.category("マスターズリーグ第6戦") == "マスターズ"
+    assert fm.category("ヤングダービー") == "ルーキーズ"  # SG の「ダービー」より先
+    assert fm.category("ボートレースダービー") == "SG"
+    assert fm.category("開設70周年記念 赤城雷神杯") == "G1"
+    assert fm.category("お盆特選レース") == "正月・お盆"
+    assert fm.category("中日スポーツ杯", "G3") == "一般" and fm.category("なにか", "SG") == "SG"
+
+
+def test_formation_tables_from_facts(tmp_path):
+    from minamo.ml import formation_table, synthetic
+
+    synthetic.generate(tmp_path / "raw", days=120, races_per_day=24)
+    data = formation_table.build(tmp_path / "raw", tmp_path / "ml")
+    assert data["meta"]["races"] > 100 and (tmp_path / "ml" / "formation.json").exists()
+    allt = data["tables"]["ALL"]["一般"]
+    assert sum(v["n"] for v in allt.values()) == data["meta"]["races"]
+    for v in allt.values():
+        assert v["escape"] == sum(v["second"].values()) and v["n"] - v["escape"] == sum(v["head"].values())
+    assert sorted(v["rank"] for v in allt.values()) == list(range(1, len(allt) + 1))
+    text = formation_table.format_table(data, "01")
+    assert "①〉②③④" in text and "逃げ" in text
+    cur = pd.read_csv(tmp_path / "ml" / "st_rank_course.csv.gz", dtype={"toban": str})
+    assert cur["avg_sr"].between(1, 6).all()
+    hit = formation_table.lookup(data, "01", "一般", max(allt, key=lambda k: allt[k]["n"]), min_n=1)
+    assert hit and 0 <= hit["rate"] <= 1
