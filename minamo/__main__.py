@@ -63,6 +63,9 @@ def main() -> None:
     mlv.add_argument("--raw", default=None)
     mlq = sub.add_parser("odds-check", help="オッズの動き（締切15分前→5分前→確定）と結果を突き合わせる表を出す")
     mlq.add_argument("--raw", default=None)
+    mlr = sub.add_parser("rtm-compare", help="レースタイムモニターの予想（DEEP・NORMAL・裏の予想）とMINAMOを同じレースで比べる")
+    mlr.add_argument("--raw", default=None)
+    mlr.add_argument("--data", default=None, help="MINAMOのレースのJSONの場所（既定 web/data）")
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -134,6 +137,12 @@ def main() -> None:
         from .ml import live, odds_history
 
         print(odds_history.build(Path(args.raw) if args.raw else live.ML_DIR / "raw"))
+    elif args.cmd == "rtm-compare":
+        from . import store
+        from .ml import live, rtm_compare
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        print(rtm_compare.build(raw, Path(args.data) if args.data else store.DATA_DIR))
     elif args.cmd == "serve":
         root = Path(__file__).resolve().parent.parent / "web"
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
