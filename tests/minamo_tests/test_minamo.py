@@ -10,7 +10,7 @@ from minamo.model import predict
 from minamo.models import RaceResult, ResultRow
 from minamo.venues import VENUES, course_base_rates
 
-from minamo_fixtures import BEFOREINFO_HTML, INDEX_HTML, RACELIST_HTML, RESULT_HTML, odds_html
+from minamo_fixtures import BEFOREINFO_HTML, INDEX_HTML, RACELIST_HTML, RESULT_HTML, odds2_html, odds_html
 
 
 # ------------------------------------------------------------ parsers
@@ -56,6 +56,13 @@ def test_parse_odds3t_maps_all_120_combos():
     assert len(odds) == 120
     assert odds == expected
     assert len(set(parsers.trifecta_order())) == 120
+
+
+def test_parse_odds2t_maps_all_30_exactas():
+    html, value = odds2_html()
+    odds = parsers.parse_odds2t(html)
+    assert odds == pytest.approx(value) and len(odds) == 30
+    assert parsers.parse_odds2t("<html></html>") == {}
 
 
 def test_parse_result():
@@ -220,6 +227,10 @@ class FakeFetcher:
         self.calls.append(("odds3t", jcd, rno))
         return odds_html()[0]
 
+    def odds2tf(self, hd, jcd, rno):
+        self.calls.append(("odds2tf", jcd, rno))
+        return odds2_html()[0]
+
     def result(self, hd, jcd, rno):
         self.calls.append(("result", jcd, rno))
         return RESULT_HTML
@@ -282,6 +293,11 @@ def test_pipeline_full_day(sandbox):
     assert day["totals"]["settled"] == 1
     record = json.loads((sandbox / "data" / "record.json").read_text())
     assert record["days"][-1]["date"] == date
+    # オッズ履歴：直前情報を取るたびに1行、確定後に「final」を1行
+    hist = [json.loads(x) for x in (sandbox / "state" / "odds" / f"{date}.jsonl").read_text().splitlines()]
+    assert [h["kind"] for h in hist] == ["pre", "pre", "final"] and [h["min"] for h in hist[:2]] == [20.0, 10.0]
+    assert hist[0]["t2"]["1-2"] == pytest.approx(1.5) and len(hist[0]["t2"]) == 30 and len(hist[0]["t3"]) == 120
+    assert race["odds2"]["2-1"] == pytest.approx(odds2_html()[1]["2-1"])
     # 確定後は取得しない
     n = len(fetcher.calls)
     pipe.tick(date, deadline + timedelta(minutes=20))

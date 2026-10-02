@@ -6,6 +6,7 @@ tick       常時：締切30分前から直前情報・オッズを取り直し�
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -95,6 +96,7 @@ class Pipeline:
             st["ai_stage"] = "card"
             self._save(date, f"{jcd}-{rno:02d}", st)
         payload = store.build_race(card, before, odds, pred, ai, result, vday)
+        payload["odds2"] = st.get("odds2") or {}
         store.write_json(store.race_path(date, jcd, rno), payload)
         return payload
 
@@ -199,13 +201,16 @@ class Pipeline:
     def _refresh(self, date: str, vd: VenueDay, rno: int, st: dict, now: datetime) -> None:
         before = parsers.parse_beforeinfo(self.fetcher.beforeinfo(date, vd.jcd, rno))
         odds = parsers.parse_odds3t(self.fetcher.odds3t(date, vd.jcd, rno))
+        odds2 = self._odds2(date, vd.jcd, rno)
         card = _card_from(st["card"])
+        self._log_odds(date, vd.jcd, rno, card.deadline, now, "pre", odds, odds2)
         new_orig = before.complete and self._original(date, vd.jcd, rno, st, card, now)
         for b in before.entries:
             o = (st.get("orig") or {}).get(str(b.boat)) or {}
             b.lap_time, b.turn_time, b.straight_time = o.get("lap_time"), o.get("turn_time"), o.get("straight_time")
         st["before"] = asdict(before)
         st["odds"] = odds or st.get("odds")
+        st["odds2"] = odds2 or st.get("odds2")
         st["before_at"] = now.isoformat()
         if before.complete and (st.get("ai_stage") != "exhibition" or new_orig):
             pred = predict(card, before, odds or None)
@@ -213,6 +218,30 @@ class Pipeline:
             st["ai_stage"] = "exhibition"
         self._save(date, f"{vd.jcd}-{rno:02d}", st)
         self.publish(date, vd.jcd, rno, vd)
+
+    def _odds2(self, date: str, jcd: str, rno: int) -> dict[str, float]:
+        """2連単オッズ。取れなくても予想は続ける。"""
+        try:
+            return parsers.parse_odds2t(self.fetcher.odds2tf(date, jcd, rno))
+        except requests.RequestException as exc:
+            log.warning("odds2tf %s %s %dR: %s", date, jcd, rno, exc)
+            return {}
+
+    def _log_odds(self, date: str, jcd: str, rno: int, deadline: Optional[str], now: datetime, kind: str,
+                  t3: dict, t2: dict) -> None:
+        """オッズ履歴を var/state/odds/{date}.jsonl に1行ずつ足す（締切まで何分か付き）。展開単位の補正を作るための材料。"""
+        if not t3 and not t2:
+            return
+        mins = None
+        if deadline:
+            hh, mm = map(int, deadline.split(":"))
+            dl = datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST)
+            mins = round((dl - now).total_seconds() / 60, 1)
+        row = {"race": f"{date}-{jcd}-{rno:02d}", "at": now.isoformat(timespec="seconds"), "min": mins, "kind": kind, "t2": t2, "t3": t3}
+        path = STATE_DIR / "odds" / f"{date}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
 
     def _original(self, date: str, jcd: str, rno: int, st: dict, card: RaceCard, now: datetime) -> bool:
         """場の公式サイトからオリジナル展示（一周・まわり足・直線）を取る。新しく取れたら True。"""
@@ -242,6 +271,13 @@ class Pipeline:
         st["result_tries"] = tries + 1
         if result.cancelled or (result.trifecta and len(result.rows) >= 3):
             st["result"] = asdict(result)
+            if not result.cancelled:  # 確定オッズも記録しておく（オッズ履歴の最後の1枚）
+                try:
+                    final3 = parsers.parse_odds3t(self.fetcher.odds3t(date, vd.jcd, rno))
+                except requests.RequestException as exc:
+                    log.warning("final odds %s %s %dR: %s", date, vd.jcd, rno, exc)
+                    final3 = {}
+                self._log_odds(date, vd.jcd, rno, st["card"].get("deadline"), store.now_jst(), "final", final3, self._odds2(date, vd.jcd, rno))
             self._save(date, f"{vd.jcd}-{rno:02d}", st)
             self.publish(date, vd.jcd, rno, vd)
             return True

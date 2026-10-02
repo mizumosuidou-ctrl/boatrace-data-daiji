@@ -293,6 +293,28 @@ def parse_odds3t(html: str) -> dict[str, float]:
     return odds
 
 
+def exacta_order() -> list[str]:
+    """公式2連単オッズ表の oddsPoint 出現順に対応する組番（5行×1着6列）。"""
+    order: list[str] = []
+    for r in range(5):
+        for f in range(1, 7):
+            order.append(f"{f}-{[b for b in range(1, 7) if b != f][r]}")
+    return order
+
+
+def parse_odds2t(html: str) -> dict[str, float]:
+    """2連単オッズ。ページには2連単（30）のあとに2連複（15）が続く。"""
+    cells = _soup(html).select("td.oddsPoint")
+    if len(cells) < 30:
+        return {}
+    odds: dict[str, float] = {}
+    for combo, cell in zip(exacta_order(), cells[:30]):
+        value = _num(cell.get_text())
+        if value is not None and value > 0:
+            odds[combo] = value
+    return odds
+
+
 # ---------------------------------------------------------------- result
 
 PLACE_MAP = {str(i): i for i in range(1, 7)}
