@@ -18,7 +18,8 @@
 - サーバー: `ssh -i ~/Downloads/ログイン用認証キー_20260826171914.key ubuntu@133.18.146.150`
 - コード: このリポジトリの `minamo/`（取得・予想・LightGBM）、`web/`（画面）、`deploy/`（docker compose）
 - サーバーでの反映: `cd /opt/minamo && git pull` → `cd /opt/minamo/deploy && sudo docker compose up -d --build worker`
-- 学習し直し: `sudo bash /opt/minamo/deploy/ml_refresh.sh`（DB から CSV を書き出して `python -m minamo ml-train`）
+- 学習し直し: `sudo bash /opt/minamo/deploy/ml_refresh.sh`（`db_export.sh` で DB から CSV を書き出して `python -m minamo ml-train` → ml-series → formation → wind-table）
+- DB からの書き出しだけ: `sudo bash /opt/minamo/deploy/db_export.sh [weather original_db f_state …]`（読むだけ。facts・exhibition・motors は必須、ほかは失敗しても続ける）
 
 ## いま動いているもの（2026-10-01 夜に開始）
 
@@ -70,8 +71,19 @@
   2026-10-02 の件数（77,274R）：一般61,069 女子5,461 G1 3,286 ルーキーズ2,303 正月・お盆1,594 マスターズ1,292 一般内・女子戦832 SG756 W男子354 W女子327。
 - 桐生一般戦の12隊形は、ユーザーの手集計と傾向が一致（最上位①〉③②④・最下位①〈④②③が同じ）。
 - 本番：レース画面の「イン逃げ指数」欄に隊形と、その場・種類での逃げ率／順位／逃げたときの2着を表示。day.json に隊形キーを記録（あとで補正の効果を測る）。予想そのものはまだ隊形で補正していない。
-- ml_refresh.sh は 学習 → ml-series → formation の順に実行。
+- ml_refresh.sh は 書き出し → 学習 → ml-series → formation → wind-table の順に実行。
 - 画面の表記は日本語化済み（PR #13）。
+
+## 風の補正（PR #19・#22）
+
+- `minamo/wind.py`：公式の風アイコン（is-wind1〜16＝水面図の上で風が吹いていく向き。図はどの場もスタンドが下・1マークが右）を
+  追い風（右向き）／向かい風（左）／左横風（下）／右横風（上）／無風（1m未満）に分け、その風でのコース別1着率 ÷ ふだんの1着率 を各コースの強さに掛ける（0.6〜1.6倍）。
+  5m以上の追い風・向かい風は、①1着時の2着も表に半分寄せる。
+- 表の出どころ：桐生＝ユーザー提供の boat-log.com の表（`VENUE_WIND`、優先）。ほかの場＝DB の過去の天気から作った表（`var/ml/wind.json`）。
+- DB の過去の風は「北西」などの方角（吹いてくる方）。場ごとの水面の向き（公式の方位アイコン is-direction の番号、`VENUE_NORTH`）で
+  公式アイコンに直す：アイコン＝(向き−1＋方角の目盛り＋8) mod 16 ＋1。尼崎で公式ページと一致を確認。
+- `python -m minamo wind-table [--venue 01] [--check 2] [--show]`：表を作り、最後の120日を使わずに作った表で1着コースの当てやすさを比べる。
+  良くなった場だけ「使う（○）」。`--venue` で風速1mごとの表（桐生は boat-log と並べる）、`--check N` で各場N件を公式の結果ページの風アイコンと照合。
 
 ## 予想手順でまだ入っていないもの
 
