@@ -486,3 +486,95 @@ def test_series_titles_from_official_index_fill_race_categories(tmp_path):
     assert set(s["venue"]) >= {"12"} and s["title"].notna().all()
     df = formation_table.load(raw)
     assert df["title"].notna().all() and df["title"].iloc[0] == s.loc[s["venue"] == "12", "title"].iloc[0]
+
+
+def _wind_raw(path, venue="02", days=400, seed=3):
+    """架空の天気と結果：追い風なら1コースが勝ちやすく、向かい風なら負けやすい場。"""
+    from minamo import wind
+
+    rng = np.random.default_rng(seed)
+    name_of = lambda cat: next(c for c in wind.COMPASS if wind.classify(wind.icon_from_compass(venue, c), 3)[0] == cat)
+    tail, head = name_of("追い風"), name_of("向かい風")
+    w_rows, f_rows = [], []
+    for d in range(days):
+        day = (pd.Timestamp("2025-01-01") + pd.Timedelta(days=d)).strftime("%Y%m%d")
+        for rno in range(1, 13):
+            u = rng.random()
+            if u < 0.3:
+                frm, speed, p1 = "北", 0, 0.5
+            elif u < 0.65:
+                frm, speed, p1 = tail, int(rng.integers(1, 7)), 0.7
+            else:
+                frm, speed, p1 = head, int(rng.integers(1, 7)), 0.3
+            w_rows.append({"race_date": day, "venue": venue, "race_no": rno, "wind_from": frm, "wind_speed": speed})
+            first = 1 if rng.random() < p1 else int(rng.integers(2, 7))
+            rest = [c for c in range(1, 7) if c != first]
+            rng.shuffle(rest)
+            for fin, c in enumerate([first] + rest, 1):
+                f_rows.append({"race_date": day, "venue": venue, "race_no": rno, "lane": c, "course": c, "finish": fin})
+    pd.DataFrame(w_rows).to_csv(path / "weather.csv", index=False)
+    pd.DataFrame(f_rows).to_csv(path / "facts.csv", index=False)
+
+
+def test_wind_tables_from_past_weather(tmp_path, monkeypatch):
+    from minamo import wind
+    from minamo.ml import wind_table
+
+    _wind_raw(tmp_path)
+    data = wind_table.build(tmp_path, tmp_path)
+    t = data["venues"]["02"]
+    assert t["adopt"] and data["meta"]["overall"]["ll_wind"] < data["meta"]["overall"]["ll_base"]
+    assert all(n >= wind_table.MIN_BIN for _, _, n in t["追い風"])  # どの区切りも十分なレース数
+    assert t["追い風"][0][0] == 1 and t["n_calm"] > 0
+    # 当日の補正：過去データの表は「使う」になった場だけ。桐生はもらった表（boat-log）が先
+    monkeypatch.setattr(wind, "LEARNED_PATH", tmp_path / wind_table.OUT_NAME)
+    tail = wind.adjustment("02", 5, 3)
+    assert tail["source"] == "過去データ" and tail["factors"][1] > 1.1
+    assert wind.adjustment("02", 13, 3)["factors"][1] < 0.9
+    assert wind.adjustment("01", 5, 3)["source"] == "boat-log"
+    assert wind.adjustment("03", 5, 3) is None
+    report = wind_table.report(data)
+    assert "戸田" in report and "○" in report
+    assert "追い風1m" in wind_table.detail(data, "02")
+
+
+def test_wind_icon_check_against_official_pages(tmp_path):
+    from minamo import wind
+    from minamo.ml import wind_table
+
+    pd.DataFrame([
+        {"race_date": "20260910", "venue": "13", "race_no": 6, "wind_from": "北", "wind_speed": 3},
+        {"race_date": "20260910", "venue": "13", "race_no": 7, "wind_from": "東", "wind_speed": 2},
+        {"race_date": "20260910", "venue": "13", "race_no": 8, "wind_from": "東", "wind_speed": 0},  # 無風は見ない
+    ]).to_csv(tmp_path / "weather.csv", index=False)
+
+    class Fake:
+        calls = []
+
+        def result(self, hd, jcd, rno):
+            self.calls.append((hd, jcd, rno))
+            icon = {6: 2, 7: 9}[rno]  # 7R はわざと違うアイコン
+            return f'<div class="weather1_bodyUnit is-wind"></div><p class="weather1_bodyUnitImage is-wind{icon}"></p>'
+
+    rows = wind_table.check_icons(tmp_path, Fake(), per_venue=5)
+    assert [r["mine"] for r in rows] == [wind.icon_from_compass("13", "北"), wind.icon_from_compass("13", "東")]
+    text = wind_table.format_check(rows)
+    assert "一致 1/2" in text and "20260910-13-07" in text and len(Fake.calls) == 2
+    assert not wind_table.check_ok(rows) and wind_table.check_ok(rows[:1]) and not wind_table.check_ok([])
+
+
+def test_original_times_from_database_export(tmp_path):
+    pd.DataFrame([
+        {"race_date": "20260901", "venue": "14", "race_no": 1, "lane": 1, "lap_time": 37.0, "turn_time": 5.9, "straight_time": 7.0},
+        {"race_date": "20260901", "venue": "14", "race_no": 1, "lane": 2, "lap_time": 37.2, "turn_time": 6.0, "straight_time": 7.1},
+    ]).to_csv(tmp_path / "original.csv", index=False)
+    pd.DataFrame([
+        {"race_date": "20260901", "venue": "14", "race_no": 1, "lane": 1, "lap_time": 36.9, "turn_time": 5.8, "straight_time": 6.9, "captured_at": "2026-09-01T01:00"},
+        {"race_date": "20260901", "venue": "14", "race_no": 1, "lane": 2, "lap_time": None, "turn_time": None, "straight_time": None, "captured_at": "2026-09-01T01:00"},
+        {"race_date": "20260902", "venue": "14", "race_no": 3, "lane": 4, "lap_time": 36.5, "turn_time": 5.7, "straight_time": 6.8, "captured_at": "2026-09-02T01:00"},
+    ]).to_csv(tmp_path / "original_db.csv", index=False)
+    o = ds.load_original(tmp_path / "original.csv").set_index(["race_id", "lane"])
+    assert o.loc[("20260901-14-01", 1), "lap_time"] == pytest.approx(36.9)  # データベースの値が先
+    assert o.loc[("20260901-14-01", 2), "lap_time"] == pytest.approx(37.2)  # 空の行では消さない
+    assert o.loc[("20260902-14-03", 4), "straight_time"] == pytest.approx(6.8)
+    assert len(ds.load_original(tmp_path / "none.csv")) == 2  # 日和の分が無くても、データベースの分だけで使える

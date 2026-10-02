@@ -214,11 +214,20 @@ def load_exhibition(path: Optional[Path]) -> pd.DataFrame:
 
 
 def load_original(path: Optional[Path]) -> pd.DataFrame:
-    """ボートレース日和から取り寄せたオリジナル展示（一周・まわり足・直線）。"""
+    """オリジナル展示（一周・まわり足・直線）。ボートレース日和から取り寄せた分（original.csv）と、
+    データベースから書き出した分（同じ場所の original_db.csv）を合わせる。同じ艇は後者を使う。"""
     cols = ["race_id", "lane"] + list(ORIG_BOUNDS)
-    if not path or not Path(path).exists():
+    paths = [Path(path), Path(path).with_name("original_db.csv")] if path else []
+    frames = [pd.read_csv(p, dtype=str, usecols=lambda c: c in {"race_date", "venue", "race_no", "lane", "captured_at", *ORIG_BOUNDS})
+              for p in paths if p.exists()]
+    if not frames:
         return pd.DataFrame(columns=cols)
-    o = pd.read_csv(path, dtype=str, usecols=lambda c: c in {"race_date", "venue", "race_no", "lane", *ORIG_BOUNDS})
+    o = pd.concat(frames, ignore_index=True)
+    for c in [*ORIG_BOUNDS, "captured_at"]:
+        if c not in o:
+            o[c] = None
+    o = o.dropna(subset=list(ORIG_BOUNDS), how="all")  # 3つとも空の行で、取り寄せた値を消さない
+    o = o.sort_values("captured_at", na_position="first", kind="stable")  # 同じ艇が何回もあれば、最後に取った値
     o["race_date"] = o["race_date"].str.replace("-", "", regex=False).str[:8]
     o["venue"] = o["venue"].str.zfill(2)
     o["race_no"] = _num(o["race_no"])

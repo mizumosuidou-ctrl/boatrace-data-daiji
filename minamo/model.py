@@ -173,7 +173,7 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         if be and be.start_st is not None and ref_exst is not None:
             penalty = 0.08 if be.start_st < 0 else 0.0
             f["exh_st"] = W_EXH_ST * max(-0.15, min(0.15, abs(be.start_st) - ref_exst)) - penalty
-        if wind >= 5 and card.jcd not in wind_mod.VENUE_WIND:  # 場の風の表がある場は、あとで表で補正する
+        if wind >= 5 and not wind_mod.has_table(card.jcd):  # 場の風の表がある場は、あとで表で補正する
             # 強風はイン有利が崩れやすい
             f["wind"] = -0.07 * (wind - 4) if c == 1 else 0.03 * (wind - 4)
         scores.append(BoatScore(boat=e.boat, course=c, score=sum(f.values()), factors=f))

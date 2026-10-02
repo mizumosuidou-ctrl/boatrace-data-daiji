@@ -7,14 +7,32 @@
 
 補正のしかた：その風での1着率 ÷ その場のふだんの1着率 を、各コースの強さに掛ける（0.6〜1.6倍の範囲）。
 イン1着時の2着の割合がある風では、①頭の3連単の2着を、モデルと表の半々（幾何平均）に寄せる。
+
+表は2種類：
+  - VENUE_WIND：ユーザーにもらった表（桐生＝boat-log.com）。こちらを優先する
+  - var/ml/wind.json：データベースの過去の天気とレース結果から作った表（python -m minamo wind-table）。
+    検証期間で当てやすくなった場（adopt）だけ使う
 """
 from __future__ import annotations
 
+import json
 import math
+import os
+from pathlib import Path
 from typing import Optional
 
 FACTOR_RANGE = (0.6, 1.6)
 SECOND_WEIGHT = 0.5
+LEARNED_PATH = Path(os.environ.get("MINAMO_ML_DIR", Path(__file__).resolve().parents[1] / "var" / "ml")) / "wind.json"
+
+# 場ごとの水面の向き：公式サイトの方位アイコン is-direction の番号。
+# 北が画面の上から (番号-1)×22.5度 時計回りの向きに描かれる（図はどの場も、スタンドが下・1マークが右）
+VENUE_NORTH = {
+    "01": 14, "02": 16, "03": 4, "04": 5, "05": 9, "06": 13, "07": 11, "08": 9, "09": 8, "10": 14, "11": 13, "12": 13,
+    "13": 10, "14": 15, "15": 7, "16": 13, "17": 11, "18": 7, "19": 11, "20": 10, "21": 1, "22": 2, "23": 12, "24": 3,
+}
+COMPASS = ("北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東",
+           "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西")
 
 # 場ごとの表（％）。rates は 1〜6コースの1着率、bins は (この風速以上, rates)。
 VENUE_WIND: dict[str, dict] = {
@@ -69,6 +87,19 @@ def classify(wind_dir: Optional[int], speed: Optional[float]) -> Optional[tuple[
     return ("右横風" if up > 0 else "左横風"), float(speed)
 
 
+def icon_from_compass(jcd: str, wind_from: Optional[str]) -> Optional[int]:
+    """「北西」のような方角（風が吹いてくる方）→ 公式の風アイコン番号（風が吹いていく向き。1〜16）。
+
+    確認：尼崎（is-direction10）で 北→is-wind2、東→is-wind6（同じレースの公式ページと一致）。
+    """
+    north = VENUE_NORTH.get(str(jcd).zfill(2))
+    name = str(wind_from or "").strip().replace("の風", "")
+    if north is None or name not in COMPASS:
+        return None
+    # 吹いていく向き＝吹いてくる方の反対（＋8目盛り）。画面の上からの目盛り（22.5度）で数える
+    return (north - 1 + COMPASS.index(name) + 8) % 16 + 1
+
+
 def _rates(table: dict, cat: str, speed: float, stabilizer: Optional[bool]) -> Optional[list[float]]:
     if cat == "無風":
         return table.get("無風")
@@ -78,23 +109,63 @@ def _rates(table: dict, cat: str, speed: float, stabilizer: Optional[bool]) -> O
     if not bins:
         return None
     pick = None
-    for floor, rates in bins:
+    for floor, rates, *_ in bins:  # 作った表は [下限, 1着率, レース数]
         if speed >= floor:
             pick = rates
     return pick
 
 
+_learned = {"path": None, "mtime": None, "data": {}}
+
+
+def learned() -> dict:
+    """データベースから作った表（var/ml/wind.json）。無い・読めないときは空。ファイルが変われば読み直す。"""
+    path = LEARNED_PATH
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    if (path, mtime) != (_learned["path"], _learned["mtime"]):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        _learned.update(path=path, mtime=mtime, data=data)
+    return _learned["data"]
+
+
+def table_for(jcd: str) -> tuple[Optional[dict], Optional[str]]:
+    """(その場の表, 出どころ)。もらった表が先、無ければ検証で採用された自分のデータの表。"""
+    if jcd in VENUE_WIND:
+        return VENUE_WIND[jcd], "boat-log"
+    t = (learned().get("venues") or {}).get(jcd)
+    if t and t.get("adopt"):
+        return t, "過去データ"
+    return None, None
+
+
+def has_table(jcd: str) -> bool:
+    return table_for(jcd)[0] is not None
+
+
+def factors_of(table: dict, cat: str, speed: float, stabilizer: Optional[bool] = None) -> Optional[dict[int, float]]:
+    """その風での各コースの倍率（1着率 ÷ ふだんの1着率）。表にその風が無ければ None。"""
+    rates = _rates(table, cat, speed, stabilizer)
+    if not rates:
+        return None
+    lo, hi = FACTOR_RANGE
+    return {course: max(lo, min(hi, r / b)) for course, (r, b) in enumerate(zip(rates, table["base"]), 1) if b > 0}
+
+
 def adjustment(jcd: str, wind_dir: Optional[int], speed: Optional[float], stabilizer: Optional[bool] = None) -> Optional[dict]:
-    """{"category", "speed", "stabilizer", "factors": {コース: 倍率}, "second": [1-2〜1-6の割合] or None}。表が無ければ None。"""
-    table = VENUE_WIND.get(jcd)
+    """{"category", "speed", "stabilizer", "factors": {コース: 倍率}, "second": [1-2〜1-6の割合] or None, "source"}。表が無ければ None。"""
+    table, source = table_for(jcd)
     c = classify(wind_dir, speed)
     if not table or not c:
         return None
     cat, sp = c
-    rates = _rates(table, cat, sp, stabilizer)
-    if not rates:
+    factors = factors_of(table, cat, sp, stabilizer)
+    if not factors:
         return None
-    lo, hi = FACTOR_RANGE
-    factors = {course: max(lo, min(hi, r / b)) for course, (r, b) in enumerate(zip(rates, table["base"]), 1) if b > 0}
-    second = table.get("second", {}).get(cat) if sp >= 5 else None
-    return {"category": cat, "speed": sp, "stabilizer": stabilizer, "factors": factors, "second": second}
+    second = (table.get("second") or {}).get(cat) if sp >= 5 else None
+    return {"category": cat, "speed": sp, "stabilizer": stabilizer, "factors": factors, "second": second, "source": source}
