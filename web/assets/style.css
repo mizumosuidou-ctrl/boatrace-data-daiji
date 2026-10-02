@@ -640,7 +640,7 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
   .brand-word { font-size: 22px; }
   .clock-label, .theme-toggle { display: none; }
   .demo-badge { font-size: 0; padding: 5px 8px; }
-  .demo-badge::after { content: "DEMO"; font-size: 10px; }
+  .demo-badge::after { content: "デモ"; font-size: 10px; }
   .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; width: 100%; }
   .kpi { min-width: 0; padding: 10px 10px; }
   .kpi b { font-size: 22px; }
