@@ -155,3 +155,19 @@ INDEX_HTML = """<html><body><div class="table1"><table>
   <td>初日</td>
 </tr></tbody>
 </table></div></body></html>"""
+
+
+def odds2_html():
+    """公式2連単オッズ表と同じ並び（5行×1着6列、そのあとに2連複15）。値は 1-2=1.5, 1-3=1.6 … のように決まる。"""
+    from minamo.parsers import exacta_order
+
+    value = {c: 1.5 + i / 10 for i, c in enumerate(sorted(exacta_order()))}
+    rows = []
+    for r in range(5):
+        cells = []
+        for f in range(6):
+            combo = exacta_order()[r * 6 + f]
+            cells.append(f'<td class="is-boatColor{combo[-1]}">{combo[-1]}</td><td class="oddsPoint">{value[combo]:.1f}</td>')
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    quinella = "".join('<td class="oddsPoint">9.9</td>' for _ in range(15))
+    return f"<html><table><tbody>{''.join(rows)}</tbody></table><table><tr>{quinella}</tr></table></html>", value

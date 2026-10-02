@@ -60,5 +60,9 @@ class Fetcher:
     def odds3t(self, hd: str, jcd: str, rno: int) -> str:
         return self.get("odds3t", rno=rno, jcd=jcd, hd=hd)
 
+    def odds2tf(self, hd: str, jcd: str, rno: int) -> str:
+        """2連単・2連複オッズ（2連単が先に並ぶ）。"""
+        return self.get("odds2tf", rno=rno, jcd=jcd, hd=hd)
+
     def result(self, hd: str, jcd: str, rno: int) -> str:
         return self.get("raceresult", rno=rno, jcd=jcd, hd=hd)
