@@ -7,6 +7,7 @@
   3. 隊形の差（②③④で一番早い艇と①の平均スタート順位の差）ごとの、イン逃げ率
   4. ①の平均スタート順位が早い／遅いときの、①の1着率と、負けたときに2・3着に残る率
   5. そのコースの3連対率（直近1年・10走以上）が70%以上の選手が、実際に3着以内に入った率
+  6. 攻めた艇（②③④で一番早く、①より早い）の外隣が2・3着以内に入る率
 """
 from __future__ import annotations
 
@@ -106,6 +107,22 @@ def build(raw: Path, venue: str) -> str:
                 if m.sum():
                     stay = 100 * f1[lost].between(2, 3).mean() if lost.sum() else float("nan")
                     lines.append(f"  {wind_table._pad(tag, 18)}1着 {100 * (f1[m] == 1).mean():5.1f}%  残り {stay:5.1f}%  ({int(m.sum())}R)")
+            # 6. 攻めた艇の外隣
+            r = piv.loc[ok]
+            att = r[[2, 3, 4]].idxmin(axis=1)  # 同じ数字なら内側（idxmin は最初＝内側）
+            attack = r[[2, 3, 4]].min(axis=1) < r[1]  # ①より早い＝攻める
+            lines.append("6. 攻めた艇（②③④で一番早く、①より早い）の外隣 → 2連対率 ／ 3連対率（ふだんのそのコースと比べる）")
+            f = fin.loc[ok]
+            for a in (2, 3, 4):
+                nb = a + 1
+                if nb not in f:
+                    continue
+                m = attack & (att == a)
+                base = ~m
+                if m.sum():
+                    t = lambda mask, k: 100 * (f.loc[mask, nb] <= k).mean()
+                    lines.append(f"  {a}が攻め → {nb}  2連 {t(m, 2):5.1f}% 3連 {t(m, 3):5.1f}%  ({int(m.sum())}R)"
+                                 f"　ふだんの{nb}コース 2連 {t(base, 2):5.1f}% 3連 {t(base, 3):5.1f}%")
         # 5. 3連対率70%以上
         q = part.merge(top3, on=["toban", "course", "date"], how="left")
         hi = q[(q["t3_n"] >= 10) & (q["t3_rate"] >= 0.7) & q["finish"].notna()]
