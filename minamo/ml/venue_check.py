@@ -20,6 +20,9 @@
   16. 条件（追い風2m以上・6m以上、向かい風6m以上、波6cm以上、雨・雪）ごとの、コース別1着率・2連対率・3連対率
   17. 級別（A1・A2・B1）×コースごとに、展示タイム・一周・回り足・直線が1位／2位のときの1着率と、その差
   18. 展示の組み合わせ（展示1位＋一周1位など）ごとの、コース別1着率・3着以内率
+  19. 展示STの順位ごとの、本番のスタート順位と3着以内率
+  20. ④が展示タイムも平均スタート順位も③より上のときの、④と⑤の成績
+  21. 壁：②の選手の1コース1着率（全場・直近1年）ごとの、①の1着率
 """
 from __future__ import annotations
 
@@ -95,6 +98,8 @@ def build(raw: Path, venue: str) -> str:
     exr = _ex_ranks(raw)
     waves = ds.load_weather(raw / "weather.csv")[["race_id", "wave_cm"]].dropna()
     rain = _rain(raw)
+    wall1 = _course_top3(allf[allf["course"] == 1])  # 全場の1コース成績（壁を見る）
+    wall1 = wall1[["toban", "date", "win_rate", "t3_n"]].rename(columns={"win_rate": "c1_win", "t3_n": "c1_n"})
     lines = [f"{name}：{df['date'].min().date()}〜{df['date'].max().date()}  {df['race_id'].nunique():,}レース"
              "（女子＝全員女子のレース）", "数字は1〜6コースの1着率（%）"]
 
@@ -261,6 +266,10 @@ def build(raw: Path, venue: str) -> str:
                     lines.append(f"  {wind_table._pad(tag, 10)}{'  '.join(cells)}  ({int(m.sum())}R)")
         # 16. 条件ごとのコース別成績
         lines.extend(_conditions(part, weather, waves, rain))
+        # 19〜21
+        lines.extend(_st_section(part, exr))
+        lines.extend(_four_vs_three(part, exr, piv if len(ok) else None))
+        lines.extend(_wall(part, wall1))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -282,6 +291,59 @@ def build(raw: Path, venue: str) -> str:
                     cells = " ".join(f"1-{c}:{100 * (g['second'] == c).mean():4.1f}" for c in range(2, 7))
                     lines.append(f"  {wind_table._pad(tag, 16)}{cells}  ({len(g)}R)")
     return "\n".join(lines)
+
+
+def _st_section(part: pd.DataFrame, exr: pd.DataFrame) -> list[str]:
+    """展示STの順位 → 本番のスタート順位（平均・3位以内）と3着以内率。"""
+    d = part[part["finish"].notna() & part["start_rank"].between(1, 6)].merge(
+        exr[["race_id", "lane", "st_rank"]], on=["race_id", "lane"], how="inner")
+    if not len(d):
+        return []
+    out = ["19. 展示STの順位 → 本番のスタート順位の平均 ／ 本番3位以内 ／ 3着以内（走数）"]
+    for r in range(1, 7):
+        g = d[d["st_rank"] == r]
+        if len(g) >= 20:
+            out.append(f"  展示ST{r}位  本番 {g['start_rank'].mean():.2f}位  3位以内 {100 * (g['start_rank'] <= 3).mean():5.1f}%"
+                       f"  3着以内 {100 * (g['finish'] <= 3).mean():5.1f}%  ({len(g)})")
+    return out
+
+
+def _four_vs_three(part: pd.DataFrame, exr: pd.DataFrame, piv) -> list[str]:
+    """④が展示タイム順位も平均スタート順位も③より上 → ④・⑤の1着率／2連対率。"""
+    if piv is None or not all(c in piv for c in (3, 4)):
+        return []
+    x = part.merge(exr[["race_id", "lane", "ex_rank"]], on=["race_id", "lane"], how="inner")
+    ex = x.pivot_table(index="race_id", columns="course", values="ex_rank", aggfunc="first")
+    fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
+    ids = [r for r in piv.index if r in ex.index and r in fin.index]
+    if not ids or not all(c in ex for c in (3, 4)):
+        return []
+    r, e, f = piv.loc[ids], ex.loc[ids], fin.loc[ids]
+    ok = r[3].notna() & r[4].notna() & e[3].notna() & e[4].notna()
+    both = ok & (r[4] < r[3]) & (e[4] < e[3])
+    if both.sum() < 20:
+        return []
+    out = ["20. ④が展示タイムも平均スタート順位も③より上 → ④・⑤の1着率 ／ 2連対率（レース数）"]
+    for tag, m in (("そのとき", both), ("それ以外", ok & ~both)):
+        cells = [f"{c}C {100 * (f.loc[m, c] == 1).mean():.1f}/{100 * (f.loc[m, c] <= 2).mean():.1f}" for c in (4, 5) if c in f]
+        out.append(f"  {wind_table._pad(tag, 10)}{'  '.join(cells)}  ({int(m.sum())}R)")
+    return out
+
+
+def _wall(part: pd.DataFrame, c1: pd.DataFrame) -> list[str]:
+    """②の選手の1コース1着率（全場・直近1年・10走以上）→ ①の1着率。"""
+    two = part[part["course"] == 2][["race_id", "toban", "date"]].merge(c1, on=["toban", "date"], how="inner")
+    two = two[two["c1_n"] >= 10]
+    one = part[part["course"] == 1][["race_id", "finish"]]
+    d = two.merge(one, on="race_id", how="inner")
+    if len(d) < 50:
+        return []
+    out = ["21. 壁：②の選手の1コース1着率（全場・直近1年・10走以上）→ ①の1着率（レース数）"]
+    for lo, hi, tag in ((0, 0.3, "30%未満"), (0.3, 0.4, "30〜40%"), (0.4, 0.5, "40〜50%"), (0.5, 1.01, "50%以上")):
+        g = d[(d["c1_win"] >= lo) & (d["c1_win"] < hi)]
+        if len(g):
+            out.append(f"  ②が{wind_table._pad(tag, 10)}①1着 {100 * (g['finish'] == 1).mean():5.1f}%  ({len(g)}R)")
+    return out
 
 
 def _rain(raw: Path) -> set:
@@ -427,15 +489,16 @@ def _ex_ranks(raw: Path) -> pd.DataFrame:
     """展示タイム・展示STがレースで1位か（同じなら両方1位。展示のFは一番早い扱い）。"""
     ex = ds.load_exhibition(raw / "exhibition.csv")
     if not len(ex):
-        return pd.DataFrame(columns=["race_id", "lane", "t1", "s1", "ex_rank"])
+        return pd.DataFrame(columns=["race_id", "lane", "t1", "s1", "ex_rank", "st_rank"])
     ex = ex.dropna(subset=["ex_time"]).copy()
     ex["st"] = ex["ex_st"].clip(lower=0)
     n = ex.groupby("race_id")["lane"].transform("size")
     ex = ex[n >= 5]
     ex["ex_rank"] = ex.groupby("race_id")["ex_time"].rank(method="min")
     ex["t1"] = ex["ex_rank"] == 1
-    ex["s1"] = ex.groupby("race_id")["st"].rank(method="min") == 1
-    return ex[["race_id", "lane", "t1", "s1", "ex_rank"]]
+    ex["st_rank"] = ex.groupby("race_id")["st"].rank(method="min")
+    ex["s1"] = ex["st_rank"] == 1
+    return ex[["race_id", "lane", "t1", "s1", "ex_rank", "st_rank"]]
 
 
 def _classes(raw: Path, venue: str) -> pd.DataFrame:
@@ -466,8 +529,10 @@ def _course_top3(df: pd.DataFrame) -> pd.DataFrame:
     """（登番, コース, 日付）ごとに、その日より前の直近1年の3連対率。"""
     ok = df[df["finish"].notna() | df["is_f"] | df["is_l"]].copy()
     ok["t3"] = (ok["finish"] <= 3).astype(float)
-    daily = ok.groupby(["toban", "course", "date"], as_index=False)["t3"].agg(s="sum", n="count")
+    ok["w"] = (ok["finish"] == 1).astype(float)
+    daily = ok.groupby(["toban", "course", "date"], as_index=False).agg(s=("t3", "sum"), w=("w", "sum"), n=("t3", "count"))
     daily = daily.sort_values(["toban", "course", "date"]).set_index("date")
-    roll = daily.groupby(["toban", "course"])[["s", "n"]].rolling(ft.WINDOW, closed="left").sum().reset_index()
+    roll = daily.groupby(["toban", "course"])[["s", "w", "n"]].rolling(ft.WINDOW, closed="left").sum().reset_index()
     roll["t3_rate"] = roll["s"] / roll["n"]
-    return roll.rename(columns={"n": "t3_n"})[["toban", "course", "date", "t3_rate", "t3_n"]]
+    roll["win_rate"] = roll["w"] / roll["n"]
+    return roll.rename(columns={"n": "t3_n"})[["toban", "course", "date", "t3_rate", "t3_n", "win_rate"]]
