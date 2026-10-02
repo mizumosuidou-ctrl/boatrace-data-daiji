@@ -114,6 +114,7 @@ def race_rows(df: pd.DataFrame, raw: Path) -> pd.DataFrame:
     out["all_female"] = out["race_id"].map(allf).fillna(False).astype(bool)
     out["series_cat"] = [fm.category(t, g if isinstance(g, str) else None) for t, g in zip(out["title"], out["grade"])]
     share = out.groupby(["venue", "title"])["all_female"].transform("mean")
+    out["series_cat"] = [fm.series_by_share(c, sh) for c, sh in zip(out["series_cat"], share)]
     out["double"] = [fm.is_double(t, sh) for t, sh in zip(out["title"], share)]
     out["category"] = [fm.race_category(c, f, d) for c, f, d in zip(out["series_cat"], out["all_female"], out["double"])]
     return out
@@ -248,7 +249,7 @@ class LiveTables:
         f = fm.formation(ranks)
         if not f:
             return None
-        series_cat = fm.category(title, grade)
+        series_cat = fm.series_by_share(fm.category(title, grade), female_share)
         all_female = bool(self.women) and all(t in self.women for t in tobans.values() if t)
         cat = fm.race_category(series_cat, all_female, fm.is_double(title, female_share))
         out = {**f, "category": cat, "ranks": {str(c): round(v, 2) for c, v in ranks.items()}}
