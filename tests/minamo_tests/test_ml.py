@@ -617,3 +617,12 @@ def test_original_times_from_database_export(tmp_path):
     assert o.loc[("20260901-14-01", 2), "lap_time"] == pytest.approx(37.2)  # 空の行では消さない
     assert o.loc[("20260902-14-03", 4), "straight_time"] == pytest.approx(6.8)
     assert len(ds.load_original(tmp_path / "none.csv")) == 2  # 日和の分が無くても、データベースの分だけで使える
+
+
+def test_venue_check_report(tmp_path):
+    from minamo.ml import synthetic, venue_check
+
+    synthetic.generate(tmp_path, days=40, races_per_day=24, n_racers=120)
+    text = venue_check.build(tmp_path, "3")
+    assert text.startswith("江戸川") and "1. 風" in text and "初日" in text and "イン逃げ率" in text
+    assert "データなし" in venue_check.build(tmp_path, "99")
