@@ -419,3 +419,36 @@ def test_live_formation_uses_entry_course_and_venue_table(tmp_path):
     assert g1["category"] == "G1" and g1["stats"]["scope"] == "01" and g1["stats"]["category"] == "一般"
     # 平均スタート順位が無い選手がいれば隊形は出さない
     assert lt.info("01", {**tobans, 1: "Z"}, {b: b for b in range(1, 7)}, "一般") is None
+
+
+def test_race_level_women_and_double_winner_categories(tmp_path):
+    from minamo import formation as fm
+    from minamo.ml import formation_table
+
+    assert fm.race_category("女子", True, False) == "女子"
+    assert fm.race_category("一般", True, True) == "W優勝戦・女子" and fm.race_category("一般", False, True) == "W優勝戦・男子"
+    assert fm.race_category("一般", True, False) == "一般内・女子戦" and fm.race_category("一般", False, False) == "一般"
+    assert fm.race_category("G1", True, False) == "G1"
+    assert fm.is_double("男女W優勝戦 〇〇杯") and fm.is_double("〇〇杯", 0.4) and not fm.is_double("〇〇杯", 0.1)
+
+    # 女子シリーズに出た選手を女子とみなし、一般シリーズの中で全員女子のレースを見分ける
+    rows = []
+    def race(date, rno, title, tobans):
+        for lane, t in enumerate(tobans, 1):
+            rows.append({"race_date": date, "venue": "01", "race_no": rno, "lane": lane, "course": lane, "toban": t,
+                         "start_rank": lane, "st": f"0.{10 + lane}", "finish": lane, "race_f": "0", "race_l": "0",
+                         "series_title": title, "updated_at": "x"})
+    women, men = [f"W{i}" for i in range(6)], [f"M{i}" for i in range(6)]
+    for d in range(1, 21):  # 女子シリーズ（女子選手を覚える）と、一般シリーズ（男子レース＋女子レース1つ）
+        race(f"202601{d:02d}", 1, "ヴィーナスシリーズ", women)
+        for r in range(2, 11):
+            race(f"202601{d:02d}", r, "一般シリーズ杯", men)
+        race(f"202601{d:02d}", 11, "一般シリーズ杯", women)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pd.DataFrame(rows).to_csv(raw / "facts.csv", index=False)
+    data = formation_table.build(raw, tmp_path / "ml")
+    by = data["meta"]["by_category"]
+    assert by.get("女子") and by.get("一般内・女子戦") and by.get("一般") and "W優勝戦・女子" not in by
+    lt = formation_table.LiveTables(tmp_path / "ml")
+    assert lt.is_female_race(women) and not lt.is_female_race(women[:5] + ["M0"])

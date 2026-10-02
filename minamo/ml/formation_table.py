@@ -79,6 +79,7 @@ def current_ranks(df: pd.DataFrame, end: pd.Timestamp) -> pd.DataFrame:
 
 def race_rows(df: pd.DataFrame, raw: Path) -> pd.DataFrame:
     """集計に使えるレースを1行ずつ（隊形・種類・各コースの着順）。"""
+    full = df
     df = df.merge(course_avg_rank(df)[["toban", "course", "date", "avg_sr"]], on=["toban", "course", "date"], how="left")
     bad = df.groupby("race_id")[["is_f", "is_l"]].transform("any").any(axis=1)
     ex_path = raw / "exhibition.csv"
@@ -102,8 +103,20 @@ def race_rows(df: pd.DataFrame, raw: Path) -> pd.DataFrame:
             continue
         rows.append({"race_id": rid, "key": f["key"], "gap": f["gap"], "first": order[1], "second": order.get(2), "third": order.get(3)})
     out = pd.DataFrame(rows).merge(info, left_on="race_id", right_index=True)
-    out["category"] = out["title"].map(fm.category)
+    women = female_tobans(full)
+    allf = full.groupby("race_id")["toban"].agg(lambda t: bool(len(t)) and all(x in women for x in t))
+    out["all_female"] = out["race_id"].map(allf).fillna(False).astype(bool)
+    out["series_cat"] = out["title"].map(fm.category)
+    share = out.groupby(["venue", "title"])["all_female"].transform("mean")
+    out["double"] = [fm.is_double(t, sh) for t, sh in zip(out["title"], share)]
+    out["category"] = [fm.race_category(c, f, d) for c, f, d in zip(out["series_cat"], out["all_female"], out["double"])]
     return out
+
+
+def female_tobans(df: pd.DataFrame) -> set:
+    """女子シリーズ（オールレディース・ヴィーナスなど）に出たことのある選手＝女子選手とみなす。"""
+    cat = df["title"].map(fm.category)
+    return set(df.loc[cat == "女子", "toban"].astype(str))
 
 
 def _summary(g: pd.DataFrame) -> dict:
@@ -139,6 +152,7 @@ def build(raw: Path, out_dir: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "formation.json").write_text(json.dumps({"meta": meta, "tables": tables}, ensure_ascii=False), encoding="utf-8")
     current_ranks(df, end).to_csv(out_dir / "st_rank_course.csv.gz", index=False)
+    pd.Series(sorted(female_tobans(df)), name="toban").to_csv(out_dir / "female_tobans.csv", index=False)
     log.info("formation tables: %d races %s", len(races), meta["data_range"])
     return {"meta": meta, "tables": tables}
 
@@ -190,6 +204,7 @@ class LiveTables:
         self._mtime = None
         self.data: Optional[dict] = None
         self.ranks: dict = {}
+        self.women: set = set()
 
     def _load(self) -> None:
         path = self.dir / "formation.json"
@@ -203,11 +218,18 @@ class LiveTables:
         self.data = json.loads(path.read_text(encoding="utf-8"))
         cur = pd.read_csv(self.dir / "st_rank_course.csv.gz", dtype={"toban": str})
         self.ranks = {(t, int(c)): float(v) for t, c, v in zip(cur["toban"], cur["course"], cur["avg_sr"])}
+        fpath = self.dir / "female_tobans.csv"
+        self.women = set(pd.read_csv(fpath, dtype=str)["toban"]) if fpath.exists() else set()
         self._mtime = mtime
 
+    def is_female_race(self, tobans) -> bool:
+        self._load()
+        ts = [t for t in tobans if t]
+        return bool(ts) and bool(self.women) and all(t in self.women for t in ts)
+
     def info(self, venue: str, tobans: dict[int, str], courses: dict[int, int], title: Optional[str],
-             grade: Optional[str] = None) -> Optional[dict]:
-        """tobans: 艇→登番、courses: 艇→進入コース（展示後は展示進入）。"""
+             grade: Optional[str] = None, female_share: Optional[float] = None) -> Optional[dict]:
+        """tobans: 艇→登番、courses: 艇→進入コース（展示後は展示進入）、female_share: その日のその場で全員女子のレースの割合。"""
         try:
             self._load()
         except (OSError, ValueError, KeyError) as exc:
@@ -220,7 +242,9 @@ class LiveTables:
         f = fm.formation(ranks)
         if not f:
             return None
-        cat = fm.category(title, grade)
+        series_cat = fm.category(title, grade)
+        all_female = bool(self.women) and all(t in self.women for t in tobans.values() if t)
+        cat = fm.race_category(series_cat, all_female, fm.is_double(title, female_share))
         out = {**f, "category": cat, "ranks": {str(c): round(v, 2) for c, v in ranks.items()}}
         st = lookup(self.data, venue, cat, f["key"])
         if st:
