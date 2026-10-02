@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import http.server
 import logging
 from pathlib import Path
@@ -48,6 +49,7 @@ def main() -> None:
     mlf.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
     mlf.add_argument("--venue", default=None, help="表示する場（例 01）。省略すると作るだけ")
     mlf.add_argument("--category", default="一般", help="一般・SG・G1・女子・マスターズ・ルーキーズ・正月・お盆")
+    mlf.add_argument("--show", action="store_true", help="作り直さず、前に作った表を表示するだけ")
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -79,7 +81,10 @@ def main() -> None:
         from .ml import formation_table, live
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
-        data = formation_table.build(raw, live.ML_DIR)
+        if args.show:
+            data = json.loads((live.ML_DIR / "formation.json").read_text(encoding="utf-8"))
+        else:
+            data = formation_table.build(raw, live.ML_DIR)
         print(f"{data['meta']['races']} races {data['meta']['data_range']}")
         if args.venue:
             print(formation_table.format_table(data, args.venue.zfill(2), args.category))

@@ -146,21 +146,26 @@ def _pct(a: int, b: int) -> str:
     return f"{100 * a / b:.1f}%" if b else "--"
 
 
+def plain_label(key: str) -> str:
+    """ターミナルで丸数字が化けるので、確認用は 1>4-2-3 のように書く。"""
+    return f"1{'>' if key.startswith('1>') else '<'}{'-'.join(key[2:])}"
+
+
 def format_table(data: dict, venue: str, cat: str = "一般") -> str:
-    """ユーザーの表に近い形で文字にする（確認用）。"""
+    """確認用。1隊形2行（逃げ率と、逃げたときの2着／逃したときの頭）。"""
     t = data["tables"].get(venue, {}).get(cat, {})
     name = VENUES[venue].name if venue in VENUES else venue
-    lines = [f"■{name} {cat}  {data['meta']['data_range'][0]}〜{data['meta']['data_range'][1]}"]
+    lines = [f"{name} {cat} {data['meta']['data_range'][0]}-{data['meta']['data_range'][1]}  (1>=1が上, 1<=1より早い艇あり)"]
     for key in sorted(fm.ALL_KEYS, key=lambda k: (k[:2] != "1>", k[2:])):
         v = t.get(key)
         if not v:
-            lines.append(f"{fm.label_of(key)}  データなし")
+            lines.append(f"{plain_label(key)}  データなし")
             continue
-        sec = "  ".join(f"1-{c} {_pct(v['second'].get(c, 0), v['escape'])}" for c in "23456")
-        head = "  ".join(f"{c}頭 {_pct(v['head'].get(c, 0), v['n'] - v['escape'])}" for c in "23456")
-        lines.append(f"{fm.label_of(key)}  逃げ {v['escape']}/{v['n']} {_pct(v['escape'], v['n'])}（{v.get('rank', '-')}/12位）")
-        lines.append(f"    逃げ→2着  {sec}")
-        lines.append(f"    逃し→頭   {head}")
+        p = lambda a, b: f"{100 * a / b:.0f}" if b else "-"
+        sec = " ".join(f"1-{c}:{p(v['second'].get(c, 0), v['escape'])}" for c in "23456")
+        head = " ".join(f"{c}:{p(v['head'].get(c, 0), v['n'] - v['escape'])}" for c in "23456")
+        lines.append(f"{plain_label(key)} 逃げ{_pct(v['escape'], v['n'])} {v['escape']}/{v['n']} {v.get('rank', '-')}位")
+        lines.append(f"   2着% {sec} | 逃し頭% {head}")
     return "\n".join(lines)
 
 
