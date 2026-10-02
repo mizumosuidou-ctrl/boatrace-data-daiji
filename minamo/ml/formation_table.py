@@ -140,6 +140,22 @@ def _summary(g: pd.DataFrame) -> dict:
     }
 
 
+def course_stats(df: pd.DataFrame, end: pd.Timestamp) -> dict:
+    """航跡論の「場別データ」：直近1年の、場×コースの出走数・1着率・2連対率・3連対率（全レース）。"""
+    recent = df[(df["date"] > end - pd.Timedelta(WINDOW)) & (df["date"] <= end) & df["course"].between(1, 6)]
+    ran = recent[recent["finish"].notna() | recent["is_f"] | recent["is_l"]]
+    out: dict = {}
+    for (venue, course), g in ran.groupby(["venue", "course"]):
+        n = len(g)
+        out.setdefault(venue, {})[str(int(course))] = {
+            "n": int(n),
+            "win": round(float((g["finish"] == 1).mean()), 4),
+            "top2": round(float((g["finish"] <= 2).mean()), 4),
+            "top3": round(float((g["finish"] <= 3).mean()), 4),
+        }
+    return out
+
+
 def build(raw: Path, out_dir: Path) -> dict:
     raw, out_dir = Path(raw), Path(out_dir)
     df = load(raw)
@@ -157,11 +173,12 @@ def build(raw: Path, out_dir: Path) -> dict:
             "by_category": {k: int(v) for k, v in races["category"].value_counts().items()},
             "window": WINDOW, "built_from": str(end.date())}
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "formation.json").write_text(json.dumps({"meta": meta, "tables": tables}, ensure_ascii=False), encoding="utf-8")
+    courses = course_stats(df, end)
+    (out_dir / "formation.json").write_text(json.dumps({"meta": meta, "tables": tables, "course": courses}, ensure_ascii=False), encoding="utf-8")
     current_ranks(df, end).to_csv(out_dir / "st_rank_course.csv.gz", index=False)
     pd.Series(sorted(female_tobans(df)), name="toban").to_csv(out_dir / "female_tobans.csv", index=False)
     log.info("formation tables: %d races %s", len(races), meta["data_range"])
-    return {"meta": meta, "tables": tables}
+    return {"meta": meta, "tables": tables, "course": courses}
 
 
 def _pct(a: int, b: int) -> str:
@@ -177,7 +194,15 @@ def format_table(data: dict, venue: str, cat: str = "一般") -> str:
     """確認用。1隊形2行（逃げ率と、逃げたときの2着／逃したときの頭）。"""
     t = data["tables"].get(venue, {}).get(cat, {})
     name = VENUES[venue].name if venue in VENUES else venue
-    lines = [f"{name} {cat} {data['meta']['data_range'][0]}-{data['meta']['data_range'][1]}  (1>=1が上, 1<=1より早い艇あり)"]
+    lines = []
+    cs = (data.get("course") or {}).get(venue)
+    if cs:
+        lines.append(f"{name} コース別成績（直近1年・全レース）")
+        for c in "123456":
+            v = cs.get(c)
+            if v:
+                lines.append(f"  {c}コース {v['n']}走 1着{v['win'] * 100:.1f}% 2連{v['top2'] * 100:.1f}% 3連{v['top3'] * 100:.1f}%")
+    lines.append(f"{name} {cat} {data['meta']['data_range'][0]}-{data['meta']['data_range'][1]}  (1>=1が上, 1<=1より早い艇あり)")
     for key in sorted(fm.ALL_KEYS, key=lambda k: (k[:2] != "1>", k[2:])):
         v = t.get(key)
         if not v:

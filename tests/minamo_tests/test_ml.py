@@ -388,6 +388,9 @@ def test_formation_tables_from_facts(tmp_path):
     assert sorted(v["rank"] for v in allt.values()) == list(range(1, len(allt) + 1))
     text = formation_table.format_table(data, "01")
     assert "1>2-3-4" in text and "逃げ" in text
+    cs = data["course"]["01"]
+    assert set(cs) <= set("123456") and all(0 <= v["win"] <= v["top2"] <= v["top3"] <= 1 for v in cs.values())
+    assert "1コース" in text and "コース別成績" in text
     cur = pd.read_csv(tmp_path / "ml" / "st_rank_course.csv.gz", dtype={"toban": str})
     assert cur["avg_sr"].between(1, 6).all()
     hit = formation_table.lookup(data, "01", "一般", max(allt, key=lambda k: allt[k]["n"]), min_n=1)
