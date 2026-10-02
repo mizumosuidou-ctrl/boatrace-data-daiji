@@ -722,3 +722,44 @@ def test_rtm_compare_report(tmp_path):
     text = rtm_compare.build(raw, data)
     assert "■ DEEP（場別）  1R" in text and "■ DEEP（場別）＋追加  1R" in text and "万舟 1" in text
     assert "■ NORMAL  1R" in text and "■ time（shadow）本線5点  1R" in text
+
+
+def test_ev_check_report(tmp_path):
+    """MINAMOが①を弱く見たレースで、期待値の選び方がイン逃しを拾う。"""
+    from itertools import permutations
+
+    import pandas as pd
+
+    from minamo.ml import ev_check
+
+    ml = tmp_path / "ml"
+    raw = ml / "raw"
+    raw.mkdir(parents=True)
+    rows, snaps, res = [], [], []
+    for i in range(40):
+        rid = f"202609{i % 28 + 1:02d}-24-{i % 12 + 1:02d}"
+        upset = i % 2 == 0
+        p = [0.25, 0.30, 0.15, 0.12, 0.10, 0.08] if upset else [0.6, 0.12, 0.1, 0.08, 0.06, 0.04]
+        order = [2, 1, 3] if upset else [1, 2, 3]
+        for lane in range(1, 7):
+            fin = order.index(lane) + 1 if lane in order else lane
+            rows.append({"race_id": rid, "lane": lane, "finish": fin, "p_pre": p[lane - 1], "p_post": None})
+        # 市場は①を強く見る（①頭は安く、②頭は高い）
+        odds = " ".join(f"{a}-{b}-{c}:{(4 if a == 1 else 60) + b + c}" for a, b, c in permutations(range(1, 7), 3))
+        d, v, r = rid.split("-")
+        for lab in ("T15", "T5", "FINAL"):
+            snaps.append({"race_date": d, "venue": v, "race_no": r, "label": lab, "trifecta": odds, "captured_at": lab})
+        res.append({"race_date": d, "venue": v, "race_no": r, "trifecta": "-".join(map(str, order))})
+    pd.DataFrame(rows).to_csv(ml / "test_preds.csv.gz", index=False)
+    pd.DataFrame(snaps).to_csv(raw / "odds_hist.csv", index=False)
+    pd.DataFrame(res).to_csv(raw / "odds_results.csv", index=False)
+    races = ev_check.load(ml, raw)
+    assert len(races) == 40
+    picks = ev_check.strategies()
+    top6 = [r for r in races if r["hit"] in picks["確率上位6点（今の形）"](r)]
+    ev = [r for r in races if r["hit"] in picks["期待値1.2以上・最大6点"](r)]
+    assert any(not r["hit"].startswith("1-") for r in ev)
+    assert len(ev) >= 1 and len(top6) >= 1
+    text = ev_check.build(ml, raw)
+    assert "1. 選び方ごとの成績" in text and "イン逃し的中" in text and "3. MINAMOの①の1着確率" in text
+    assert "データ" not in ev_check.build(tmp_path / "none", raw)[:0]  # 材料が無くても落ちない
