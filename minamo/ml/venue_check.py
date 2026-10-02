@@ -12,6 +12,8 @@
   8. ①の級別（A1〜B2）と風（弱い風・強い向かい風・強い追い風）ごとの、①の1着率
   9. ①の展示タイム・展示STがレースで1位かどうかと、①の1着率（級別ごとも）
   10. 風の方角（北西など）ごとの、4m以上のときのコース別1着率
+  11. コースごとに、展示タイム・一周・回り足・直線の順位（1位・2位・3位以下）別の1着率
+  12. イン逃げのときの2着のコースの割合（全部・弱い風・追い風3m以上・向かい風3m以上）
 """
 from __future__ import annotations
 
@@ -218,7 +220,53 @@ def build(raw: Path, venue: str) -> str:
                 g = wc[wc["wind_from"] == d]
                 if g["race_id"].nunique() >= 30:
                     lines.append(f"  {wind_table._pad(d, 16)}{_rates(g)}")
+        # 11. コースごとの展示順位
+        lines.extend(_course_ranks(part, exr, orig))
+        # 12. 風ごとのイン逃げ時の2着
+        esc = part[part["course"] == 1].merge(weather[["race_id", "category", "speed"]], on="race_id", how="left")
+        esc = esc[esc["finish"] == 1]
+        sec = part[part["finish"] == 2][["race_id", "course"]].rename(columns={"course": "second"})
+        esc = esc.merge(sec, on="race_id", how="inner")
+        if len(esc):
+            lines.append("12. イン逃げのときの2着のコース（1-2〜1-6 の割合%）")
+            for tag, m in (("全部", esc["race_id"].notna()), ("無風〜2m", (esc["category"] == "無風") | esc["speed"].between(1, 2)),
+                           ("追い風3m以上", (esc["category"] == "追い風") & (esc["speed"] >= 3)),
+                           ("向かい風3m以上", (esc["category"] == "向かい風") & (esc["speed"] >= 3))):
+                g = esc[m]
+                if len(g) >= 20:
+                    cells = " ".join(f"1-{c}:{100 * (g['second'] == c).mean():4.1f}" for c in range(2, 7))
+                    lines.append(f"  {wind_table._pad(tag, 16)}{cells}  ({len(g)}R)")
     return "\n".join(lines)
+
+
+def _course_ranks(part: pd.DataFrame, exr: pd.DataFrame, orig: pd.DataFrame) -> list[str]:
+    """コースごとに、展示タイム・一周・回り足・直線のレース内順位（1位・2位・3位以下）別の1着率。"""
+    frames = []
+    if len(exr):
+        x = part.merge(exr[["race_id", "lane", "ex_rank"]], on=["race_id", "lane"], how="inner")
+        frames.append(("展示", x, x["ex_rank"]))
+    if len(orig):
+        o = part.merge(orig, on=["race_id", "lane"], how="inner")
+        for col, tag in (("lap_time", "一周"), ("turn_time", "回り足"), ("straight_time", "直線")):
+            v = pd.to_numeric(o[col], errors="coerce")
+            enough = v.groupby(o["race_id"]).transform("count") >= 5
+            frames.append((tag, o, v.groupby(o["race_id"]).rank(method="min").where(enough)))
+    out = []
+    for tag, d, rk in frames:
+        if not rk.notna().any():
+            continue
+        if not out:
+            out.append("11. コースごと・順位ごとの1着率（%）：1位 / 2位 / 3位以下（走数）")
+        cells = []
+        for c in range(1, 7):
+            m = d["course"] == c
+            vals = []
+            for lo, hi in ((1, 1), (2, 2), (3, 6)):
+                g = d.loc[m & rk.between(lo, hi), "finish"]
+                vals.append(f"{100 * (g == 1).mean():.0f}" if len(g) >= 10 else "-")
+            cells.append(f"{c}C {'/'.join(vals)}")
+        out.append(f"  {wind_table._pad(tag, 8)}{'  '.join(cells)}  （{int(rk.notna().sum())}走）")
+    return out
 
 
 def _ex_ranks(raw: Path) -> pd.DataFrame:
