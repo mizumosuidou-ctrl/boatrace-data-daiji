@@ -431,6 +431,7 @@ def test_race_level_women_and_double_winner_categories(tmp_path):
     assert fm.race_category("G1", True, False) == "G1"
     assert fm.is_double("男女W優勝戦 〇〇杯") and fm.is_double("〇〇杯", 0.4) and not fm.is_double("〇〇杯", 0.1)
     assert not fm.is_double("本命？大穴？男女大決戦")  # 男女混合の一般戦
+    assert fm.series_by_share("一般", 0.9) == "女子" and fm.series_by_share("一般", 0.5) == "一般" and fm.series_by_share("G1", 0.9) == "G1"
 
     # 女子シリーズに出た選手を女子とみなし、一般シリーズの中で全員女子のレースを見分ける
     rows = []

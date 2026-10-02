@@ -29,6 +29,13 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 CATEGORIES = ("一般", "SG", "G1", "女子", "マスターズ", "ルーキーズ", "正月・お盆", "W優勝戦・女子", "W優勝戦・男子", "一般内・女子戦")
 DOUBLE_WORDS = ("ダブル優勝", "W優勝", "Ｗ優勝")  # 「男女大決戦」などは男女混合の一般戦なので入れない
 DOUBLE_SHARE = 0.25  # シリーズの中で全員女子のレースがこの割合以上なら、ダブル優勝戦とみなす
+WOMEN_SERIES_SHARE = 0.8  # この割合以上なら、大会名に「レディース」などが無くても女子シリーズとみなす
+
+
+def series_by_share(series_cat: str, female_share: Optional[float]) -> str:
+    if series_cat in ("一般", "正月・お盆") and (female_share or 0) >= WOMEN_SERIES_SHARE:
+        return "女子"
+    return series_cat
 
 
 def is_double(title: Optional[str], female_share: Optional[float] = None) -> bool:
