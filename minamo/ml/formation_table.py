@@ -178,3 +178,54 @@ def lookup(data: Optional[dict], venue: str, cat: str, key: str, min_n: int = 20
         if v and v["n"] >= min_n:
             return {**v, "scope": scope, "rate": v["escape"] / v["n"]}
     return None
+
+
+class LiveTables:
+    """当日用：保存した表と平均スタート順位を読み、レースごとの隊形と、その場・種類・隊形の成績を返す。"""
+
+    def __init__(self, ml_dir: Path):
+        self.dir = Path(ml_dir)
+        self._mtime = None
+        self.data: Optional[dict] = None
+        self.ranks: dict = {}
+
+    def _load(self) -> None:
+        path = self.dir / "formation.json"
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            self.data, self.ranks, self._mtime = None, {}, None
+            return
+        if mtime == self._mtime:
+            return
+        self.data = json.loads(path.read_text(encoding="utf-8"))
+        cur = pd.read_csv(self.dir / "st_rank_course.csv.gz", dtype={"toban": str})
+        self.ranks = {(t, int(c)): float(v) for t, c, v in zip(cur["toban"], cur["course"], cur["avg_sr"])}
+        self._mtime = mtime
+
+    def info(self, venue: str, tobans: dict[int, str], courses: dict[int, int], title: Optional[str],
+             grade: Optional[str] = None) -> Optional[dict]:
+        """tobans: 艇→登番、courses: 艇→進入コース（展示後は展示進入）。"""
+        try:
+            self._load()
+        except (OSError, ValueError, KeyError) as exc:
+            log.warning("formation tables: %s", exc)
+            return None
+        if not self.data:
+            return None
+        by_course = {c: b for b, c in courses.items()}
+        ranks = {c: self.ranks.get((tobans.get(by_course.get(c)), c)) for c in (1, 2, 3, 4)}
+        f = fm.formation(ranks)
+        if not f:
+            return None
+        cat = fm.category(title, grade)
+        out = {**f, "category": cat, "ranks": {str(c): round(v, 2) for c, v in ranks.items()}}
+        st = lookup(self.data, venue, cat, f["key"])
+        if st:
+            esc, nes = st["escape"], st["n"] - st["escape"]
+            out["stats"] = {
+                "scope": st["scope"], "n": st["n"], "escape": esc, "rate": round(st["rate"], 3), "rank": st.get("rank"),
+                "second": {c: round(k / esc, 3) for c, k in st["second"].items()} if esc else {},
+                "head": {c: round(k / nes, 3) for c, k in st["head"].items()} if nes else {},
+            }
+        return out

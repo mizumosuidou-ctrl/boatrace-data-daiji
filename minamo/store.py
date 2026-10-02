@@ -190,6 +190,7 @@ def race_summary(race: dict) -> dict:
         "hit": st.get("trifecta_hit"),
         "honmei_win": st.get("honmei_win"),
         "escape": (pred.get("escape") or {}).get("index"),
+        "formation": (race.get("formation") or {}).get("key"),
     }
 
 

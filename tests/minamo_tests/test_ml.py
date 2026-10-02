@@ -389,3 +389,27 @@ def test_formation_tables_from_facts(tmp_path):
     assert cur["avg_sr"].between(1, 6).all()
     hit = formation_table.lookup(data, "01", "一般", max(allt, key=lambda k: allt[k]["n"]), min_n=1)
     assert hit and 0 <= hit["rate"] <= 1
+
+
+def test_live_formation_uses_entry_course_and_venue_table(tmp_path):
+    import json
+
+    from minamo.ml import formation_table
+
+    stats = {"n": 100, "escape": 60, "second": {"3": 30, "2": 20, "4": 10}, "head": {"3": 25, "4": 15}, "rank": 2}
+    data = {"meta": {"data_range": ["2025-01-01", "2026-09-30"]},
+            "tables": {"01": {"一般": {"1>342": stats}}, "ALL": {"女子": {"1<243": {**stats, "rank": 9}}}}}
+    (tmp_path / "formation.json").write_text(json.dumps(data), encoding="utf-8")
+    # 登番×コースの平均スタート順位
+    pd.DataFrame({"toban": ["A", "B", "C", "D", "E", "B", "C"], "course": [1, 2, 3, 4, 2, 3, 4],
+                  "avg_sr": [2.0, 3.5, 2.4, 2.9, 1.5, 3.0, 2.2]}).to_csv(tmp_path / "st_rank_course.csv.gz", index=False)
+    lt = formation_table.LiveTables(tmp_path)
+    tobans = {1: "A", 2: "B", 3: "C", 4: "D", 5: "E", 6: "F"}
+    f = lt.info("01", tobans, {b: b for b in range(1, 7)}, "中日スポーツ杯")
+    assert f["label"] == "①〉③④②" and f["category"] == "一般" and f["gap"] == pytest.approx(0.4)
+    assert f["stats"]["scope"] == "01" and f["stats"]["rate"] == pytest.approx(0.6) and f["stats"]["second"]["3"] == pytest.approx(0.5)
+    # 展示で5号艇（E）が2コースに入ると、各艇の「そのコースでの」数字で隊形が変わる。女子戦はこの場に表が無いので全場の表で
+    moved = lt.info("01", tobans, {1: 1, 5: 2, 2: 3, 3: 4, 4: 5, 6: 6}, "ヴィーナスシリーズ")
+    assert moved["label"] == "①〈②④③" and moved["category"] == "女子" and moved["stats"]["scope"] == "ALL"
+    # 平均スタート順位が無い選手がいれば隊形は出さない
+    assert lt.info("01", {**tobans, 1: "Z"}, {b: b for b in range(1, 7)}, "一般") is None
