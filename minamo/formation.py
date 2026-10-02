@@ -26,7 +26,25 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("G1", ("地区選手権", "ダイヤモンドカップ", "高松宮記念", "全日本王者決定戦", "競帝王", "太閤賞",
             "海の王者", "モーターボート大賞", "スピードクイーン", "名人戦", "ダイヤモンドC")),
 )
-CATEGORIES = ("一般", "SG", "G1", "女子", "マスターズ", "ルーキーズ", "正月・お盆")
+CATEGORIES = ("一般", "SG", "G1", "女子", "マスターズ", "ルーキーズ", "正月・お盆", "W優勝戦・女子", "W優勝戦・男子", "一般内・女子戦")
+DOUBLE_WORDS = ("ダブル優勝", "W優勝", "Ｗ優勝", "男女")
+DOUBLE_SHARE = 0.25  # シリーズの中で全員女子のレースがこの割合以上なら、ダブル優勝戦とみなす
+
+
+def is_double(title: Optional[str], female_share: Optional[float] = None) -> bool:
+    t = unicodedata.normalize("NFKC", str(title or ""))
+    return any(unicodedata.normalize("NFKC", w) in t for w in DOUBLE_WORDS) or (female_share or 0) >= DOUBLE_SHARE
+
+
+def race_category(series_cat: str, all_female: bool, double: bool) -> str:
+    """シリーズの種類に、レース単位の区別（ダブル優勝戦・一般シリーズの中の女子戦）を足す。"""
+    if series_cat == "女子":
+        return "女子"
+    if double and series_cat in ("一般", "正月・お盆"):
+        return "W優勝戦・女子" if all_female else "W優勝戦・男子"
+    if all_female:
+        return "一般内・女子戦" if series_cat in ("一般", "正月・お盆") else series_cat
+    return series_cat
 
 
 # 「開設○周年記念」は、ボートレース場そのもの（どの場も開設45年以上）なら G1。場外発売場（BTS など）の周年は一般戦

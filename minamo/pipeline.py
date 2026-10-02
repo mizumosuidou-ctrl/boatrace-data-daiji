@@ -228,9 +228,14 @@ class Pipeline:
                 from .ml import formation_table, live
 
                 self._formations = formation_table.LiveTables(live.ML_DIR)
-            return self._formations.info(
-                card.jcd, {e.boat: e.toban for e in card.entries}, {b.boat: b.course for b in pred.boats},
-                card.title or (vday.title if vday else ""), vday.grade if vday else None,
+            ft = self._formations
+            # その日のその場で、全員女子のレースがどれだけあるか（ダブル優勝戦の見分けに使う）
+            races = [self._load(card.date, f"{card.jcd}-{r:02d}") for r in range(1, 13)]
+            cards = [x["card"] for x in races if x and x.get("card")]
+            share = sum(ft.is_female_race(e["toban"] for e in c["entries"] if not e.get("absent")) for c in cards) / len(cards) if cards else None
+            return ft.info(
+                card.jcd, {e.boat: e.toban for e in card.entries if not e.absent}, {b.boat: b.course for b in pred.boats},
+                card.title or (vday.title if vday else ""), vday.grade if vday else None, share,
             )
         except ImportError:
             return None
