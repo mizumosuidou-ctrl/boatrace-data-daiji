@@ -430,6 +430,7 @@ def test_race_level_women_and_double_winner_categories(tmp_path):
     assert fm.race_category("一般", True, False) == "一般内・女子戦" and fm.race_category("一般", False, False) == "一般"
     assert fm.race_category("G1", True, False) == "G1"
     assert fm.is_double("男女W優勝戦 〇〇杯") and fm.is_double("〇〇杯", 0.4) and not fm.is_double("〇〇杯", 0.1)
+    assert not fm.is_double("本命？大穴？男女大決戦")  # 男女混合の一般戦
 
     # 女子シリーズに出た選手を女子とみなし、一般シリーズの中で全員女子のレースを見分ける
     rows = []
@@ -452,3 +453,32 @@ def test_race_level_women_and_double_winner_categories(tmp_path):
     assert by.get("女子") and by.get("一般内・女子戦") and by.get("一般") and "W優勝戦・女子" not in by
     lt = formation_table.LiveTables(tmp_path / "ml")
     assert lt.is_female_race(women) and not lt.is_female_race(women[:5] + ["M0"])
+
+
+def test_series_titles_from_official_index_fill_race_categories(tmp_path):
+    from minamo.ml import formation_table, series
+    from minamo_fixtures import INDEX_HTML
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    rows = []
+    for d in ("20260101", "20260102"):
+        for lane in range(1, 7):
+            rows.append({"race_date": d, "venue": "12", "race_no": 1, "lane": lane, "course": lane, "toban": str(4000 + lane),
+                         "start_rank": lane, "st": "0.15", "finish": lane, "race_f": "0", "race_l": "0", "series_title": "", "updated_at": "x"})
+    pd.DataFrame(rows).to_csv(raw / "facts.csv", index=False)
+
+    class F:
+        calls = []
+
+        def index(self, hd):
+            self.calls.append(hd)
+            return INDEX_HTML
+
+    f = F()
+    assert series.run(raw, fetcher=f) == 2 and f.calls == ["20260101", "20260102"]
+    assert series.run(raw, fetcher=f) == 0 and len(f.calls) == 2  # 取った日は取り直さない
+    s = series.load(raw)
+    assert set(s["venue"]) >= {"12"} and s["title"].notna().all()
+    df = formation_table.load(raw)
+    assert df["title"].notna().all() and df["title"].iloc[0] == s.loc[s["venue"] == "12", "title"].iloc[0]

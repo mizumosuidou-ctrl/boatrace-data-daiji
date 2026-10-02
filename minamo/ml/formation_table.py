@@ -21,6 +21,7 @@ import pandas as pd
 from .. import formation as fm
 from ..venues import VENUES
 from . import dataset as ds
+from . import series as series_mod
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,11 @@ def load(raw: Path) -> pd.DataFrame:
     df["course"] = df["course"].fillna(df["lane"]).astype(int)
     df = df.sort_values("updated_at").drop_duplicates(["race_date", "venue", "race_no", "lane"], keep="last")
     df["race_id"] = ds._race_id(df)
+    # 大会名・グレードは公式サイトから取り寄せた開催一覧で補う（実績には入っていない）
+    ser = series_mod.load(raw)[["race_date", "venue", "title", "grade"]].rename(columns={"title": "s_title"})
+    df = df.merge(ser, on=["race_date", "venue"], how="left")
+    df["title"] = df["s_title"].where(df["s_title"].notna(), df["title"])
+    df = df.drop(columns=["s_title"])
     df["date"] = pd.to_datetime(df["race_date"], format="%Y%m%d", errors="coerce")
     return df.dropna(subset=["date"])
 
@@ -91,7 +97,7 @@ def race_rows(df: pd.DataFrame, raw: Path) -> pd.DataFrame:
     df = df[~bad]
     piv_r = df.pivot_table(index="race_id", columns="course", values="avg_sr", aggfunc="first")
     piv_f = df.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
-    info = df.groupby("race_id").agg(venue=("venue", "first"), title=("title", "first"), date=("date", "first"))
+    info = df.groupby("race_id").agg(venue=("venue", "first"), title=("title", "first"), grade=("grade", "first"), date=("date", "first"))
     rows = []
     for rid, r in piv_r.iterrows():
         f = fm.formation({c: (None if c not in r or pd.isna(r[c]) else float(r[c])) for c in (1, 2, 3, 4)})
@@ -106,7 +112,7 @@ def race_rows(df: pd.DataFrame, raw: Path) -> pd.DataFrame:
     women = female_tobans(full)
     allf = full.groupby("race_id")["toban"].agg(lambda t: bool(len(t)) and all(x in women for x in t))
     out["all_female"] = out["race_id"].map(allf).fillna(False).astype(bool)
-    out["series_cat"] = out["title"].map(fm.category)
+    out["series_cat"] = [fm.category(t, g if isinstance(g, str) else None) for t, g in zip(out["title"], out["grade"])]
     share = out.groupby(["venue", "title"])["all_female"].transform("mean")
     out["double"] = [fm.is_double(t, sh) for t, sh in zip(out["title"], share)]
     out["category"] = [fm.race_category(c, f, d) for c, f, d in zip(out["series_cat"], out["all_female"], out["double"])]
