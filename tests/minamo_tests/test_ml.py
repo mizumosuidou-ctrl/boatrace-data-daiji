@@ -626,3 +626,29 @@ def test_venue_check_report(tmp_path):
     text = venue_check.build(tmp_path, "3")
     assert text.startswith("江戸川") and "1. 風" in text and "初日" in text and "イン逃げ率" in text and "外隣" in text
     assert "データなし" in venue_check.build(tmp_path, "99")
+
+
+def test_odds_history_report(tmp_path):
+    """15分前→5分前に売れた（オッズが下がった）組がよく当たる架空の市場で、表にそれが出る。"""
+    from itertools import permutations
+
+    from minamo.ml import odds_history
+
+    rng = np.random.default_rng(1)
+    combos = ["-".join(map(str, c)) for c in permutations(range(1, 7), 3)]
+    snaps, res = [], []
+    for r in range(300):
+        base = {c: float(rng.uniform(3, 300)) for c in combos}
+        win = combos[int(rng.integers(0, 40))] if rng.random() < 0.5 else min(base, key=base.get)
+        late = {c: v * (0.6 if c == win else 1.0) for c, v in base.items()}
+        for label, odds in (("T15", base), ("T5", late), ("FINAL", late)):
+            snaps.append({"race_date": "20260901", "venue": "01", "race_no": r + 1, "label": label, "captured_at": label,
+                          "trifecta": " ".join(f"{c}:{v:.1f}" for c, v in odds.items())})
+        res.append({"race_date": "20260901", "venue": "01", "race_no": r + 1, "trifecta": win})
+    pd.DataFrame(snaps).to_csv(tmp_path / "odds_hist.csv", index=False)
+    pd.DataFrame(res).to_csv(tmp_path / "odds_results.csv", index=False)
+    text = odds_history.build(tmp_path)
+    assert "300レース" in text and "一番下がった組" in text and "1号艇" in text
+    combos_df, _ = odds_history.load(tmp_path)
+    dropped = combos_df[combos_df["late"] / combos_df["early"] <= 0.7]
+    assert dropped["hit"].mean() > 0.3
