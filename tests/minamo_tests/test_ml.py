@@ -368,6 +368,9 @@ def test_race_category_from_title():
     assert fm.category("ヤングダービー") == "ルーキーズ"  # SG の「ダービー」より先
     assert fm.category("ボートレースダービー") == "SG"
     assert fm.category("開設70周年記念 赤城雷神杯") == "G1"
+    assert fm.category("津インクル開設１５周年記念レース") == "一般"  # 場外発売場の周年は一般戦
+    assert fm.category("児島キングカップ開設74周年記念", "G3") == "一般"  # 当日はグレードを優先
+    assert fm.category("ヴィーナスシリーズ", "G3") == "女子"
     assert fm.category("お盆特選レース") == "正月・お盆"
     assert fm.category("中日スポーツ杯", "G3") == "一般" and fm.category("なにか", "SG") == "SG"
 
@@ -411,5 +414,8 @@ def test_live_formation_uses_entry_course_and_venue_table(tmp_path):
     # 展示で5号艇（E）が2コースに入ると、各艇の「そのコースでの」数字で隊形が変わる。女子戦はこの場に表が無いので全場の表で
     moved = lt.info("01", tobans, {1: 1, 5: 2, 2: 3, 3: 4, 4: 5, 6: 6}, "ヴィーナスシリーズ")
     assert moved["label"] == "①〈②④③" and moved["category"] == "女子" and moved["stats"]["scope"] == "ALL"
+    # 種類の表が無ければ、その場の一般戦の表で代わりに
+    g1 = lt.info("01", tobans, {b: b for b in range(1, 7)}, "周年記念", "G1")
+    assert g1["category"] == "G1" and g1["stats"]["scope"] == "01" and g1["stats"]["category"] == "一般"
     # 平均スタート順位が無い選手がいれば隊形は出さない
     assert lt.info("01", {**tobans, 1: "Z"}, {b: b for b in range(1, 7)}, "一般") is None
