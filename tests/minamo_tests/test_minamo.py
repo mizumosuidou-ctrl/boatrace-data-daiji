@@ -375,12 +375,20 @@ def test_private_method_text_is_added_to_claude_prompt(tmp_path, monkeypatch):
     assert analyst.system_prompt().endswith("# 予想手順（この手順に必ず従う）\n【STEP①】イン逃げ指数を算出")
 
 
+def test_wind_tables_are_own_data_by_default(tmp_path, monkeypatch):
+    from minamo import wind
+
+    monkeypatch.setattr(wind, "LEARNED_PATH", tmp_path / "wind.json")
+    assert wind.USE_GIVEN_TABLES is False and wind.adjustment("01", 13, 3) is None
+
+
 def test_wind_direction_and_kiryu_adjustment(tmp_path, monkeypatch):
     from dataclasses import replace
 
     from minamo import wind
 
     monkeypatch.setattr(wind, "LEARNED_PATH", tmp_path / "wind.json")  # 過去データの表は無い状態で
+    monkeypatch.setattr(wind, "USE_GIVEN_TABLES", True)  # もらった表（桐生）の動きを確かめる
     # 公式アイコン：5＝右（1マークへ）＝追い風、13＝左＝向かい風、9＝下（スタンドへ）＝左横風、1＝上＝右横風
     assert wind.classify(5, 4) == ("追い風", 4.0) and wind.classify(13, 3)[0] == "向かい風"
     assert wind.classify(9, 2)[0] == "左横風" and wind.classify(1, 2)[0] == "右横風"

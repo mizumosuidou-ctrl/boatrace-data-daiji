@@ -9,9 +9,9 @@
 イン1着時の2着の割合がある風では、①頭の3連単の2着を、モデルと表の半々（幾何平均）に寄せる。
 
 表は2種類：
-  - VENUE_WIND：ユーザーにもらった表（桐生＝boat-log.com）。こちらを優先する
   - var/ml/wind.json：データベースの過去の天気とレース結果から作った表（python -m minamo wind-table）。
-    検証期間で当てやすくなった場（adopt）だけ使う
+    全場この表に統一（ユーザーの判断、2026-10-03）。検証期間で当てやすくなった場（adopt）だけ使う
+  - VENUE_WIND：ユーザーにもらった表（桐生＝boat-log.com）。比べるための参考。USE_GIVEN_TABLES が True のときだけ予想に使う
 """
 from __future__ import annotations
 
@@ -151,9 +151,12 @@ def learned() -> dict:
     return _learned["data"]
 
 
+USE_GIVEN_TABLES = False  # もらった表（boat-log）を予想に使うか。全場を自分のデータにそろえるので使わない
+
+
 def table_for(jcd: str) -> tuple[Optional[dict], Optional[str]]:
-    """(その場の表, 出どころ)。もらった表が先、無ければ検証で採用された自分のデータの表。"""
-    if jcd in VENUE_WIND:
+    """(その場の表, 出どころ)。検証で採用された自分のデータの表（もらった表は USE_GIVEN_TABLES のときだけ先に）。"""
+    if USE_GIVEN_TABLES and jcd in VENUE_WIND:
         return VENUE_WIND[jcd], "boat-log"
     t = (learned().get("venues") or {}).get(jcd)
     if t and t.get("adopt"):
