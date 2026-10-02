@@ -58,6 +58,9 @@ def main() -> None:
     mlw.add_argument("--venue", default=None, help="詳しく表示する場（例 01）")
     mlw.add_argument("--check", type=int, default=0, help="各場この数のレースで、風の向きを公式サイトの結果ページと照合（1秒1件）")
     mlw.add_argument("--show", action="store_true", help="作り直さず、前に作った表を表示するだけ")
+    mlv = sub.add_parser("venue-check", help="場ごとの予想ルールを、データベースの実績で確かめる表を出す")
+    mlv.add_argument("--venue", required=True, help="場（例 03）")
+    mlv.add_argument("--raw", default=None)
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -120,6 +123,11 @@ def main() -> None:
         print(wind_table.report(data))
         if args.venue:
             print(wind_table.detail(data, args.venue.zfill(2)))
+    elif args.cmd == "venue-check":
+        from .ml import live, venue_check
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        print(venue_check.build(raw, args.venue))
     elif args.cmd == "serve":
         root = Path(__file__).resolve().parent.parent / "web"
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
