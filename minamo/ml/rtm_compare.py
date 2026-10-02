@@ -3,7 +3,7 @@
   python -m minamo rtm-compare
 材料：
   - var/ml/raw/rtm_preds.csv   … RTMの DEEP・NORMAL の買い目（データベースの prediction_mode_runs。最後の版を使う）
-  - var/ml/raw/rtm_shadow.csv  … RTMの裏の予想（shadow_prediction_runs）の本線5点・12点と結果
+  - var/ml/raw/rtm_shadow.csv  … RTMの time（レースタイム最重要）予想（shadow_prediction_runs）の本線5点・12点と結果
   - web/data/{日付}/{場}-{R}.json … MINAMOの買い目（方式）・確率上位6点と、レース結果・払戻
 買い目は1点100円ずつ買ったとして数える（同じ組が2回出ても1点）。
 """
@@ -74,7 +74,7 @@ def load_shadow(raw: Path) -> tuple[dict[str, dict[str, list[str]]], dict[str, t
     live = d[~d["version"].fillna("").str.contains("historical")]
     live = live.sort_values("ready_at", na_position="first").drop_duplicates("rid", keep="last")
     for r in live.itertuples():
-        for col, tag in (("main5", "裏の予想（shadow）本線5点"), ("twelve", "裏の予想（shadow）12点")):
+        for col, tag in (("main5", "time（shadow）本線5点"), ("twelve", "time（shadow）12点")):
             c = _combos(getattr(r, col))
             if c:
                 out.setdefault(tag, {})[r.rid] = c
