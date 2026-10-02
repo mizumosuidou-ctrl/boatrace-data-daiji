@@ -718,7 +718,7 @@ def test_rtm_compare_report(tmp_path):
     assert rtm["DEEP（場別）"]["20261002-24-03"] == ["135", "315"]
     assert rtm["DEEP（場別）＋追加"]["20261002-24-03"] == ["135", "315", "153", "513"]
     shadow, _ = rtm_compare.load_shadow(raw)
-    assert shadow["裏の予想（shadow）本線5点"]["20261002-24-04"] == ["124"]  # historical は使わない
+    assert shadow["time（shadow）本線5点"]["20261002-24-04"] == ["124"]  # historical は使わない
     text = rtm_compare.build(raw, data)
     assert "■ DEEP（場別）  1R" in text and "■ DEEP（場別）＋追加  1R" in text and "万舟 1" in text
-    assert "■ NORMAL  1R" in text and "■ 裏の予想（shadow）本線5点  1R" in text
+    assert "■ NORMAL  1R" in text and "■ time（shadow）本線5点  1R" in text
