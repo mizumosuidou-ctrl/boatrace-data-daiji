@@ -680,3 +680,45 @@ def test_odds_history_report(tmp_path):
     combos_df, _ = odds_history.load(tmp_path)
     dropped = combos_df[combos_df["late"] / combos_df["early"] <= 0.7]
     assert dropped["hit"].mean() > 0.3
+
+
+def test_rtm_compare_report(tmp_path):
+    """RTMの最後の版の買い目と、MINAMOの買い目を、同じレースの結果で数える。"""
+    import json
+
+    import pandas as pd
+
+    from minamo.ml import rtm_compare
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pd.DataFrame([
+        # 同じレース・同じ方式の古い版（使わない）と最後の版
+        {"race_date": "20261002", "venue": "24", "race_no": "3", "mode": "DEEP", "method_id": "omura-deep-test", "revision": "1",
+         "created_at": "a", "main": "2-1-3", "cover": "", "longshot": ""},
+        {"race_date": "20261002", "venue": "24", "race_no": "3", "mode": "DEEP", "method_id": "omura-deep-test", "revision": "3",
+         "created_at": "b", "main": "1-3-5 3-1-5", "cover": "1-5-3 1-5-3", "longshot": "5-1-3"},
+        {"race_date": "20261002", "venue": "24", "race_no": "4", "mode": "NORMAL", "method_id": "nationwide-normal", "revision": "1",
+         "created_at": "a", "main": "1-2-3 1-2-4", "cover": "", "longshot": ""},
+    ]).to_csv(raw / "rtm_preds.csv", index=False)
+    pd.DataFrame([
+        {"race_date": "20261002", "venue": "24", "race_no": "4", "version": "shadow-integrated-2.1.0", "ready_at": "x",
+         "main5": "1-2-4", "twelve": "1-2-4 1-2-3", "result": "1-2-4", "payout": "1500"},
+        {"race_date": "20261002", "venue": "24", "race_no": "4", "version": "shadow-integrated-2.1.0-historical-v2", "ready_at": "y",
+         "main5": "6-5-4", "twelve": "6-5-4", "result": "1-2-4", "payout": "1500"},
+    ]).to_csv(raw / "rtm_shadow.csv", index=False)
+    data = tmp_path / "data"
+    for rno, tri, pay, picks in ((3, "1-5-3", 12340, ["1-3-5", "1-5-3"]), (4, "1-2-4", 1500, ["1-2-4"])):
+        p = data / "20261002" / f"24-{rno:02d}.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"date": "20261002", "jcd": "24", "rno": rno, "ai": {"picks": [{"combo": c} for c in picks]},
+                                 "prediction": {"trifecta": [{"combo": c} for c in picks]},
+                                 "result": {"trifecta": tri, "payout": pay, "cancelled": False}}), encoding="utf-8")
+    rtm = rtm_compare.load_rtm(raw)
+    assert rtm["DEEP（場別）"]["20261002-24-03"] == ["135", "315"]
+    assert rtm["DEEP（場別）＋追加"]["20261002-24-03"] == ["135", "315", "153", "513"]
+    shadow, _ = rtm_compare.load_shadow(raw)
+    assert shadow["裏の予想（shadow）本線5点"]["20261002-24-04"] == ["124"]  # historical は使わない
+    text = rtm_compare.build(raw, data)
+    assert "■ DEEP（場別）  1R" in text and "■ DEEP（場別）＋追加  1R" in text and "万舟 1" in text
+    assert "■ NORMAL  1R" in text and "■ 裏の予想（shadow）本線5点  1R" in text
