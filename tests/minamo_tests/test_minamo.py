@@ -403,3 +403,36 @@ def test_wind_direction_and_kiryu_adjustment():
     tri = dict(strong.trifecta)
     assert sum(tri.values()) == pytest.approx(1.0)
     assert sum(p for k, p in tri.items() if k.startswith(f"{b1}-")) == pytest.approx(w(strong))
+
+
+def test_results_are_retried_after_many_failures(sandbox):
+    """結果ページがなかなか出なくても、20回であきらめず5分おきに取り直す（締切から12時間まで）。"""
+    from minamo.pipeline import RESULT_FAST_TRIES, Pipeline
+
+    fetcher = FakeFetcher()
+    ready = {"ok": False}
+    real = fetcher.result
+    fetcher.result = lambda hd, jcd, rno: real(hd, jcd, rno) if ready["ok"] else "<html></html>"
+    pipe = Pipeline(fetcher=fetcher, ai_enabled=False)
+    date = "20261001"
+    pipe.sync_day(date)
+    deadline = datetime(2026, 10, 1, 20, 45, tzinfo=store.JST)
+    t = deadline + timedelta(minutes=7)
+    for i in range(RESULT_FAST_TRIES):
+        pipe.tick(date, t + timedelta(minutes=i))
+    assert pipe._load(date, "12-12")["result_tries"] == RESULT_FAST_TRIES and not pipe._load(date, "12-12").get("result")
+    ready["ok"] = True
+    n = len(fetcher.calls)
+    later = t + timedelta(minutes=RESULT_FAST_TRIES)
+    pipe.tick(date, later)  # 前の試しから1分：まだ待つ
+    assert not any(c[0] == "result" for c in fetcher.calls[n:])
+    assert pipe.tick(date, later + timedelta(minutes=5)) == 1  # 5分たったら取り直して確定
+    race = json.loads((sandbox / "data" / date / "12-12.json").read_text())
+    assert race["result"]["trifecta"] == "4-1-2"
+    # 締切から12時間を過ぎたレースは取りに行かない
+    st = pipe._load(date, "12-12")
+    st.pop("result")
+    pipe._save(date, "12-12", st)
+    n = len(fetcher.calls)
+    pipe.tick(date, deadline + timedelta(hours=13))
+    assert not any(c[0] == "result" for c in fetcher.calls[n:])
