@@ -32,11 +32,12 @@ OUT_NAME = "original.csv"
 MISS_NAME = "original_missing.csv"
 COLUMNS = ["race_date", "venue", "race_no", "lane", "toban", "exhibition_time", "ex_st", "ex_course",
            "tilt", "weight", "lap_time", "turn_time", "straight_time", "captured_at"]
-INTERVAL = (3.0, 5.0)
+INTERVAL = (6.0, 10.0)  # 3〜5秒では約1,100件で接続を断られた（2026-10-01）
 PAUSE_EVERY = 300
 PAUSE_SEC = 180.0
 BLOCK_SLEEP = 1800.0
 BLOCK_LIMIT = 3
+FAIL_LIMIT = 5  # つながらないのがこの回数続いたら、ブロックされたとみなす
 
 _sleep: Callable[[float], None] = time.sleep
 
@@ -129,7 +130,7 @@ def run(raw: Path, days: int = 183, date_from: Optional[str] = None, date_to: Op
     client = client or Client()
     out_path, miss_path = raw / OUT_NAME, raw / MISS_NAME
     new_out, new_miss = not out_path.exists(), not miss_path.exists()
-    done = got = blocked = 0
+    done = got = blocked = fails = 0
     t0 = time.monotonic()
     with out_path.open("a", newline="", encoding="utf-8") as out, miss_path.open("a", newline="", encoding="utf-8") as miss:
         w = csv.DictWriter(out, fieldnames=COLUMNS)
@@ -143,7 +144,15 @@ def run(raw: Path, days: int = 183, date_from: Optional[str] = None, date_to: Op
             date, venue, rno = todo[i]
             try:
                 entries = client.chokuzen(venue, date, rno)
-            except Blocked as exc:
+            except (Blocked, requests.RequestException) as exc:
+                if not isinstance(exc, Blocked):
+                    fails += 1
+                    log.warning("%s %s %dR: %s", date, venue, rno, exc)
+                    if fails < FAIL_LIMIT:
+                        _sleep(30)
+                        i += 1  # 記録しないので、次に動かしたとき取り直す
+                        continue
+                    exc = Blocked(f"接続エラーが{fails}回続いた")  # 休んだあとは1回の失敗ですぐこちらへ
                 blocked += 1
                 out.flush()
                 miss.flush()
@@ -153,12 +162,7 @@ def run(raw: Path, days: int = 183, date_from: Optional[str] = None, date_to: Op
                 log.warning("biyori: %s が返りました。%d分休みます", exc, BLOCK_SLEEP // 60)
                 _sleep(BLOCK_SLEEP)
                 continue  # 同じレースをもう一度
-            except requests.RequestException as exc:
-                log.warning("%s %s %dR: %s", date, venue, rno, exc)
-                _sleep(30)
-                i += 1
-                continue
-            blocked = 0
+            blocked = fails = 0
             rows = rows_from(entries, date, venue, rno)
             if len(rows) >= 4:
                 w.writerows(rows)
