@@ -45,6 +45,8 @@ def main() -> None:
     mlo = sub.add_parser("ml-original", help="過去のオリジナル展示（一周・まわり足・直線）をボートレース日和から取り寄せる（3〜5秒に1件）")
     mlo.add_argument("--days", type=int, default=183, help="さかのぼる日数（既定 183＝約6か月）")
     mlo.add_argument("--limit", type=int, default=None)
+    mls = sub.add_parser("ml-series", help="過去の開催（大会名・グレード）を公式サイトから取り寄せる（1日1件）")
+    mls.add_argument("--raw", default=None)
     mlf = sub.add_parser("formation", help="スタート隊形トゥエルブの分布表をデータベースの実績から作る")
     mlf.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
     mlf.add_argument("--venue", default=None, help="表示する場（例 01）。省略すると作るだけ")
@@ -77,6 +79,11 @@ def main() -> None:
         else:
             meta = train.run(raw, live.ML_DIR, test_days=args.test_days)
             print(train.summary_ja(meta))
+    elif args.cmd == "ml-series":
+        from .ml import live, series
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        print(f"{series.run(raw)} days fetched")
     elif args.cmd == "formation":
         from .ml import formation_table, live
 

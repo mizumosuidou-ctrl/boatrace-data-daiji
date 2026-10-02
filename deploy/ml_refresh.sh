@@ -17,5 +17,7 @@ for name in facts exhibition motors; do
 done
 echo "[train] LightGBM ..."
 sudo docker compose run --rm worker python -m minamo ml-train
+echo "[series] 過去の開催（大会名・グレード）..."
+sudo docker compose run --rm worker python -m minamo ml-series
 echo "[formation] スタート隊形トゥエルブの表 ..."
 sudo docker compose run --rm worker python -m minamo formation
