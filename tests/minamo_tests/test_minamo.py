@@ -151,6 +151,52 @@ def test_settle_hit_and_miss():
     assert not miss["trifecta_hit"] and not miss["honmei_win"] and miss["return"] == 0
 
 
+def test_escape_index_tiers():
+    from minamo.model import escape_index
+
+    assert escape_index(0.85) == (100, "逃げ濃厚") and escape_index(0.95)[0] == 100
+    assert escape_index(0.60)[1] == "逃げ優勢"  # 71点
+    assert escape_index(0.50)[1] == "五分"  # 59点
+    assert escape_index(0.40)[1] == "逃げ危険"  # 47点
+    assert escape_index(0.30)[1] == "イン逃し本線"  # 35点
+
+
+def test_method_combos_follow_escape_judgement():
+    from itertools import permutations
+
+    from minamo.model import method_combos
+
+    # 1号艇が1コース。確率は 1 > 2 > 3 … の順に強い
+    w = {1: 6, 2: 5, 3: 4, 4: 3, 5: 2, 6: 1}
+    tri = sorted(((f"{a}-{b}-{c}", w[a] * 100 + w[b] * 10 + w[c]) for a, b, c in permutations(w, 3)), key=lambda kv: -kv[1])
+    head = lambda combos: [c.split("-")[0] for c in combos]
+    esc = lambda label: {"boat": 1, "index": 0, "label": label}
+    assert set(head(method_combos(tri, esc("逃げ優勢")))) == {"1"}
+    gobu = method_combos(tri, esc("五分"))
+    assert head(gobu).count("1") == 4 and sum(c.split("-")[1] == "1" for c in gobu) == 2
+    assert head(method_combos(tri, esc("逃げ危険"))).count("1") == 3
+    nige_nashi = method_combos(tri, esc("イン逃し本線"))
+    assert "1" not in head(nige_nashi) and any("1" in c.split("-")[1:] for c in nige_nashi)  # ①は消さずに2・3着へ
+    assert method_combos(tri, {}) == [c for c, _ in tri[:6]]
+
+
+def test_settle_records_old_style_picks_for_comparison():
+    res = RaceResult(rows=[ResultRow(place=i + 1, boat=b) for i, b in enumerate([2, 1, 3, 4, 5, 6])], trifecta="2-1-3", trifecta_payout=2400)
+    pred = {"boats": [], "trifecta": [{"combo": c, "p": 0.1} for c in ["1-2-3", "1-3-2", "2-1-3", "1-2-4", "1-4-2", "1-3-4", "2-3-1"]]}
+    st = store.settle({"honmei": 1, "picks": [{"combo": "1-2-3"}]}, res, pred)
+    assert not st["trifecta_hit"] and st["alt_hit"] and st["alt_stake"] == 600 and st["alt_return"] == 2400
+
+
+def test_fallback_follows_method_order():
+    card = parsers.parse_racelist(RACELIST_HTML, "20261001", "12", 12)
+    pred = predict(card)
+    ai = analyst.fallback_analysis(card, pred)
+    assert pred.escape["boat"] == 1 and 0 <= pred.escape["index"] <= 100
+    assert ai["verdict"].startswith(f"イン逃げ指数{pred.escape['index']}点（{pred.escape['label']}）")
+    assert ai["key_points"][0].startswith("イン逃げ指数")
+    assert [p["combo"] for p in ai["picks"]] == [p["combo"] for p in pred.picks[:6]]
+
+
 # ------------------------------------------------------------ pipeline (fake fetcher)
 
 
@@ -304,3 +350,10 @@ def test_racetime_table_uses_prior_days_of_the_series(tmp_path):
     rt.table("20261003", "12", "3日目")
     assert len(F.calls) == n  # 一度読んだ日は取り直さない
     assert rt.table("20261001", "12", "初日") == {"day": 1, "racers": {}}
+
+
+def test_private_method_text_is_added_to_claude_prompt(tmp_path, monkeypatch):
+    monkeypatch.setattr(analyst, "METHOD_FILE", tmp_path / "method.md")
+    assert analyst.system_prompt() == analyst.SYSTEM_PROMPT  # 無ければ今までどおり
+    (tmp_path / "method.md").write_text("【STEP①】イン逃げ指数を算出\n", encoding="utf-8")
+    assert analyst.system_prompt().endswith("# 予想手順（この手順に必ず従う）\n【STEP①】イン逃げ指数を算出")

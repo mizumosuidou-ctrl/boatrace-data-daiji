@@ -29,6 +29,13 @@ W_EXH_ST = -2.5  # 展示ST
 W_F = -0.14  # F持ち1本あたり（スタートを張り込めない）
 PL_DECAY = 0.82  # 2着・3着の決まりやすさの平坦化
 
+# イン逃げ指数：1コース艇の1着確率を100点満点に直したもの（0.85以上で100点）。
+# 判定の区切りは予想手順のとおり。2026-10-01の168Rで、点数が高いほど実際によく逃げていた
+# （85点以上 79%、70〜84点 66%、55〜69点 47%、40〜54点 46%、39点以下 20%）。
+ESCAPE_FULL = 0.85
+ESCAPE_TIERS = ((85, "逃げ濃厚"), (70, "逃げ優勢"), (55, "五分"), (40, "逃げ危険"), (0, "イン逃し本線"))
+N_PICKS = 6
+
 FACTOR_LABELS = {
     "course": "進入コース",
     "skill": "選手力",
@@ -74,6 +81,7 @@ class Prediction:
     has_odds: bool
     engine: str = "model"  # model / lightgbm-pre / lightgbm-post
     shadow_win: dict[int, float] = field(default_factory=dict)  # 比較用：もう一方のエンジンの1着確率
+    escape: dict = field(default_factory=dict)  # イン逃げ指数 {"boat", "index", "label", "p"}
 
     def to_dict(self) -> dict:
         return {
@@ -101,7 +109,14 @@ class Prediction:
             "has_odds": self.has_odds,
             "engine": self.engine,
             "shadow_win": {str(k): round(v, 4) for k, v in self.shadow_win.items()},
+            "escape": self.escape,
         }
+
+
+def escape_index(p: float) -> tuple[int, str]:
+    """1コース艇の1着確率 → (イン逃げ指数, 判定)。"""
+    idx = max(0, min(100, round(100 * p / ESCAPE_FULL)))
+    return idx, next(label for floor, label in ESCAPE_TIERS if idx >= floor)
 
 
 def _avg(values: list[Optional[float]]) -> Optional[float]:
@@ -207,7 +222,12 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
     tier = "鉄板" if confidence >= 72 else "本線" if confidence >= 55 else "混戦" if confidence >= 40 else "波乱"
 
     scenario = _scenario(scores)
-    picks = _picks(tri_sorted, odds or {})
+    inner = next((s for s in scores if s.course == 1), None)
+    escape = {}
+    if inner:
+        idx, label = escape_index(inner.win)
+        escape = {"boat": inner.boat, "index": idx, "label": label, "p": round(inner.win, 4)}
+    picks = _picks(tri_sorted, odds or {}, escape)
     return Prediction(
         boats=scores,
         trifecta=tri_sorted,
@@ -220,6 +240,7 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         has_odds=bool(odds),
         engine=engine,
         shadow_win=shadow,
+        escape=escape,
     )
 
 
@@ -265,16 +286,41 @@ def _scenario(scores: list[BoatScore]) -> dict[str, float]:
     return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
 
-def _picks(tri_sorted: list[tuple[str, float]], odds: dict[str, float]) -> list[dict]:
-    """推奨買い目：確率上位で累積45%か最大8点、加えてオッズがあれば期待値上位。"""
+def method_combos(tri_sorted: list[tuple[str, float]], escape: dict, n: int = N_PICKS) -> list[str]:
+    """予想手順どおりの買い目：まず①（1コース艇）が逃げるかを決め、その判定ごとに組む。
+
+    2着・3着の相手は、①を頭に固定したときの確率（スタート順位の展開と各艇の力）の高い順。
+      逃げ濃厚・逃げ優勢 … ①頭だけ
+      五分             … ①頭4点 ＋ ①2着残し2点
+      逃げ危険         … ①頭3点 ＋ ①以外の頭3点（①は2・3着に残る形が上位に来る）
+      イン逃し本線     … ①以外の頭だけ（①を消すのではなく、2・3着には残す）
+    """
+    if not escape:
+        return [c for c, _ in tri_sorted[:n]]
+    b1 = str(escape["boat"])
+    head = [c for c, _ in tri_sorted if c.split("-")[0] == b1]
+    second = [c for c, _ in tri_sorted if c.split("-")[1] == b1]
+    other = [c for c, _ in tri_sorted if c.split("-")[0] != b1]
+    label = escape["label"]
+    if label in ("逃げ濃厚", "逃げ優勢"):
+        out = head[:n]
+    elif label == "五分":
+        out = head[: n - 2] + second[:2]
+    elif label == "逃げ危険":
+        out = head[: n // 2] + other[: n - n // 2]
+    else:
+        out = other[:n]
+    return sorted(out, key=lambda c: -dict(tri_sorted)[c])
+
+
+def _picks(tri_sorted: list[tuple[str, float]], odds: dict[str, float], escape: Optional[dict] = None) -> list[dict]:
+    """推奨買い目：予想手順で組んだ6点、加えてオッズがあれば期待値上位。"""
+    prob = dict(tri_sorted)
     picks: list[dict] = []
-    cum = 0.0
-    for combo, p in tri_sorted:
-        if len(picks) >= 8 or (cum >= 0.45 and len(picks) >= 3):
-            break
+    for combo in method_combos(tri_sorted, escape or {}):
+        p = prob[combo]
         o = odds.get(combo)
         picks.append({"combo": combo, "p": round(p, 4), "odds": o, "ev": round(p * o, 2) if o else None, "kind": "本線"})
-        cum += p
     if odds:
         chosen = {x["combo"] for x in picks}
         value = sorted(
