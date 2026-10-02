@@ -14,6 +14,7 @@
   10. 風の方角（北西など）ごとの、4m以上のときのコース別1着率
   11. コースごとに、展示タイム・一周・回り足・直線の順位（1位・2位・3位以下）別の1着率
   12. イン逃げのときの2着のコースの割合（全部・弱い風・追い風3m以上・向かい風3m以上）
+  13. ②③④の平均スタート順位（早い・中くらい・遅い）ごとの、そのコースの1着率と2連対率
 """
 from __future__ import annotations
 
@@ -221,6 +222,17 @@ def build(raw: Path, venue: str) -> str:
                 g = wc[wc["wind_from"] == d]
                 if g["race_id"].nunique() >= 30:
                     lines.append(f"  {wind_table._pad(d, 16)}{_rates(g)}")
+        # 13. ②③④の平均スタート順位
+        lines.append("13. ②③④の平均スタート順位（直近1年・そのコース）→ そのコースの1着率 ／ 2連対率（走数）")
+        for c in (2, 3, 4):
+            g = part[(part["course"] == c) & part["avg_sr"].notna() & part["finish"].notna()]
+            cells = []
+            for lo, hi, tag in ((0, 2.5, "2.5まで"), (2.5, 3.5, "2.5〜3.5"), (3.5, 9, "3.5より遅い")):
+                m = (g["avg_sr"] > lo) & (g["avg_sr"] <= hi)
+                if m.sum() >= 20:
+                    cells.append(f"{tag} {100 * (g.loc[m, 'finish'] == 1).mean():.1f}/{100 * (g.loc[m, 'finish'] <= 2).mean():.1f}({int(m.sum())})")
+            if cells:
+                lines.append(f"  {c}コース  " + "  ".join(cells))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 12. 風ごとのイン逃げ時の2着
