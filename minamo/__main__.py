@@ -61,6 +61,8 @@ def main() -> None:
     mlv = sub.add_parser("venue-check", help="場ごとの予想ルールを、データベースの実績で確かめる表を出す")
     mlv.add_argument("--venue", required=True, help="場（例 03）")
     mlv.add_argument("--raw", default=None)
+    mlq = sub.add_parser("odds-check", help="オッズの動き（締切15分前→5分前→確定）と結果を突き合わせる表を出す")
+    mlq.add_argument("--raw", default=None)
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -128,6 +130,10 @@ def main() -> None:
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
         print(venue_check.build(raw, args.venue))
+    elif args.cmd == "odds-check":
+        from .ml import live, odds_history
+
+        print(odds_history.build(Path(args.raw) if args.raw else live.ML_DIR / "raw"))
     elif args.cmd == "serve":
         root = Path(__file__).resolve().parent.parent / "web"
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
