@@ -13,6 +13,7 @@ from itertools import permutations
 from statistics import mean
 from typing import Optional
 
+from . import wind as wind_mod
 from .models import BeforeInfo, Entry, RaceCard
 from .venues import course_base_rates
 
@@ -82,6 +83,7 @@ class Prediction:
     engine: str = "model"  # model / lightgbm-pre / lightgbm-post
     shadow_win: dict[int, float] = field(default_factory=dict)  # 比較用：もう一方のエンジンの1着確率
     escape: dict = field(default_factory=dict)  # イン逃げ指数 {"boat", "index", "label", "p"}
+    wind: dict = field(default_factory=dict)  # 風の補正 {"category", "speed", "stabilizer", "factors"}
 
     def to_dict(self) -> dict:
         return {
@@ -110,6 +112,7 @@ class Prediction:
             "engine": self.engine,
             "shadow_win": {str(k): round(v, 4) for k, v in self.shadow_win.items()},
             "escape": self.escape,
+            "wind": self.wind,
         }
 
 
@@ -170,7 +173,7 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         if be and be.start_st is not None and ref_exst is not None:
             penalty = 0.08 if be.start_st < 0 else 0.0
             f["exh_st"] = W_EXH_ST * max(-0.15, min(0.15, abs(be.start_st) - ref_exst)) - penalty
-        if wind >= 5:
+        if wind >= 5 and card.jcd not in wind_mod.VENUE_WIND:  # 場の風の表がある場は、あとで表で補正する
             # 強風はイン有利が崩れやすい
             f["wind"] = -0.07 * (wind - 4) if c == 1 else 0.03 * (wind - 4)
         scores.append(BoatScore(boat=e.boat, course=c, score=sum(f.values()), factors=f))
@@ -190,6 +193,11 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         decay = ml.get("pl_decay") or PL_DECAY  # 学習で合わせた値
 
     strengths = {s.boat: math.exp(s.score) for s in scores}
+    # 風の補正（場の風向き×風速別のコース別1着率。直前情報で風が分かってから）
+    wind_adj = wind_mod.adjustment(card.jcd, before.wind_dir, before.wind_speed, getattr(before, "stabilizer", None)) if before else None
+    if wind_adj:
+        for s in scores:
+            strengths[s.boat] *= wind_adj["factors"].get(s.course, 1.0)
     total = sum(strengths.values())
     for s in scores:
         s.win = strengths[s.boat] / total
@@ -206,7 +214,11 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         rest2 = rest1 - soft[b]
         p3 = soft[c] / rest2
         tri[f"{a}-{b}-{c}"] = p1 * p2 * p3
-        ex[f"{a}-{b}"] = ex.get(f"{a}-{b}", 0.0) + p1 * p2 * p3
+    if wind_adj and wind_adj.get("second"):
+        _wind_second(tri, scores, wind_adj["second"])
+    for combo, p in tri.items():
+        a, b, _ = combo.split("-")
+        ex[f"{a}-{b}"] = ex.get(f"{a}-{b}", 0.0) + p
     tri_sorted = sorted(tri.items(), key=lambda kv: -kv[1])
     ex_sorted = sorted(ex.items(), key=lambda kv: -kv[1])
 
@@ -241,7 +253,33 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         engine=engine,
         shadow_win=shadow,
         escape=escape,
+        wind={k: v for k, v in (wind_adj or {}).items() if k != "second"} if wind_adj else {},
     )
+
+
+def _wind_second(tri: dict[str, float], scores: list[BoatScore], shares: list[float]) -> None:
+    """イン（1コース）が1着のときの2着を、風の表の割合とモデルの半々（幾何平均）に寄せる。1着の確率は変えない。"""
+    inner = next((s for s in scores if s.course == 1), None)
+    if not inner:
+        return
+    b1 = str(inner.boat)
+    course_of = {str(s.boat): s.course for s in scores}
+    head = {k: v for k, v in tri.items() if k.split("-")[0] == b1}
+    p1 = sum(head.values())
+    if p1 <= 0:
+        return
+    cond: dict[str, float] = {}
+    for k, v in head.items():
+        cond[k.split("-")[1]] = cond.get(k.split("-")[1], 0.0) + v / p1
+    target = {b: max(shares[course_of[b] - 2], 0.1) if 2 <= course_of[b] <= 6 else 1.0 for b in cond}
+    t_sum = sum(target.values())
+    w = wind_mod.SECOND_WEIGHT
+    mixed = {b: (cond[b] ** (1 - w)) * ((target[b] / t_sum) ** w) for b in cond if cond[b] > 0}
+    m_sum = sum(mixed.values())
+    for k in head:
+        b = k.split("-")[1]
+        if cond.get(b, 0) > 0:
+            tri[k] = tri[k] * (mixed[b] / m_sum) / cond[b]
 
 
 def _ml_result(card: RaceCard, before: Optional[BeforeInfo]) -> Optional[dict]:

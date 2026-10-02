@@ -373,3 +373,33 @@ def test_private_method_text_is_added_to_claude_prompt(tmp_path, monkeypatch):
     assert analyst.system_prompt() == analyst.SYSTEM_PROMPT  # 無ければ今までどおり
     (tmp_path / "method.md").write_text("【STEP①】イン逃げ指数を算出\n", encoding="utf-8")
     assert analyst.system_prompt().endswith("# 予想手順（この手順に必ず従う）\n【STEP①】イン逃げ指数を算出")
+
+
+def test_wind_direction_and_kiryu_adjustment():
+    from dataclasses import replace
+
+    from minamo import wind
+
+    # 公式アイコン：5＝右（1マークへ）＝追い風、13＝左＝向かい風、9＝下（スタンドへ）＝左横風、1＝上＝右横風
+    assert wind.classify(5, 4) == ("追い風", 4.0) and wind.classify(13, 3)[0] == "向かい風"
+    assert wind.classify(9, 2)[0] == "左横風" and wind.classify(1, 2)[0] == "右横風"
+    assert wind.classify(3, 4)[0] == "追い風" and wind.classify(7, 4)[0] == "追い風"  # 斜めは追い・向かいに入れる
+    assert wind.classify(10, 0) == ("無風", 0.0) and wind.classify(None, None) is None
+    a = wind.adjustment("01", 13, 3)
+    assert a["category"] == "向かい風" and a["factors"][1] < 1 < a["factors"][4]
+    assert wind.adjustment("01", 5, 5, True)["factors"][1] > 1 > wind.adjustment("01", 5, 5, False)["factors"][1]
+    assert wind.adjustment("01", 1, 3) is None  # 右横風の表は無い
+    assert wind.adjustment("12", 13, 3) is None  # 表の無い場
+
+    card = parsers.parse_racelist(RACELIST_HTML, "20261001", "01", 12)
+    before = parsers.parse_beforeinfo(BEFOREINFO_HTML)
+    calm = predict(card, replace(before, wind_speed=0, wind_dir=None))
+    head = predict(card, replace(before, wind_speed=3, wind_dir=13))
+    b1 = next(b for b in head.boats if b.course == 1).boat
+    w = lambda p: next(b.win for b in p.boats if b.boat == b1)
+    assert w(head) < w(calm) and head.wind["category"] == "向かい風" and calm.wind["category"] == "無風"
+    # 向かい風5m以上：①1着時の2着を「1-3」「1-5」寄りに。①の1着率と合計は変わらない
+    strong = predict(card, replace(before, wind_speed=6, wind_dir=13))
+    tri = dict(strong.trifecta)
+    assert sum(tri.values()) == pytest.approx(1.0)
+    assert sum(p for k, p in tri.items() if k.startswith(f"{b1}-")) == pytest.approx(w(strong))
