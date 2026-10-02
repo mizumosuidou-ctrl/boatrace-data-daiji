@@ -66,6 +66,12 @@ def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None) -> dict:
         "stake": 100 * len(picks),
         "return": payout if hit else 0,
     }
+    # 比較用：予想手順を入れる前の組み方（3連単の確率上位6点）だったらどうだったか
+    if pred and pred.get("trifecta"):
+        alt = [t["combo"] for t in pred["trifecta"][:6]]
+        out["alt_hit"] = result.trifecta in alt
+        out["alt_stake"] = 100 * len(alt)
+        out["alt_return"] = payout if result.trifecta in alt else 0
     # LightGBMと統計モデルの本命（1着確率1位）を比べる
     if pred and order and pred.get("shadow_win"):
         fav = max(pred["boats"], key=lambda b: b["win"])["boat"]
@@ -183,12 +189,13 @@ def race_summary(race: dict) -> dict:
         "cancelled": res.get("cancelled", False),
         "hit": st.get("trifecta_hit"),
         "honmei_win": st.get("honmei_win"),
+        "escape": (pred.get("escape") or {}).get("index"),
     }
 
 
 def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
     venues = []
-    totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0, "ml_races": 0, "ml_fav_hits": 0, "shadow_fav_hits": 0}
+    totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0, "ml_races": 0, "ml_fav_hits": 0, "shadow_fav_hits": 0, "alt_races": 0, "alt_hits": 0, "alt_stake": 0, "alt_return": 0, "method_hits": 0, "method_stake": 0, "method_return": 0}
     for vd in sorted(vdays, key=lambda v: v.jcd):
         races = []
         for rno in range(1, 13):
@@ -204,6 +211,14 @@ def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
                 totals["honmei_hits"] += int(st["honmei_win"])
                 totals["stake"] += st["stake"]
                 totals["return"] += st["return"]
+                if "alt_hit" in st:
+                    totals["alt_races"] += 1
+                    totals["alt_hits"] += int(st["alt_hit"])
+                    totals["alt_stake"] += st["alt_stake"]
+                    totals["alt_return"] += st["alt_return"]
+                    totals["method_hits"] += int(st["trifecta_hit"])  # 同じレースでの予想手順の成績
+                    totals["method_stake"] += st["stake"]
+                    totals["method_return"] += st["return"]
                 if "fav_win" in st:
                     totals["ml_races"] += 1
                     totals["ml_fav_hits"] += int(st["fav_win"])
@@ -226,7 +241,7 @@ def update_record(date: str, totals: dict, demo: bool) -> None:
     days.append({"date": date, **totals})
     days.sort(key=lambda d: d["date"])
     days = days[-120:]
-    agg = {k: sum(d.get(k, 0) for d in days) for k in ("races", "settled", "hits", "honmei_hits", "stake", "return", "ml_races", "ml_fav_hits", "shadow_fav_hits")}
+    agg = {k: sum(d.get(k, 0) for d in days) for k in ("races", "settled", "hits", "honmei_hits", "stake", "return", "ml_races", "ml_fav_hits", "shadow_fav_hits", "alt_races", "alt_hits", "alt_stake", "alt_return", "method_hits", "method_stake", "method_return")}
     write_json(path, {"days": days, "totals": agg, "demo": demo, "updated_at": now_jst().isoformat(timespec="seconds")})
     latest = read_json(DATA_DIR / "latest.json") or {}
     dates = sorted(set((latest.get("dates") or []) + [date]))[-30:]

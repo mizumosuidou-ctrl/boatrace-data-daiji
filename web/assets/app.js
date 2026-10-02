@@ -351,6 +351,11 @@ function factorBars(f, keys) {
   }).join("")}</div>`;
 }
 
+// 予想が使った進入コース（展示後は展示進入、展示前は枠なり）。表はこの順に並べる
+const courseOf = (race) => Object.fromEntries(race.prediction.boats.map((b) => [b.boat, b.course || b.boat]));
+const exEntry = (race) => race.stage === "exhibition";
+const courseTag = (c, boatNo, ex) => `<span class="ctag ${ex ? "" : "guess"} ${c !== boatNo ? "moved" : ""}" title="${ex ? "展示進入" : "枠なり想定"} ${c}コース">${c}<small>C</small></span>`;
+
 function rankClass(values, i, lowerBetter = false) {
   const vs = values.map((v, j) => [v, j]).filter(([v]) => v != null && v !== 0);
   if (vs.length < 3 || values[i] == null) return "";
@@ -361,7 +366,9 @@ function rankClass(values, i, lowerBetter = false) {
 }
 
 function sheetHtml(race) {
-  const E = race.entries;
+  const C = courseOf(race);
+  const ex = exEntry(race);
+  const E = race.entries.slice().sort((a, b) => (C[a.boat] ?? a.boat) - (C[b.boat] ?? b.boat));
   const col = (k) => E.map((e) => e[k]);
   const cols = [
     ["全国勝率", "nat_win", false, 2], ["全国2連", "nat_2", false, 1], ["当地勝率", "loc_win", false, 2],
@@ -373,7 +380,8 @@ function sheetHtml(race) {
     ["チルト", "tilt", null, 1], ["体重", "weight", null, 1],
   ];
   const fmt = (v, d) => (v == null || v === 0 && d === 2 && false ? "--" : typeof v === "number" ? v.toFixed(d) : "--");
-  const rows = E.map((e, i) => `<tr>
+  const rows = E.map((e, i) => `<tr class="${C[e.boat] && C[e.boat] !== e.boat ? "moved" : ""}">
+    <td>${C[e.boat] ? courseTag(C[e.boat], e.boat, ex) : "--"}</td>
     <td>${boat(e.boat, "sm")}</td>
     <td class="name">${esc(e.name)} <small class="muted num">${esc(e.toban)} ${esc(e.grade)}</small></td>
     ${cols.map(([, k, lb, d]) => {
@@ -387,7 +395,7 @@ function sheetHtml(race) {
     <td class="${e.f_count ? "f" : "muted"}">${e.f_count ? "F" + e.f_count : "-"}</td>
   </tr>`).join("");
   return `<div class="panel sheet"><table>
-    <thead><tr><th>艇</th><th>選手</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}<th>F</th></tr></thead>
+    <thead><tr><th>進入</th><th>艇</th><th>選手</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}<th>F</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 
@@ -395,11 +403,12 @@ function boardHtml(race) {
   const P = race.prediction;
   const E = Object.fromEntries(race.entries.map((e) => [e.boat, e]));
   const maxWin = Math.max(...P.boats.map((b) => b.win));
-  const rows = P.boats.map((b) => {
+  const ex = exEntry(race);
+  const rows = P.boats.slice().sort((a, b) => (a.course || a.boat) - (b.course || b.boat)).map((b) => {
     const e = E[b.boat] || {};
     return `<div class="board-row ${b.win === maxWin ? "top" : ""}">
-      <div>${boat(b.boat, "lg")}</div>
-      <div class="racer"><b>${esc(e.name)}<span class="g ${esc(e.grade)}">${esc(e.grade)}</span></b><small>${b.start_order != null ? `<span class="so">予想ST順 ${Number.isInteger(b.start_order) ? b.start_order : b.start_order.toFixed(1)}番手</span> · ` : ""}${esc(e.branch)} · ${e.age ?? "-"}歳 · ${b.course}コース${e.ex_course && e.ex_course !== e.boat ? " (進入変化)" : ""}</small></div>
+      <div class="lane">${courseTag(b.course || b.boat, b.boat, ex)}${boat(b.boat, "lg")}</div>
+      <div class="racer"><b>${esc(e.name)}<span class="g ${esc(e.grade)}">${esc(e.grade)}</span></b><small>${b.start_order != null ? `<span class="so">予想ST順 ${Number.isInteger(b.start_order) ? b.start_order : b.start_order.toFixed(1)}番手</span> · ` : ""}${esc(e.branch)} · ${e.age ?? "-"}歳 · ${b.course}コース${e.ex_course && e.ex_course !== e.boat ? "（進入変化）" : ""}</small></div>
       <div class="winbar" data-b="${b.boat}" style="${cVar(b.boat)}"><div class="track"><span class="fill" style="width:${(b.win / maxWin) * 100}%"></span></div><span class="v">${pct(b.win)}<small>%</small></span></div>
       <div class="num">${pct(b.top2)}%</div>
       <div class="num" data-l="3連対">${pct(b.top3)}%</div>
@@ -407,7 +416,7 @@ function boardHtml(race) {
     </div>`;
   }).join("");
   return `<div class="panel board">
-    <div class="board-head"><div>艇</div><div>選手</div><div>1着確率</div><div style="text-align:right">2連対</div><div style="text-align:right">3連対</div><div>要因（＋/−）</div></div>
+    <div class="board-head"><div>進入</div><div>選手</div><div>1着確率</div><div style="text-align:right">2連対</div><div style="text-align:right">3連対</div><div>要因（＋/−）</div></div>
     ${rows}
     <div class="factor-legend"><span class="chip ${isML(P) ? "src-claude" : ""}">${esc(ENGINE_LABEL[P.engine] || "統計モデル")}</span>${factorKeys(P).map(([, l], i) => `<span>${i + 1}.${l}</span>`).join("")}</div>
   </div>`;
@@ -512,8 +521,10 @@ async function renderRace(r, refresh = false) {
       </article>
       <div class="side-stack">
         <div class="panel confidence-card rv" style="--i:3">
-          <div class="ring">${ringSvg(ai.confidence ?? P.confidence)}<div class="ring-center"><div><b>${ai.confidence ?? P.confidence}</b><span>CONFIDENCE</span></div></div></div>
-          <div><div class="eyebrow">Race type</div><div class="tier" style="margin-top:8px">${tierOf(ai.confidence ?? P.confidence)}</div><div class="tier-note">モデル確信度 ${P.confidence} · ${esc(P.tier)}</div></div>
+          ${P.escape && P.escape.index != null ? `<div class="ring">${ringSvg(P.escape.index)}<div class="ring-center"><div><b>${P.escape.index}</b><span>IN ESCAPE</span></div></div></div>
+          <div><div class="eyebrow">イン逃げ指数 · STEP 1</div><div class="tier" style="margin-top:8px">${esc(P.escape.label)}</div><div class="tier-note">1コース ${boat(P.escape.boat, "sm")} ${esc(E[P.escape.boat]?.name || "")} · 1着率 ${pct(P.escape.p)}%<br>モデル確信度 ${P.confidence} · ${esc(P.tier)}</div></div>`
+          : `<div class="ring">${ringSvg(ai.confidence ?? P.confidence)}<div class="ring-center"><div><b>${ai.confidence ?? P.confidence}</b><span>CONFIDENCE</span></div></div></div>
+          <div><div class="eyebrow">Race type</div><div class="tier" style="margin-top:8px">${tierOf(ai.confidence ?? P.confidence)}</div><div class="tier-note">モデル確信度 ${P.confidence} · ${esc(P.tier)}</div></div>`}
         </div>
         <div class="panel scenario rv" style="--i:4">
           <div class="eyebrow">Winning move · 決まり手予測</div>
@@ -529,7 +540,7 @@ async function renderRace(r, refresh = false) {
     </section>
 
     <section class="section">
-      <div class="section-head"><div><span class="eyebrow">Probability board</span><h2 class="section-title">Who wins<small>予想エンジンが出した1着・2連対・3連対確率と、その根拠</small></h2></div></div>
+      <div class="section-head"><div><span class="eyebrow">Probability board</span><h2 class="section-title">Who wins<small>予想エンジンが出した1着・2連対・3連対確率と、その根拠。${exEntry(race) ? "展示の進入コース順" : "枠なり想定のコース順（展示後に展示進入で並べ替え）"}</small></h2></div></div>
       ${boardHtml(race)}
     </section>
 
@@ -539,7 +550,7 @@ async function renderRace(r, refresh = false) {
     </section>
 
     <section class="section">
-      <div class="section-head"><div><span class="eyebrow">Data sheet</span><h2 class="section-title">The numbers<small>出走表・直前情報（● はレース内1位）</small></h2></div></div>
+      <div class="section-head"><div><span class="eyebrow">Data sheet</span><h2 class="section-title">The numbers<small>出走表・直前情報（● はレース内1位）。${exEntry(race) ? "展示の進入コース順" : "枠なり想定のコース順"}</small></h2></div></div>
       ${sheetHtml(race)}
       ${prevNext}
     </section>
@@ -622,6 +633,11 @@ async function renderRecord() {
       <div class="calib">
         <div class="panel rv"><h4>LightGBM</h4><div class="big" style="color:var(--accent)">${((T.ml_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
         <div class="panel rv" style="--i:1"><h4>統計モデル</h4><div class="big">${((T.shadow_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
+      </div>` : ""}
+      ${T.alt_races ? `<div class="section-head" style="margin-top:40px"><div><span class="eyebrow">Method check</span><h2 class="section-title">買い目の組み方<small>予想手順（逃げるか→展開→相手）で組んだ6点と、確率の高い順の6点を、同じレースで比べた成績</small></h2></div></div>
+      <div class="calib">
+        <div class="panel rv"><h4>予想手順</h4><div class="big" style="color:var(--accent)">${((T.method_return / T.method_stake) * 100 || 0).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">回収率 · 的中 ${T.method_hits}/${T.alt_races}R</div></div>
+        <div class="panel rv" style="--i:1"><h4>確率上位6点</h4><div class="big">${((T.alt_return / T.alt_stake) * 100 || 0).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">回収率 · 的中 ${T.alt_hits}/${T.alt_races}R</div></div>
       </div>` : ""}
       <div class="section-head" style="margin-top:40px"><div><span class="eyebrow">Calibration</span><h2 class="section-title">By confidence<small>確信度の帯ごとの成績。数字が高いレースほど当たっているかを検証</small></h2></div></div>
       <div class="calib">${Object.entries(tiers).map(([k, [n, h1, h3]], i) => `<div class="panel rv" style="--i:${i}"><h4>${k}</h4><div class="big">${n ? ((h3 / n) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">3連単的中 · 本命1着 ${n ? ((h1 / n) * 100).toFixed(1) : "--"}% · ${n}R</div></div>`).join("")}</div>
