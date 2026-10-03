@@ -645,6 +645,17 @@ def test_venue_check_more_sections(tmp_path):
     dup = facts[(facts["venue"].str.zfill(2) == "03") & (facts["lane"] == "2")].head(5).copy()
     dup["course"] = "1"
     pd.concat([facts, dup]).to_csv(tmp_path / "facts.csv", index=False)
+    # 5分前オッズ（1-2 が低いレースと高いレース）
+    import itertools
+
+    races = facts[facts["venue"].str.zfill(2) == "03"][["race_date", "venue", "race_no"]].drop_duplicates().head(80)
+    rows = []
+    for i, r in enumerate(races.itertuples()):
+        tri = " ".join(f"{a}-{b}-{c}:{(2.0 if (a, b) == (1, 2) and i % 2 else 60.0)}"
+                       for a, b, c in itertools.permutations(range(1, 7), 3))
+        rows.append({"race_date": r.race_date, "venue": r.venue, "race_no": r.race_no, "label": "T5",
+                     "captured_at": "x", "trifecta": tri})
+    pd.DataFrame(rows).to_csv(tmp_path / "odds_hist.csv", index=False)
     text = venue_check.build(tmp_path, "3")
     assert "0.3以上早い" in text and "21. 壁" in text and "22. ①の平均スタート順位" in text
     assert "23. ②の選手の2コース1着率" in text and "24. ②の平均スタート順位" in text and "25. ②の展示" in text
@@ -654,6 +665,8 @@ def test_venue_check_more_sections(tmp_path):
     assert "35. ①の平均スタート順位 × 他艇" in text and "36. 隣どうし" in text and "0.4以上早い" in text
     assert "37. 壁の数" in text and "38. ①の選手の当地" in text and "39. ③の平均スタート順位" in text
     assert "40. 展示タイム1位" in text
+    assert "41. 他艇①補正" in text and "42. レース番号" in text and "43. 進入" in text
+    assert "45. 5分前オッズ" in text and "1つ" in text and "0つ" in text
 
 
 def test_venue_check_class_ranks_and_conditions():
