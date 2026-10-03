@@ -737,3 +737,18 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
   *, *::before, *::after { animation-duration: .001ms !important; animation-delay: 0ms !important; transition-duration: .001ms !important; }
   .rv { opacity: 1; transform: none; }
 }
+
+/* 選手別アビリティ */
+.skills-panel { padding: 6px 18px; }
+.skill-row { display: grid; grid-template-columns: 220px 1fr; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.skill-row:last-child { border-bottom: 0; }
+.skill-row .who { display: flex; align-items: center; gap: 8px; }
+.skills { display: grid; gap: 10px; }
+.skill { border: 1px solid var(--line-2); border-radius: 10px; padding: 10px 12px; }
+.skill.bet { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.skill-h { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
+.skill .small { line-height: 1.6; }
+.skill .rank { font-family: var(--f-mono); font-weight: 800; font-size: 12px; min-width: 22px; text-align: center; border-radius: 6px; padding: 1px 6px; border: 1px solid currentColor; }
+.skill .rank.r-S { color: var(--hit); }
+.skill .rank.r-A { color: var(--accent); }
+@media (max-width: 720px) { .skill-row { grid-template-columns: 1fr; gap: 8px; } .skills-panel { padding: 4px 12px; } }

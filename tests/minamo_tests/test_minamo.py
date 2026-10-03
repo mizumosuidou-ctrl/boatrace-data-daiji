@@ -599,3 +599,65 @@ def test_facts_backfill_adds_days_after_the_database(tmp_path):
     assert (ex["race_date"] == "20261001").any()
     w = ds.load_weather(raw / "weather.csv")
     assert len(w) >= 1 and w["wind_tail"].notna().any()
+
+
+def test_abilities_auto_rules_and_five_course(tmp_path, monkeypatch):
+    """自動検出（鉄壁イン・コース1着◎・イン破壊・スタート巧者）と、5コース1着評価の共通ルール。"""
+    from minamo import abilities as ab
+
+    monkeypatch.setattr(ab, "REG_PATH", tmp_path / "none.json")
+    prof = lambda n, win, sr: {"n": n, "win": win, "sr": sr, "sr_n": n}  # noqa: E731
+    boats = [
+        {"boat": 1, "toban": "1", "course": 1, "prof": prof(20, 0.90, 1.4), "motor_2": 30.0},
+        {"boat": 2, "toban": "2", "course": 2, "prof": prof(12, 0.42, 3.0), "wall": 0.25, "wall_n": 11, "motor_2": 31.0},
+        {"boat": 3, "toban": "3", "course": 3, "prof": prof(30, 0.10, 4.2), "motor_2": 32.0},
+        {"boat": 4, "toban": "4", "course": 4, "prof": prof(30, 0.10, 3.5), "motor_2": 33.0},
+        {"boat": 5, "toban": "5", "course": 5, "prof": prof(15, 0.22, 3.0), "motor_2": 45.0, "rt_series_rank": 30,
+         "lap_time": 36.9},
+        {"boat": 6, "toban": "6", "course": 6, "prof": prof(5, 0.5, 1.0), "motor_2": 20.0, "lap_time": 37.5},
+    ]
+    found, mult, keep = ab.evaluate(boats)
+    names = {b: {a["name"]: a["rank"] for a in lst} for b, lst in found.items()}
+    assert names[1] == {"鉄壁イン": "S", "スタート巧者": "S"}
+    assert names[2] == {"2コース1着◎": "S", "イン破壊": "S"}  # 42%は基準30%＋10以上
+    assert "⑤1着上手" in names[5] and names[5]["⑤1着上手"] == "A" and names[6] == {}  # 6コースは5走で足りない
+    # 5コース：モーター1位・周回1位・4コースが3コースより0.7速い（RT順位30位は数えない）→ 3＋3×3＝12点
+    five = next(a for a in found[5] if a["name"] == "5コース1着評価")
+    assert five["bet"] and "12点" in five["detail"] and mult == {5: 1 + ab.FIVE_WEIGHT * 12} and keep == []
+    # 欠けているデータは数えない：周回が無く、モーターも1位でなければ追加条件は「4コースの攻め」だけ
+    boats[4] = {**boats[4], "lap_time": None, "motor_2": None}
+    assert ab.five_course(boats)["points"] == 6
+    boats[4]["prof"] = prof(15, 0.15, 3.0)  # 5コース1着率が20%未満なら発動しない
+    assert ab.five_course(boats) is None
+
+
+def test_abilities_registered_and_keep_combos(tmp_path, monkeypatch):
+    """報告登録：進入コースが対象のときだけ出す。買い目反映ありは、本線の点数を増やさずに組を残す。"""
+    import json
+
+    from minamo import abilities as ab
+    from minamo.model import _keep_picks
+
+    reg = tmp_path / "abilities.json"
+    reg.write_text(json.dumps([
+        {"toban": "4796", "ability": "①逃げ⑥残し", "rank": "A", "courses": [1], "note": "6コース艇が3着に残る",
+         "bet": {"type": "head_partners_third", "third_course": 6, "partners": 2}},
+        {"toban": "4739", "ability": "高チルトまくり", "rank": "A", "courses": [4, 5, 6], "note": "チルト3度"},
+    ], ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(ab, "REG_PATH", reg)
+    # 春園が2号艇から1コース、5号艇が6コース。菅は3コース（対象外）
+    boats = [{"boat": 2, "toban": "4796", "course": 1}, {"boat": 1, "toban": "x", "course": 2},
+             {"boat": 4739, "toban": "4739", "course": 3}, {"boat": 3, "toban": "y", "course": 4},
+             {"boat": 4, "toban": "z", "course": 5}, {"boat": 5, "toban": "w", "course": 6}]
+    found, mult, keep = ab.evaluate(boats, prelim=True)
+    assert [a["name"] for a in found[2]] == ["①逃げ⑥残し"] and found[2][0]["prelim"] and found[4739] == []
+    assert keep == [{"head": 2, "third": 5, "partners": 2, "label": "①逃げ⑥残し"}]
+    ex = {"2-1": 0.3, "2-4": 0.2, "2-5": 0.25, "2-3": 0.1}
+    combos = ab.keep_combos(keep, ex)
+    assert combos == [("2-1-5", "①逃げ⑥残し"), ("2-4-5", "①逃げ⑥残し")]  # 3着の5号艇は相手から外す
+    tri = {"2-1-3": 0.2, "2-1-4": 0.15, "2-4-1": 0.1, "2-3-1": 0.08, "1-2-3": 0.07, "2-1-5": 0.06, "2-4-5": 0.02}
+    picks = [{"combo": c, "p": p, "kind": "本線"} for c, p in list(tri.items())[:6]] + [{"combo": "3-2-1", "p": 0.01, "kind": "妙味"}]
+    out = _keep_picks(picks, combos, tri, {})
+    main = [p["combo"] for p in out if p["kind"] == "本線"]
+    assert len(main) == 6 and "2-4-5" in main and "2-1-5" in main and "1-2-3" not in main
+    assert next(p for p in out if p["combo"] == "2-1-5")["ability"] == "①逃げ⑥残し" and out[-1]["kind"] == "妙味"

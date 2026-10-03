@@ -621,7 +621,7 @@ def profile_row(r) -> dict:
     n, srn, tn = int(r["n"]), int(r["sr_n"]), int(r["topst"])
     rate = lambda a, b: round(float(a) / b, 3) if b else None  # noqa: E731
     return {"n": n, "win": rate(r["win"], n), "top2": rate(r["top2"], n), "top3": rate(r["top3"], n),
-            "sr": round(float(r["sr_sum"]) / srn, 2) if srn else None, "topst": rate(tn, srn), "topst_n": tn,
+            "sr": round(float(r["sr_sum"]) / srn, 2) if srn else None, "sr_n": srn, "topst": rate(tn, srn), "topst_n": tn,
             "topst_win": rate(r["topst_win"], tn), "topst_top2": rate(r["topst_top2"], tn)}
 
 

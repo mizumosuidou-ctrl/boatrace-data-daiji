@@ -13,6 +13,7 @@ from itertools import permutations
 from statistics import mean
 from typing import Optional
 
+from . import abilities as abilities_mod
 from . import wind as wind_mod
 from .models import BeforeInfo, Entry, RaceCard
 from .venues import course_base_rates
@@ -245,6 +246,8 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         idx, label = escape_index(inner.win)
         escape = {"boat": inner.boat, "index": idx, "label": label, "p": round(inner.win, 4)}
     picks = _picks(tri_sorted, odds or {}, escape)
+    if ml and ml.get("keep"):
+        picks = _keep_picks(picks, abilities_mod.keep_combos(ml["keep"], ex), tri, odds or {})
     return Prediction(
         boats=scores,
         trifecta=tri_sorted,
@@ -355,6 +358,29 @@ def method_combos(tri_sorted: list[tuple[str, float]], escape: dict, n: int = N_
     else:
         out = other[:n]
     return sorted(out, key=lambda c: -dict(tri_sorted)[c])
+
+
+def _keep_picks(picks: list[dict], keep: list[tuple[str, str]], tri: dict[str, float], odds: dict[str, float]) -> list[dict]:
+    """買い目反映ありのアビリティの組を、本線の点数を増やさずに残す（確率の低い本線から入れ替える）。"""
+    main = [p for p in picks if p["kind"] == "本線"]
+    rest = [p for p in picks if p["kind"] != "本線"]
+    want = [(c, label) for c, label in keep if c in tri]
+    have = {p["combo"] for p in main}
+    for c, label in want:
+        if c in have:
+            next(p for p in main if p["combo"] == c)["ability"] = label
+            continue
+        removable = [p for p in main if not p.get("ability")]
+        if not removable:
+            break
+        drop = min(removable, key=lambda p: p["p"])
+        main.remove(drop)
+        o = odds.get(c)
+        main.append({"combo": c, "p": round(tri[c], 4), "odds": o, "ev": round(tri[c] * o, 2) if o else None,
+                     "kind": "本線", "ability": label})
+        have = {p["combo"] for p in main}
+    main.sort(key=lambda p: -p["p"])
+    return main + [p for p in rest if p["combo"] not in have]
 
 
 def _picks(tri_sorted: list[tuple[str, float]], odds: dict[str, float], escape: Optional[dict] = None) -> list[dict]:
