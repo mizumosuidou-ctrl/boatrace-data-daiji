@@ -667,6 +667,7 @@ def test_venue_check_more_sections(tmp_path):
     assert "40. 展示タイム1位" in text
     assert "41. 他艇①補正" in text and "42. レース番号" in text and "43. 進入" in text
     assert "45. 5分前オッズ" in text and "1つ" in text and "0つ" in text
+    assert "46. 開催の種類" in text and "47. 風の強さ" in text
 
 
 def test_venue_check_class_ranks_and_conditions():
