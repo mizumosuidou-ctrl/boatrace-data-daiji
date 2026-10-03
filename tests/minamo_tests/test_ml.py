@@ -638,6 +638,13 @@ def test_venue_check_more_sections(tmp_path):
     from minamo.ml import synthetic, venue_check
 
     synthetic.generate(tmp_path, days=200, races_per_day=48, n_racers=80)
+    # 実データには、同じレースに同じコースの艇が2つ入っている行がある（進入の記録の重なり）。それでも落ちない
+    import pandas as pd
+
+    facts = pd.read_csv(tmp_path / "facts.csv", dtype=str)
+    dup = facts[(facts["venue"].str.zfill(2) == "03") & (facts["lane"] == "2")].head(5).copy()
+    dup["course"] = "1"
+    pd.concat([facts, dup]).to_csv(tmp_path / "facts.csv", index=False)
     text = venue_check.build(tmp_path, "3")
     assert "0.3以上早い" in text and "21. 壁" in text and "22. ①の平均スタート順位" in text
     assert "23. ②の選手の2コース1着率" in text and "24. ②の平均スタート順位" in text and "25. ②の展示" in text
