@@ -670,9 +670,10 @@ async function renderRecord() {
       </div>
       ${T.ev_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：オッズで絞った買い目<small>締切前のオッズで「MINAMOの確率×オッズ」が1.2以上の組だけを最大6点（無ければ見送り）。実際の推奨買い目は変えず、成績だけを数えています</small></h2></div></div>
       <div class="calib">
-        <div class="panel rv"><h4>回収率</h4><div class="big" style="color:var(--accent)">${T.ev_stake ? ((T.ev_return / T.ev_stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.ev_hits}/${T.ev_bought}R</div></div>
-        <div class="panel rv" style="--i:1"><h4>買ったレース</h4><div class="big">${T.ev_bought}<small style="font-size:.45em">R</small></div><div class="small">見送り ${T.ev_races - T.ev_bought}R · 平均 ${T.ev_bought ? (T.ev_stake / 100 / T.ev_bought).toFixed(1) : "--"}点</div></div>
-        <div class="panel rv" style="--i:2"><h4>1点1,000円の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.ev_return >= T.ev_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.ev_return - T.ev_stake) * 10)}</div><div class="small">投資 ${yen(T.ev_stake * 10)} · 払戻 ${yen(T.ev_return * 10)}</div></div>
+        <div class="panel rv"><h4>的中率</h4><div class="big">${T.ev_bought ? ((T.ev_hits / T.ev_bought) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.ev_hits}/${T.ev_bought}R（買ったレースのうち）</div></div>
+        <div class="panel rv" style="--i:1"><h4>回収率</h4><div class="big" style="color:var(--accent)">${T.ev_stake ? ((T.ev_return / T.ev_stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">払戻 ÷ 投資</div></div>
+        <div class="panel rv" style="--i:2"><h4>買ったレース</h4><div class="big">${T.ev_bought}<small style="font-size:.45em">R</small></div><div class="small">見送り ${T.ev_races - T.ev_bought}R · 平均 ${T.ev_bought ? (T.ev_stake / 100 / T.ev_bought).toFixed(1) : "--"}点</div></div>
+        <div class="panel rv" style="--i:3"><h4>1点1,000円の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.ev_return >= T.ev_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.ev_return - T.ev_stake) * 10)}</div><div class="small">投資 ${yen(T.ev_stake * 10)} · 払戻 ${yen(T.ev_return * 10)}</div></div>
       </div>` : ""}
       ${T.ml_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">予想エンジンの比較<small>同じレースで、それぞれの本命（1着確率1位）が1着になった割合</small></h2></div></div>
       <div class="calib">
