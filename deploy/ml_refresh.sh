@@ -5,10 +5,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 bash ./db_export.sh
+# 開催一覧（大会名・グレード・初日／最終日）は学習の材料にも使うので、学習より先に更新する
+echo "[series] 過去の開催（大会名・グレード・初日／最終日）..."
+sudo docker compose run --rm worker python -m minamo ml-series
 echo "[train] LightGBM ..."
 sudo docker compose run --rm worker python -m minamo ml-train
-echo "[series] 過去の開催（大会名・グレード）..."
-sudo docker compose run --rm worker python -m minamo ml-series
 echo "[formation] スタート隊形トゥエルブの表 ..."
 sudo docker compose run --rm worker python -m minamo formation
 echo "[wind] 場ごとの風の表 ..."
