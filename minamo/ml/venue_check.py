@@ -36,6 +36,8 @@
   32. ①が直線と回り足の両方で1位のときの、①の1着率
   33. ⑤の平均スタート順位（遅い・それ以外）×展示系の上位があるか、ごとの⑤の1着率
   34. ③の選手の3コース1着率（全場・直近1年）ごとの、⑤の2着率・2連対率と③の1着率
+  35. ①の平均スタート順位（3.0以下か）×他艇にそのコースの1着率20%以上が何艇いるか、ごとの①・②の1着率
+  36. 隣どうし（①〈②〜⑤〈⑥）で外の艇が平均スタート順位で0.5以上早いときの、外の艇・内の艇の1着率
 """
 from __future__ import annotations
 
@@ -271,7 +273,7 @@ def build(raw: Path, venue: str) -> str:
             r = piv.loc[ok]
             f = fin.loc[ok]
             head = False
-            for th in (0.3, 0.5):
+            for th in (0.3, 0.4, 0.5):
                 trig = (r[3] - r[4]) >= th
                 if trig.sum() < 20:
                     continue
@@ -293,6 +295,7 @@ def build(raw: Path, venue: str) -> str:
         lines.extend(_first_day_ex(part, exr, orig))
         lines.extend(_kojima(part, exr, orig, piv if len(ok) else None))
         lines.extend(_three_five(part, pers))
+        lines.extend(_tokuyama(part, pers, piv if len(ok) else None))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -574,6 +577,44 @@ def _three_five(part: pd.DataFrame, pers: pd.DataFrame) -> list[str]:
         if m.sum():
             out.append(f"  ③が{wind_table._pad(tag, 10)}③1着 {100 * (f.loc[m, 3] == 1).mean():5.1f}  ⑤2着 {100 * (f.loc[m, 5] == 2).mean():5.1f}"
                        f"  ⑤2連対 {100 * (f.loc[m, 5] <= 2).mean():5.1f}  ({int(m.sum())}R)")
+    return out
+
+
+def _tokuyama(part: pd.DataFrame, pers: pd.DataFrame, piv) -> list[str]:
+    """35・36：234-1理論×①のスタート、隣どうしのスタート順位差の効き方。"""
+    out = []
+    fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
+    p = part.merge(pers[["toban", "course", "date", "win_rate", "t3_n"]], on=["toban", "course", "date"], how="left")
+    p["strong"] = (p["win_rate"] >= 0.2) & (p["t3_n"] >= 10)
+    cnt = p[p["course"].between(2, 6)].groupby("race_id")["strong"].sum()
+    sr1 = part[part["course"] == 1].set_index("race_id")["avg_sr"]
+    ids = [r for r in cnt.index if r in fin.index and r in sr1.index and sr1[r] == sr1[r]]
+    if len(ids) >= 50 and all(c in fin for c in (1, 2)):
+        c, s1, f = cnt.loc[ids], sr1.loc[ids], fin.loc[ids]
+        out.append("35. ①の平均スタート順位 × 他艇にそのコースの1着率20%以上が何艇 → ①1着 ／ ②1着（%）（レース数）")
+        for st_tag, sm in (("①ST順位3.0以下", s1 <= 3.0), ("①ST順位3.0より遅い", s1 > 3.0)):
+            cells = []
+            for tag, m in (("2艇以下", c <= 2), ("3艇以上", c >= 3)):
+                mm = sm & m
+                if mm.sum():
+                    cells.append(f"{tag} ①{100 * (f.loc[mm, 1] == 1).mean():.1f} ②{100 * (f.loc[mm, 2] == 1).mean():.1f}({int(mm.sum())})")
+            out.append(f"  {wind_table._pad(st_tag, 20)}" + "  ".join(cells))
+    if piv is not None:
+        out.append("36. 隣どうしで外の艇が平均スタート順位で0.5以上早いとき → 外の艇の1着 ／ 内の艇の1着（%）（ふだん）（レース数）")
+        for a in range(1, 6):
+            b = a + 1
+            if a not in piv or b not in piv or b not in fin:
+                continue
+            r = piv[[a, b]].dropna()
+            r = r[r.index.isin(fin.index)]
+            if len(r) < 50:
+                continue
+            f = fin.loc[r.index]
+            m = (r[a] - r[b]) >= 0.5
+            if m.sum() < 20:
+                continue
+            out.append(f"  {a}〈{b}  外{b} {100 * (f.loc[m, b] == 1).mean():5.1f}（{100 * (f.loc[~m, b] == 1).mean():.1f}）"
+                       f"  内{a} {100 * (f.loc[m, a] == 1).mean():5.1f}（{100 * (f.loc[~m, a] == 1).mean():.1f}）  ({int(m.sum())}R)")
     return out
 
 
