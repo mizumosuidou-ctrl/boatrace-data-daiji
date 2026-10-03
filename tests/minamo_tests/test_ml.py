@@ -803,3 +803,25 @@ def test_ev_check_report(tmp_path):
     text = ev_check.build(ml, raw)
     assert "1. 選び方ごとの成績" in text and "イン逃し的中" in text and "3. MINAMOの①の1着確率" in text
     assert "データ" not in ev_check.build(tmp_path / "none", raw)[:0]  # 材料が無くても落ちない
+
+
+def test_day_flags(tmp_path):
+    """開催一覧の日の表示から、初日・最終日の印を作る（分からなければ NaN）。"""
+    import math
+
+    import pandas as pd
+
+    from minamo.ml import dataset as ds
+
+    assert ds.day_flags("初日") == (1.0, 0.0)
+    assert ds.day_flags("1日目") == (1.0, 0.0)
+    assert ds.day_flags("最終日") == (0.0, 1.0)
+    assert ds.day_flags("3日目") == (0.0, 0.0)
+    assert all(math.isnan(v) for v in ds.day_flags(""))
+    pd.DataFrame({"race_date": ["20260101", "20260102"], "venue": ["3", "03"], "title": ["x", "x"],
+                  "grade": ["一般", "一般"], "day_label": ["初日", "最終日"]}).to_csv(tmp_path / "series.csv", index=False)
+    rows = pd.DataFrame({"race_date": pd.Categorical(["20260101", "20260102", "20260103"]),
+                         "venue": pd.Categorical(["03", "03", "03"])})
+    out = ds.add_day_flags(rows, tmp_path)
+    assert list(out["day_first"].iloc[:2]) == [1.0, 0.0] and list(out["day_last"].iloc[:2]) == [0.0, 1.0]
+    assert math.isnan(out["day_last"].iloc[2])
