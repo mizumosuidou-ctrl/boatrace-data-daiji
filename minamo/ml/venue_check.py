@@ -47,6 +47,10 @@
   43. 枠なりのレースと進入が変わったレースの、コース別1着率
   44. 外の艇（④〜⑥）が周回2位以内＋直線1位のときの、3着以内率・ちょうど3着の率
   45. 5分前オッズ（3連単から換算した2連単）で 1-2・1-3 が5.0倍未満の数ごとの、①の1着率
+  46. 開催の種類（一般・G1・SG・女子など）ごとの、コース別1着率
+  47. 風（3m未満・3m以上）ごとに、展示タイム1位・一周1位の艇の1着率と3着以内率
+  48. 最終日とそれ以外で、⑤が④より平均スタート順位で0.5以上早いときの、⑤の1着率・2連対率
+  49. その選手のそのコースの1着率（全場・直近1年）が35%以上の艇の、実際の1着率（②〜⑥）
 """
 from __future__ import annotations
 
@@ -55,6 +59,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .. import formation as fm
 from ..venues import VENUES
 from . import dataset as ds
 from . import formation_table as ft
@@ -309,6 +314,7 @@ def build(raw: Path, venue: str) -> str:
         lines.extend(_tokuyama(part, pers, piv if len(ok) else None))
         lines.extend(_shimonoseki(part, wall1, top3, pers, weather, exr))
         lines.extend(_wakamatsu(part, wall1, exr, orig, odds))
+        lines.extend(_ashiya(part, pers, weather, exr, orig, piv if len(ok) else None))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -806,6 +812,72 @@ def _wakamatsu(part: pd.DataFrame, wall: pd.DataFrame, exr: pd.DataFrame, orig: 
         c, f1 = odds.loc[ids], one.loc[ids]
         out.append("45. 5分前オッズ（3連単から換算した2連単）で 1-2・1-3 のうち5.0倍未満の数 → ①1着率（レース数）")
         out.append("  " + "  ".join(f"{k}つ {100 * (f1[c == k] == 1).mean():.1f}%({int((c == k).sum())})" for k in (0, 1, 2) if (c == k).any()))
+    return out
+
+
+def _ashiya(part: pd.DataFrame, pers: pd.DataFrame, weather: pd.DataFrame, exr: pd.DataFrame,
+            orig: pd.DataFrame, piv) -> list[str]:
+    """46〜49：開催の種類、風×展示・一周1位、最終日の④〈⑤、コース1着率35%以上の艇。"""
+    out = []
+    # 46
+    races = part.drop_duplicates("race_id")[["race_id", "title", "grade"]].copy()
+    races["cat"] = [fm.category(t if isinstance(t, str) else None, g if isinstance(g, str) else None)
+                    for t, g in zip(races["title"], races["grade"])]
+    cat = part["race_id"].map(races.set_index("race_id")["cat"])
+    cells = []
+    for c in races["cat"].value_counts().index:
+        g = part[cat == c]
+        if g["race_id"].nunique() >= 20:
+            cells.append(f"  {wind_table._pad(c, 16)}{_rates(g)}")
+    if cells:
+        out.append("46. 開催の種類 → 1〜6コース1着率")
+        out.extend(cells)
+    # 47
+    br = _boat_ranks(part, exr, orig).merge(weather[["race_id", "speed"]], on="race_id", how="left")
+    br = br[br["speed"].notna()]
+    rows = []
+    for key, tag in (("ex", "展示タイム1位"), ("lap", "一周1位")):
+        top = br[br[key] == 1]
+        cells = []
+        for wt, m in (("風3m未満", top["speed"] < 3), ("風3m以上", top["speed"] >= 3)):
+            if m.sum() >= 20:
+                f = top.loc[m, "finish"]
+                cells.append(f"{wt} 1着 {100 * (f == 1).mean():.1f}% 3着以内 {100 * (f <= 3).mean():.1f}%({int(m.sum())})")
+        if cells:
+            rows.append(f"  {wind_table._pad(tag, 14)}" + "  ".join(cells))
+    if rows:
+        out.append("47. 風の強さ × 展示タイム1位・一周1位の艇 → 1着率 ／ 3着以内率（走数）")
+        out.extend(rows)
+    # 48
+    fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
+    if piv is not None and all(c in piv for c in (4, 5)) and 5 in fin:
+        last = part.drop_duplicates("race_id").set_index("race_id")["last_day"]
+        r = piv[[4, 5]].dropna()
+        r = r[r.index.isin(fin.index)]
+        f, ld = fin.loc[r.index, 5], last.reindex(r.index).fillna(False).astype(bool)
+        trig = (r[4] - r[5]) >= 0.5
+        cells = []
+        for tag, dm in (("最終日", ld), ("それ以外", ~ld)):
+            for tt, m in (("④〈⑤", trig), ("ふだん", ~trig)):
+                mm = dm & m
+                if mm.sum() >= 10:
+                    cells.append(f"{tag}{tt} {100 * (f[mm] == 1).mean():.1f}/{100 * (f[mm] <= 2).mean():.1f}({int(mm.sum())})")
+        if cells:
+            out.append("48. ⑤が④より平均スタート順位で0.5以上早い（④〈⑤）× 最終日 → ⑤の1着率/2連対率（%）（レース数）")
+            out.append("  " + "  ".join(cells))
+    # 49
+    p = part[part["finish"].notna() & part["course"].between(2, 6)].merge(
+        pers[["toban", "course", "date", "win_rate", "t3_n"]], on=["toban", "course", "date"], how="inner")
+    p = p[p["t3_n"] >= 10]
+    cells = []
+    for c in range(2, 7):
+        g = p[p["course"] == c]
+        hi, lo = g[g["win_rate"] >= 0.35], g[g["win_rate"] < 0.35]
+        if len(hi) >= 10:
+            cells.append(f"{c}C {100 * (hi['finish'] == 1).mean():.0f}%({len(hi)}) ／ {100 * (lo['finish'] == 1).mean():.0f}%")
+    if cells:
+        out.append("49. そのコースの1着率35%以上（選手・全場・直近1年・10走以上）の艇 → 実際の1着率（走数） ／ 35%未満の艇")
+        out.append("  " + "  ".join(cells))
     return out
 
 
