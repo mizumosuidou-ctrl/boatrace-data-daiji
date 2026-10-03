@@ -156,6 +156,16 @@ def test_ev_picks_keep_value_combos_by_probability():
     # 1-2-3 は期待値0.8で外す、2-1-3 は確率が低すぎるので外す
     assert store.ev_picks(tri, odds) == ["1-3-2", "1-2-4"]
     assert store.ev_picks(tri, {}) == []
+    # 補正：市場（オッズ）を混ぜると、市場が低く見る組の確率が下がる
+    cal = dict(store.calibrate(tri, odds, 1.0, 1.0))
+    assert abs(sum(cal.values()) - 1) < 1e-9 and cal["2-1-3"] < 0.004 / sum(p for _, p in tri)
+
+
+def test_ev_calib_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "EV_CALIB", tmp_path / "ev_calib.json")
+    assert store.ev_calib() is None
+    (tmp_path / "ev_calib.json").write_text('{"a": 0.5, "b": 0.7}', encoding="utf-8")
+    assert store.ev_calib() == (0.5, 0.7)
 
 
 def test_settle_hit_and_miss():

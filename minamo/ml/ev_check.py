@@ -180,7 +180,10 @@ def _ev_bands(races: list[dict]) -> list[str]:
     return out
 
 
-def calibration_report(races: list[dict]) -> list[str]:
+CALIB_FILE = "ev_calib.json"
+
+
+def calibration_report(races: list[dict], ml_dir: Path | None = None) -> list[str]:
     races = sorted(races, key=lambda r: r["race"])
     half = len(races) // 2
     fit, test = races[:half], races[half:]
@@ -205,6 +208,16 @@ def calibration_report(races: list[dict]) -> list[str]:
     lines += _ev_bands(cal_b)
     a_all, b_all = fit_calibration(races, market=True)
     lines.append(f"  （全期間で決めると 補正B a={a_all:.1f} b={b_all:.1f}）")
+    # 後半で当たり組の確率が良くなったときだけ、サイトの試験中の買い目に使う（全期間で決めた値）
+    better = _logloss(_calibrated(p, m, a2, b2), hit) < _logloss(p, hit)
+    if ml_dir is not None:
+        path = Path(ml_dir) / CALIB_FILE
+        if better:
+            path.write_text(json.dumps({"a": a_all, "b": b_all, "races": len(races), "from": races[0]["race"][:8],
+                                        "to": races[-1]["race"][:8]}, ensure_ascii=False), encoding="utf-8")
+        elif path.exists():
+            path.unlink()
+    lines.append(f"  → 試験中の買い目の補正：{f'使う（a={a_all:.1f} b={b_all:.1f}）' if better else '使わない（補正前のまま）'}")
     return lines
 
 
@@ -255,5 +268,5 @@ def build(ml_dir: Path, raw: Path) -> str:
             act = np.mean([r["hit"].startswith("1-") for r in g])
             lines.append(f"  ①{_pad(tag, 10)}{len(g):>5}R  実際の①1着 {100 * act:5.1f}%  市場の見立て {100 * mkt:5.1f}%"
                          f"  MINAMOの見立て {100 * np.mean([r['p1'] for r in g]):5.1f}%")
-    lines += calibration_report(races)
+    lines += calibration_report(races, ml_dir)
     return "\n".join(lines)

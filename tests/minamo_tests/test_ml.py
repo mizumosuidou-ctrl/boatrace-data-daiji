@@ -817,6 +817,17 @@ def test_ev_check_report(tmp_path):
     cal = ev_check.apply_calibration(races, *ev_check.fit_calibration(races))
     assert abs(sum(cal[0]["probs"].values()) - 1) < 1e-9 and len(cal[0]["probs"]) == 120
     assert "4. 確率の補正（前半20R" in text and " 補正B" in text and "補正Bの期待値の帯ごと" in text
+    # 良くなったので補正の値を書き、サイト側の補正と ev-check の補正は同じ確率になる
+    import json
+
+    from minamo import store
+
+    saved = json.loads((ml / "ev_calib.json").read_text(encoding="utf-8"))
+    assert "使う（a=" in text and saved["races"] == 40
+    a, b = 1.3, 0.4
+    mine = dict(store.calibrate(sorted(races[0]["probs"].items(), key=lambda kv: -kv[1]), races[0]["t5"], a, b))
+    theirs = ev_check.apply_calibration(races[:1], a, b)[0]["probs"]
+    assert max(abs(mine[c] - theirs[c]) for c in theirs) < 1e-9
 
 
 def test_day_flags(tmp_path):
