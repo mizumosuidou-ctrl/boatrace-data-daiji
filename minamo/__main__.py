@@ -5,6 +5,7 @@
   python -m minamo tick [YYYYMMDD]  1回だけ直前情報・結果を更新
   python -m minamo demo [--days N]  架空データでサイトを確認
   python -m minamo serve [--port]   web/ をローカル配信
+  python -m minamo rebuild          日ごとの一覧と成績を作り直す（表示項目を増やしたとき）
   python -m minamo ml-train         LightGBMを学習（var/ml/raw のCSVから）
   python -m minamo ml-backfill      過去の展示データを公式サイトから取り寄せる
   python -m minamo ml-original      過去のオリジナル展示をボートレース日和から取り寄せる
@@ -44,6 +45,7 @@ def main() -> None:
     mlo = sub.add_parser("ml-original", help="過去のオリジナル展示（一周・まわり足・直線）をボートレース日和から取り寄せる（3〜5秒に1件）")
     mlo.add_argument("--days", type=int, default=183, help="さかのぼる日数（既定 183＝約6か月）")
     mlo.add_argument("--limit", type=int, default=None)
+    sub.add_parser("rebuild", help="保存済みのレースから日ごとの一覧と成績を作り直す")
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -71,6 +73,8 @@ def main() -> None:
         else:
             meta = train.run(raw, live.ML_DIR, test_days=args.test_days)
             print(train.summary_ja(meta))
+    elif args.cmd == "rebuild":
+        print(f"作り直した日数: {store.rebuild_days()}")
     elif args.cmd == "serve":
         root = Path(__file__).resolve().parent.parent / "web"
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))

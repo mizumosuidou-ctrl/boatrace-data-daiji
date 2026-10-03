@@ -564,7 +564,7 @@ async function renderRace(r, refresh = false) {
 /* ------------------------------------------------------------ record */
 async function renderRecord() {
   const [rec] = await Promise.all([getJSON("data/record.json")]);
-  const dates = (state.latest.dates || []).slice(-14);
+  const dates = (state.latest.dates || []).slice(-30);
   const days = (await Promise.all(dates.map((d) => getJSON(`data/${d}/day.json`).catch(() => null)))).filter(Boolean);
   const T = rec.totals;
   const hitRate = T.settled ? (T.hits / T.settled) * 100 : 0;
@@ -572,7 +572,7 @@ async function renderRecord() {
   const honmei = T.settled ? (T.honmei_hits / T.settled) * 100 : 0;
   const tiers = { 鉄板: [0, 0, 0], 本線: [0, 0, 0], 混戦: [0, 0, 0], 波乱: [0, 0, 0] };
   let best = null;
-  for (const d of days) for (const v of d.venues) for (const r of v.races) {
+  for (const d of days.slice(-14)) for (const v of d.venues) for (const r of v.races) {
     if (!r.result || r.cancelled) continue;
     const t = tiers[tierOf(r.confidence ?? 0)];
     t[0]++; t[1] += r.honmei_win ? 1 : 0; t[2] += r.hit ? 1 : 0;
@@ -618,10 +618,80 @@ async function renderRecord() {
         <div class="panel rv"><h4>LightGBM</h4><div class="big" style="color:var(--accent)">${((T.ml_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
         <div class="panel rv" style="--i:1"><h4>統計モデル</h4><div class="big">${((T.shadow_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
       </div>` : ""}
+      <div class="section-head" style="margin-top:40px"><div><span class="eyebrow">Daily results</span><h2 class="section-title">日別・場別の収支<small>推奨買い目を1点100円で買った場合。日付を押すと、その日の場ごと・レースごとの成績が出ます</small></h2></div></div>
+      <div class="panel ledger rv">${ledgerDays(days)}</div>
+      <div id="ledger-day"></div>
       <div class="section-head" style="margin-top:40px"><div><span class="eyebrow">Calibration</span><h2 class="section-title">By confidence<small>確信度の帯ごとの成績。数字が高いレースほど当たっているかを検証</small></h2></div></div>
       <div class="calib">${Object.entries(tiers).map(([k, [n, h1, h3]], i) => `<div class="panel rv" style="--i:${i}"><h4>${k}</h4><div class="big">${n ? ((h3 / n) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">3連単的中 · 本命1着 ${n ? ((h1 / n) * 100).toFixed(1) : "--"}% · ${n}R</div></div>`).join("")}</div>
     </section>
   </div>`;
+  bindLedger(days);
+}
+
+/* ------------------------------------------------------------ ledger（日別・場別の収支） */
+function sumRaces(races) {
+  const t = { races: 0, hits: 0, stake: 0, ret: 0, known: true };
+  for (const r of races) {
+    if (!r.result || r.cancelled) continue;
+    t.races++;
+    t.hits += r.hit ? 1 : 0;
+    if (r.stake == null) { t.known = false; continue; }
+    t.stake += r.stake; t.ret += r.return || 0;
+  }
+  return t;
+}
+const plus = (n) => `<span class="${n > 0 ? "pos" : n < 0 ? "neg" : ""}">${n > 0 ? "+" : n < 0 ? "−" : "±"}¥${Math.abs(n).toLocaleString("ja-JP")}</span>`;
+const rate = (a, b) => (b ? ((a / b) * 100).toFixed(1) + "%" : "--");
+function ledgerRow(label, t, attrs = "") {
+  const money = t.stake ? `<td>${yen(t.stake)}</td><td>${yen(t.ret)}</td><td>${plus(t.ret - t.stake)}</td><td>${rate(t.ret, t.stake)}</td>` : `<td class="muted" colspan="4">--</td>`;
+  return `<tr ${attrs}><th scope="row">${label}</th><td>${t.races}</td><td>${t.hits}</td><td>${rate(t.hits, t.races)}</td>${money}</tr>`;
+}
+const LEDGER_HEAD = `<tr><th></th><th>レース</th><th>的中</th><th>的中率</th><th>投資</th><th>払戻</th><th>収支</th><th>回収率</th></tr>`;
+function ledgerDays(days) {
+  const rows = days.slice().reverse().map((d) => {
+    const t = sumRaces(d.venues.flatMap((v) => v.races));
+    return ledgerRow(`<button class="linkish" data-ledger="${d.date}">${fmtDate(d.date)}</button>`, t, `data-row="${d.date}"`);
+  }).join("");
+  return `<div class="ledger-scroll"><table class="ledger-t"><thead>${LEDGER_HEAD}</thead><tbody>${rows || `<tr><td colspan="8" class="muted">まだ結果がありません</td></tr>`}</tbody></table></div>`;
+}
+function ledgerDay(day) {
+  const venues = day.venues.map((v, i) => {
+    const t = sumRaces(v.races);
+    const races = v.races.map((r) => {
+      const done = r.result && !r.cancelled;
+      const profit = done && r.stake != null ? (r.return || 0) - r.stake : null;
+      return `<tr class="${r.hit ? "hitrow" : ""}">
+        <td><a href="#/race/${day.date}/${v.jcd}/${r.rno}">${r.rno}R</a></td>
+        <td class="num">${r.cancelled ? "中止" : esc(r.result || "--")}</td>
+        <td>${done ? yen(r.payout) : "--"}${r.popularity ? `<small class="muted"> ${r.popularity}人気</small>` : ""}</td>
+        <td class="num picks">${(r.picks || []).map((c) => `<span class="${c === r.result ? "on" : ""}">${esc(c)}</span>`).join(" ") || "--"}</td>
+        <td>${r.pick_no ? `<b class="pos">${r.pick_no}点目</b>` : done ? "×" : "--"}</td>
+        <td>${r.model_rank ? `${r.model_rank}番目` : done ? "41番目以下" : "--"}</td>
+        <td>${r.stake != null ? yen(r.stake) : "--"}</td>
+        <td>${done ? yen(r.return || 0) : "--"}</td>
+        <td>${profit == null ? "--" : plus(profit)}</td>
+      </tr>`;
+    }).join("");
+    return `<details class="ledger-venue" ${i === 0 ? "open" : ""}>
+      <summary><table class="ledger-t"><tbody>${ledgerRow(`${esc(v.name)}<small class="muted"> ${esc(v.day_label || "")}</small>`, t)}</tbody></table></summary>
+      <div class="ledger-scroll"><table class="ledger-t races"><thead><tr><th>R</th><th>結果</th><th>配当</th><th>買い目</th><th>何点目で的中</th><th>予想の順位</th><th>投資</th><th>払戻</th><th>収支</th></tr></thead><tbody>${races}</tbody></table></div>
+    </details>`;
+  }).join("");
+  const all = sumRaces(day.venues.flatMap((v) => v.races));
+  return `<div class="section-head" style="margin-top:28px"><div><h3 class="ledger-title">${fmtDate(day.date)} の場別成績</h3><p class="muted small">「何点目で的中」は推奨買い目の何点目が当たったか、「予想の順位」は3連単120通りを確率の高い順に並べたとき何番目だったか</p></div></div>
+    <div class="panel ledger"><div class="ledger-scroll"><table class="ledger-t"><thead>${LEDGER_HEAD}</thead><tbody>${ledgerRow("合計", all)}</tbody></table></div>${venues}</div>`;
+}
+function bindLedger(days) {
+  const byDate = Object.fromEntries(days.map((d) => [d.date, d]));
+  const show = (date) => {
+    const day = byDate[date];
+    if (!day) return;
+    $("#ledger-day").innerHTML = ledgerDay(day);
+    document.querySelectorAll("[data-row]").forEach((tr) => tr.classList.toggle("sel", tr.dataset.row === date));
+  };
+  document.querySelectorAll("[data-ledger]").forEach((b) => b.addEventListener("click", () => show(b.dataset.ledger)));
+  const settled = days.filter((d) => sumRaces(d.venues.flatMap((v) => v.races)).races > 0);
+  if (settled.length) show(settled[settled.length - 1].date);
 }
 
 /* ------------------------------------------------------------ about */
