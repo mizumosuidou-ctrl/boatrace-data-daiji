@@ -652,6 +652,8 @@ def test_venue_check_more_sections(tmp_path):
     assert "29. 初日とそれ以外" in text and "30. 隊形安定" in text and "31. 3着機力救済" in text
     assert "32. ①の直線" in text and "33. ⑤の平均スタート順位" in text and "34. ③の選手" in text
     assert "35. ①の平均スタート順位 × 他艇" in text and "36. 隣どうし" in text and "0.4以上早い" in text
+    assert "37. 壁の数" in text and "38. ①の選手の当地" in text and "39. ③の平均スタート順位" in text
+    assert "40. 展示タイム1位" in text
 
 
 def test_venue_check_class_ranks_and_conditions():
