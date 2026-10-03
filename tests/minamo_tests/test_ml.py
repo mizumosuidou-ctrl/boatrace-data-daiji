@@ -828,6 +828,10 @@ def test_ev_check_report(tmp_path):
     mine = dict(store.calibrate(sorted(races[0]["probs"].items(), key=lambda kv: -kv[1]), races[0]["t5"], a, b))
     theirs = ev_check.apply_calibration(races[:1], a, b)[0]["probs"]
     assert max(abs(mine[c] - theirs[c]) for c in theirs) < 1e-9
+    # 5. 平掛け：ぶれの幅・オッズの動き・①の見立ての差・オッズの帯
+    assert "5-1. 結果のぶれ" in text and "100%超え" in text and "5-2." in text and "5-3." in text and "5-4." in text
+    roi, lo, hi, over = ev_check._boot(races, picks["確率上位6点（今の形）"])
+    assert lo <= roi <= hi and 0 <= over <= 100
 
 
 def test_day_flags(tmp_path):

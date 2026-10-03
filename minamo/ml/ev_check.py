@@ -57,7 +57,7 @@ def load(ml_dir: Path, raw: Path) -> list[dict]:
     for race, g in snaps.groupby("race"):
         by = {lab: odds_history._parse(t) for lab, t in zip(g["label"], g["trifecta"])}
         if by.get("T5") and by.get("FINAL") and len(by["FINAL"]) >= 60:
-            odds[race] = (by["T5"], by["FINAL"])
+            odds[race] = (by["T5"], by["FINAL"], by.get("T1") or None)
     winner = {}
     if (raw / "odds_results.csv").exists():
         res = pd.read_csv(raw / "odds_results.csv", dtype=str)
@@ -75,8 +75,8 @@ def load(ml_dir: Path, raw: Path) -> list[dict]:
                 continue
             hit = _key(order["lane"].iloc[:3].astype(int))
         probs = {_key(c): v for c, v in trifecta_probs(dict(zip(g["lane"].astype(int), g["p"])), decay)}
-        t5, final = odds[race]
-        out.append({"race": race, "probs": probs, "t5": t5, "final": final, "hit": hit,
+        t5, final, t1 = odds[race]
+        out.append({"race": race, "probs": probs, "t5": t5, "final": final, "t1": t1, "hit": hit,
                     "p1": float(g.loc[g["lane"] == 1, "p"].iloc[0]), "post": bool(g["post"].any())})
     return out
 
@@ -221,6 +221,96 @@ def calibration_report(races: list[dict], ml_dir: Path | None = None) -> list[st
     return lines
 
 
+def _mkt1(r: dict) -> float:
+    """市場（5分前オッズ）の①頭の見立て。"""
+    return sum(1 / v for c, v in r["t5"].items() if c.startswith("1-")) / sum(1 / v for v in r["t5"].values())
+
+
+def _bets(races: list[dict], pick, pay: str = "final") -> tuple[np.ndarray, np.ndarray]:
+    """レースごとの投資と払戻（1点100円）。買わないレースは入れない。"""
+    st, rt = [], []
+    for r in races:
+        b = pick(r)
+        if b:
+            st.append(100 * len(b))
+            rt.append(100 * r[pay].get(r["hit"], 0) if r["hit"] in b else 0)
+    return np.array(st, dtype=float), np.array(rt, dtype=float)
+
+
+def _roi(races: list[dict], pick, pay: str = "final") -> float:
+    st, rt = _bets(races, pick, pay)
+    return 100 * rt.sum() / st.sum() if st.sum() else float("nan")
+
+
+def _boot(races: list[dict], pick, n: int = 1000, seed: int = 0) -> tuple[float, float, float, float]:
+    """レースを入れ替えて数え直した回収率：実際・下5%・上95%・100%を超えた割合。"""
+    st, rt = _bets(races, pick)
+    if not len(st):
+        return (float("nan"),) * 4
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(st), size=(n, len(st)))
+    roi = 100 * rt[idx].sum(axis=1) / st[idx].sum(axis=1)
+    return 100 * rt.sum() / st.sum(), float(np.percentile(roi, 5)), float(np.percentile(roi, 95)), float((roi > 100).mean() * 100)
+
+
+def flat_report(races: list[dict]) -> list[str]:
+    """5. 平掛け（毎回同じ金額）で100%を超える所を探す。"""
+    races = sorted(races, key=lambda r: r["race"])
+    picks = strategies()
+    top6, ev12 = picks["確率上位6点（今の形）"], picks["期待値1.2以上・最大6点"]
+    half = len(races) // 2
+    fit, test = races[:half], races[half:]
+    cal = apply_calibration(test, *fit_calibration(fit)) if len(fit) >= 20 and len(test) >= 20 else []
+    lines = ["\n5. 平掛け（毎回同じ金額）で100%を超える所を探す"]
+    lines.append(" 5-1. 結果のぶれ：レースを入れ替えて1000回数え直したときの回収率（下5%〜上95%）と、100%を超えた割合")
+    rows = [("確率上位6点（全期間）", races, top6), ("期待値1.2以上・最大6点（全期間）", races, ev12),
+            ("確率上位6点（後半）", test, top6), ("期待値1.2以上・最大6点（後半）", test, ev12)]
+    if cal:
+        rows.append(("補正B 期待値1.2以上・最大6点（後半）", cal, ev12))
+    for name, rs, pk in rows:
+        roi, lo, hi, over = _boot(rs, pk)
+        lines.append(f"  {_pad(name, 38)}回収率{roi:6.1f}%  幅 {lo:5.1f}〜{hi:5.1f}%  100%超え {over:4.1f}%")
+    lines.append(" 5-2. 5分前に選び確定オッズで払われる：選んだ組の「確定÷5分前」の中央値と、5分前のオッズで払われたらの回収率")
+    for name, rs, pk in rows[:2] + rows[4:]:
+        ratio = [r["final"][c] / r["t5"][c] for r in rs for c in pk(r) if r["t5"].get(c) and r["final"].get(c)]
+        lines.append(f"  {_pad(name, 38)}確定÷5分前 {np.median(ratio) if ratio else float('nan'):4.2f}  "
+                     f"確定で払い {_roi(rs, pk):6.1f}%  5分前で払い {_roi(rs, pk, 't5'):6.1f}%")
+    t1 = [r for r in races if r.get("t1") and len(r["t1"]) >= 60]
+    if len(t1) >= 50:
+        at1 = [{**r, "t5": r["t1"]} for r in t1]
+        lines.append(f"  1分前のオッズで選んだら（1分前がある{len(t1):,}R）：期待値1.2以上・最大6点 5分前で選ぶ {_roi(t1, ev12):5.1f}%"
+                     f" → 1分前で選ぶ {_roi(at1, ev12):5.1f}%")
+    else:
+        lines.append(f"  1分前のオッズがあるレースが少ない（{len(t1)}R）ので比べられません")
+    lines.append(" 5-3. MINAMOの①1着確率 − 市場の①頭の見立て（5分前）の帯ごと：実際の①1着率と、①頭を買ったときの回収率")
+    one3 = lambda r: [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True) if c.startswith("1-")][:3]
+    one6 = lambda r: [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True) if c.startswith("1-")][:6]
+    for lo, hi, tag in ((-1, -0.1, "−10%より低い"), (-0.1, 0, "−10〜0%"), (0, 0.05, "0〜+5%"), (0.05, 0.1, "+5〜+10%"),
+                        (0.1, 0.15, "+10〜+15%"), (0.15, 1, "+15%以上")):
+        g = [r for r in races if lo <= r["p1"] - _mkt1(r) < hi]
+        if g:
+            act = 100 * np.mean([r["hit"].startswith("1-") for r in g])
+            lines.append(f"  {_pad(tag, 14)}{len(g):>5}R  ①1着 実際{act:5.1f}% 市場{100 * np.mean([_mkt1(r) for r in g]):5.1f}%"
+                         f" MINAMO{100 * np.mean([r['p1'] for r in g]):5.1f}%  ①頭上位3点 {_roi(g, one3):6.1f}%  ①頭上位6点 {_roi(g, one6):6.1f}%"
+                         f"  確率上位6点 {_roi(g, top6):6.1f}%")
+    lines.append(" 5-4. 期待値1.2以上の組（確率上位40組・確率0.5%以上）を5分前オッズの帯ごとに：MINAMOの確率・実際の的中・回収率")
+    for tag, rs in (("補正前（全期間）", races), ("補正B（後半）", cal)):
+        if not rs:
+            continue
+        lines.append(f"  {tag}")
+        rows4 = [(r["t5"][c], r["probs"][c], c == r["hit"], r["final"].get(c, 0)) for r in rs
+                 for c in sorted(r["probs"], key=r["probs"].get, reverse=True)[:40]
+                 if r["probs"][c] >= MIN_P and r["t5"].get(c) and _ev(r, c) >= 1.2]
+        d = pd.DataFrame(rows4, columns=["o", "p", "hit", "final"])
+        for lo, hi, t in ((0, 10, "10倍未満"), (10, 30, "10〜30倍"), (30, 60, "30〜60倍"), (60, 100, "60〜100倍"),
+                          (100, 200, "100〜200倍"), (200, 1e9, "200倍以上")):
+            g = d[(d["o"] >= lo) & (d["o"] < hi)]
+            if len(g):
+                lines.append(f"    {_pad(t, 12)}{len(g):>6}組  MINAMO {100 * g['p'].mean():5.2f}%  実際 {100 * g['hit'].mean():5.2f}%"
+                             f"  回収率 {100 * (g['hit'] * g['final']).sum() / len(g):6.1f}%  的中 {int(g['hit'].sum())}")
+    return lines
+
+
 def _summary(name: str, races: list[dict], pick) -> str:
     n = pts = hits = ret = big = huge = upset_hits = 0
     pays = []
@@ -264,9 +354,10 @@ def build(ml_dir: Path, raw: Path) -> str:
     for lo, hi, tag in ((0, 0.35, "35%未満"), (0.35, 0.5, "35〜50%"), (0.5, 0.65, "50〜65%"), (0.65, 1.01, "65%以上")):
         g = [r for r in races if lo <= r["p1"] < hi]
         if g:
-            mkt = np.mean([sum(1 / v for c, v in r["t5"].items() if c.startswith("1-")) / sum(1 / v for v in r["t5"].values()) for r in g])
+            mkt = np.mean([_mkt1(r) for r in g])
             act = np.mean([r["hit"].startswith("1-") for r in g])
             lines.append(f"  ①{_pad(tag, 10)}{len(g):>5}R  実際の①1着 {100 * act:5.1f}%  市場の見立て {100 * mkt:5.1f}%"
                          f"  MINAMOの見立て {100 * np.mean([r['p1'] for r in g]):5.1f}%")
     lines += calibration_report(races, ml_dir)
+    lines += flat_report(races)
     return "\n".join(lines)
