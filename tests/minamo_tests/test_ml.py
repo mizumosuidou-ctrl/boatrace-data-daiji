@@ -136,6 +136,11 @@ def test_live_prediction_through_engine(trained, monkeypatch):
     assert all(b.start_order is not None for b in pred.boats)
     assert "tenkai" in pred.boats[2].factors
     assert pred.shadow_win and abs(sum(pred.shadow_win.values()) - 1) < 1e-6
+    # 画面の「実力」欄：進入コースでの成績・平均スタート順位・トップスタート率・壁率（①には壁が無い）
+    st = pred.to_dict()["boats"][1]["stats"]
+    assert set(st) >= {"n_c", "win_c", "top2_c", "top3_c", "sr_c", "top_st", "wall", "wall_n"}
+    assert any(b.stats.get("n_c") and b.stats.get("win_c") is not None and 1 <= b.stats["sr_c"] <= 6 for b in pred.boats)
+    assert pred.boats[0].stats.get("wall") is None
 
     before = BeforeInfo(entries=[BeforeEntry(boat=i + 1, exhibition_time=6.8, course=i + 1, start_st=0.15) for i in range(6)])
     assert predict(card, before).engine == "lightgbm-post"
