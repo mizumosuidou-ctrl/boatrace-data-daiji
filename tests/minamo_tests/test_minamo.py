@@ -379,6 +379,33 @@ def test_racetime_table_uses_prior_days_of_the_series(tmp_path):
     assert rt.table("20261001", "12", "初日") == {"day": 1, "racers": {}}
 
 
+def test_race_summary_has_ledger_fields(sandbox):
+    race = {"rno": 3, "ai": {"picks": [{"combo": "1-2-3"}, {"combo": "1-3-2"}]},
+            "prediction": {"trifecta": [{"combo": "1-2-3"}, {"combo": "2-1-3"}, {"combo": "1-3-2"}]},
+            "result": {"trifecta": "1-3-2", "payout": 1840, "popularity": 6},
+            "settle": {"trifecta_hit": True, "stake": 200, "return": 1840, "honmei_win": True}}
+    s = store.race_summary(race)
+    assert (s["pick_no"], s["model_rank"], s["stake"], s["return"], s["popularity"]) == (2, 3, 200, 1840, 6)
+    race["result"]["trifecta"] = "6-5-4"
+    s = store.race_summary(race)
+    assert s["pick_no"] is None and s["model_rank"] is None
+
+
+def test_rebuild_days_recreates_day_json(sandbox):
+    from minamo.demo import generate_day
+
+    generate_day("20261001", datetime(2026, 10, 1, 22, 0, tzinfo=store.JST), venue_count=2)
+    path = sandbox / "data" / "20261001" / "day.json"
+    day = json.loads(path.read_text())
+    for v in day["venues"]:
+        for r in v["races"]:
+            r.pop("pick_no", None)
+    path.write_text(json.dumps(day))
+    assert store.rebuild_days() == 1
+    again = json.loads(path.read_text())
+    assert all("pick_no" in r for v in again["venues"] for r in v["races"])
+
+
 def test_private_method_text_is_added_to_claude_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr(analyst, "METHOD_FILE", tmp_path / "method.md")
     assert analyst.system_prompt() == analyst.SYSTEM_PROMPT  # 無ければ今までどおり

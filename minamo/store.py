@@ -197,7 +197,15 @@ def race_summary(race: dict) -> dict:
     pred = race.get("prediction") or {}
     res = race.get("result") or {}
     st = race.get("settle") or {}
+    picks = [p.get("combo") for p in ai.get("picks", [])]
+    actual = res.get("trifecta")
+    ranked = [t.get("combo") for t in pred.get("trifecta", [])]  # 予想の3連単（確率の高い順・上位40）
     return {
+        "picks": picks,
+        "pick_no": picks.index(actual) + 1 if actual in picks else None,  # 買い目の何点目で当てたか
+        "model_rank": ranked.index(actual) + 1 if actual in ranked else None,  # 予想の何番目だったか（41位以下はなし）
+        "stake": st.get("stake"),
+        "return": st.get("return"),
         "rno": race["rno"],
         "deadline": race.get("deadline", ""),
         "race_name": race.get("race_name", ""),
@@ -212,6 +220,7 @@ def race_summary(race: dict) -> dict:
         "engine": pred.get("engine", "model"),
         "result": res.get("trifecta"),
         "payout": res.get("payout"),
+        "popularity": res.get("popularity"),
         "cancelled": res.get("cancelled", False),
         "hit": st.get("trifecta_hit"),
         "honmei_win": st.get("honmei_win"),
@@ -280,3 +289,16 @@ def update_record(date: str, totals: dict, demo: bool) -> None:
     latest = read_json(DATA_DIR / "latest.json") or {}
     dates = sorted(set((latest.get("dates") or []) + [date]))[-30:]
     write_json(DATA_DIR / "latest.json", {"date": max(dates), "dates": dates, "demo": demo, "generated_at": now_jst().isoformat(timespec="seconds")})
+
+
+def rebuild_days() -> int:
+    """保存済みのレースから、日ごとの一覧（day.json）と成績（record.json）を作り直す。"""
+    n = 0
+    for day_path in sorted(DATA_DIR.glob("*/day.json")):
+        day = read_json(day_path) or {}
+        fields = set(VenueDay.__dataclass_fields__)
+        vdays = [VenueDay(**{k: v for k, v in x.items() if k in fields}) for x in day.get("venues", [])]
+        if vdays:
+            build_day(day_path.parent.name, vdays, demo=bool(day.get("demo")))
+            n += 1
+    return n

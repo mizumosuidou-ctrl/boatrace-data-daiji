@@ -5,6 +5,7 @@
   python -m minamo tick [YYYYMMDD]  1回だけ直前情報・結果を更新
   python -m minamo demo [--days N]  架空データでサイトを確認
   python -m minamo serve [--port]   web/ をローカル配信
+  python -m minamo rebuild          日ごとの一覧と成績を作り直す（表示項目を増やしたとき）
   python -m minamo ml-train         LightGBMを学習（var/ml/raw のCSVから）
   python -m minamo ml-backfill      過去の展示データを公式サイトから取り寄せる
   python -m minamo ml-original      過去のオリジナル展示をボートレース日和から取り寄せる
@@ -68,6 +69,7 @@ def main() -> None:
     mlr = sub.add_parser("rtm-compare", help="レースタイムモニターの予想（DEEP・NORMAL・裏の予想）とMINAMOを同じレースで比べる")
     mlr.add_argument("--raw", default=None)
     mlr.add_argument("--data", default=None, help="MINAMOのレースのJSONの場所（既定 web/data）")
+    sub.add_parser("rebuild", help="保存済みのレースから日ごとの一覧と成績を作り直す")
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -148,6 +150,8 @@ def main() -> None:
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
         print(rtm_compare.build(raw, Path(args.data) if args.data else store.DATA_DIR))
+    elif args.cmd == "rebuild":
+        print(f"作り直した日数: {store.rebuild_days()}")
     elif args.cmd == "serve":
         root = Path(__file__).resolve().parent.parent / "web"
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
