@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -81,8 +82,11 @@ def load_shadow(raw: Path) -> tuple[dict[str, dict[str, list[str]]], dict[str, t
     return out, results
 
 
-def load_minamo(data_dir: Path) -> tuple[dict[str, dict[str, list[str]]], dict[str, tuple[str, int]]]:
-    """MINAMOの方式の買い目・確率上位6点と、結果（中止・不成立は除く）。"""
+ESCAPE_ORDER = ("逃げ濃厚", "逃げ優勢", "五分", "逃げ危険", "イン逃し本線")
+
+
+def load_minamo(data_dir: Path, escape: Optional[dict] = None) -> tuple[dict[str, dict[str, list[str]]], dict[str, tuple[str, int]]]:
+    """MINAMOの方式の買い目・確率上位6点と、結果（中止・不成立は除く）。escape を渡すと、レースごとの逃げ判定も入れる。"""
     out: dict[str, dict[str, list[str]]] = {"MINAMO 方式": {}, "MINAMO 上位6点": {}}
     results: dict[str, tuple[str, int]] = {}
     for p in sorted(Path(data_dir).glob("*/[0-9][0-9]-[0-9][0-9].json")):
@@ -103,6 +107,9 @@ def load_minamo(data_dir: Path) -> tuple[dict[str, dict[str, list[str]]], dict[s
         top = _combos(" ".join(x.get("combo", "") for x in ((race.get("prediction") or {}).get("trifecta") or [])[:6]))
         if top:
             out["MINAMO 上位6点"][rid] = top
+        esc = (race.get("prediction") or {}).get("escape") or {}
+        if escape is not None and esc.get("label"):
+            escape[rid] = (esc["label"], (race.get("result") or {}).get("order") or [], esc.get("boat"))
     return out, results
 
 
@@ -134,7 +141,8 @@ def _line(name: str, s: dict) -> str:
 def build(raw: Path, data_dir: Path) -> str:
     rtm = load_rtm(raw)
     shadow, sres = load_shadow(raw)
-    mine, mres = load_minamo(data_dir)
+    escape: dict = {}
+    mine, mres = load_minamo(data_dir, escape)
     results = {**sres, **mres}  # MINAMOの結果を優先
     preds = {**{k: v for k, v in mine.items() if v}, **rtm, **shadow}
     if not rtm and not shadow:
@@ -168,4 +176,15 @@ def build(raw: Path, data_dir: Path) -> str:
                 cells.append(f"{tag}（{len(band)}R）{a}/{b}/{c}")
         lines.append(f"  配当の帯ごとの的中（{name} / MINAMO方式 / MINAMO上位6点）")
         lines.append("    " + "  ".join(cells))
+    # 3. 逃げ指数の帯ごとに、MINAMOの方式と上位6点を比べる
+    if escape and m and top:
+        lines.append("\n3. MINAMOの逃げ判定ごと：①1着率と、方式／上位6点の成績（結果が分かるレース）")
+        for label in ESCAPE_ORDER:
+            ids = sorted(r for r, (lab, _, _) in escape.items() if lab == label and r in mres and r in m and r in top)
+            if not ids:
+                continue
+            win1 = sum(1 for r in ids if escape[r][1][:1] == [escape[r][2]]) / len(ids)
+            lines.append(f" ■ {label}  {len(ids)}R  ①1着 {100 * win1:.1f}%")
+            lines.append(_line("MINAMO 方式", _stats(m, mres, ids)))
+            lines.append(_line("MINAMO 上位6点", _stats(top, mres, ids)))
     return "\n".join(lines)
