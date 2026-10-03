@@ -348,6 +348,7 @@ def parse_result(html: str) -> RaceResult:
             toban=m.group(1),
             name=m.group(2).replace(" ", ""),
             time=clean(tds[3].get_text()) if len(tds) > 3 else "",
+            status="" if first in PLACE_MAP else first,
         )
         if not any(r.boat == row.boat for r in result.rows):
             result.rows.append(row)

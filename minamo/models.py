@@ -89,6 +89,7 @@ class ResultRow:
     time: str = ""
     st: Optional[float] = None
     course: Optional[int] = None
+    status: str = ""  # 着順の代わりの印（F・L・転・欠 など）
 
 
 @dataclass

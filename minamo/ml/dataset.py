@@ -131,6 +131,7 @@ def _race_id(df: pd.DataFrame) -> pd.Series:
 # ------------------------------------------------------------------ loading
 
 
+FACTS_BACKFILL = "facts_backfill.csv"
 FACT_COLS = ["race_date", "venue", "race_no", "lane", "course", "toban", "grade", "start_rank",
              "st", "st_hundredths", "finish", "race_f", "updated_at", "motor_no", "race_time_ms", "series_title"]
 
@@ -164,14 +165,16 @@ def _compact(chunk: pd.DataFrame) -> pd.DataFrame:
 def load_facts(path: Path) -> pd.DataFrame:
     since = os.environ.get("MINAMO_ML_SINCE")  # 例 20250101（メモリが足りないとき期間を絞る）
     parts = []
-    for chunk in pd.read_csv(path, dtype=str, usecols=lambda c: c in FACT_COLS, chunksize=200_000):
-        for c in FACT_COLS:
-            if c not in chunk:
-                chunk[c] = None
-        part = _compact(chunk)
-        if since:
-            part = part[part["race_date"].astype(str) >= since]
-        parts.append(part)
+    extra = Path(path).with_name(FACTS_BACKFILL)  # 公式サイトから足した、データベースより後の日
+    for src in [Path(path)] + ([extra] if extra.exists() else []):
+        for chunk in pd.read_csv(src, dtype=str, usecols=lambda c: c in FACT_COLS, chunksize=200_000):
+            for c in FACT_COLS:
+                if c not in chunk:
+                    chunk[c] = None
+            part = _compact(chunk)
+            if since:
+                part = part[part["race_date"].astype(str) >= since]
+            parts.append(part)
     df = pd.concat(parts, ignore_index=True)
     for c in ["race_date", "venue", "grade", "series_title"]:
         df[c] = df[c].astype(str).replace("nan", np.nan)
@@ -293,9 +296,12 @@ def load_weather(path: Optional[Path]) -> pd.DataFrame:
     from .. import wind as wind_mod
 
     cols = ["race_id"] + WIND_FEATURES
-    if not path or not Path(path).exists():
+    if not path or not (Path(path).exists() or Path(path).with_name("weather_backfill.csv").exists()):
         return pd.DataFrame(columns=cols)
-    w = pd.read_csv(path, dtype=str)
+    w = pd.concat([pd.read_csv(p, dtype=str) for p in (Path(path), Path(path).with_name("weather_backfill.csv")) if p.exists()],
+                  ignore_index=True)
+    if "wind_icon" not in w:
+        w["wind_icon"] = np.nan
     w["race_date"] = w["race_date"].str.replace("-", "", regex=False).str[:8]
     w["venue"] = w["venue"].str.zfill(2)
     w["race_no"] = _num(w["race_no"])
@@ -305,7 +311,9 @@ def load_weather(path: Optional[Path]) -> pd.DataFrame:
     w = w.drop_duplicates(["race_date", "venue", "race_no"], keep="last")
     w["race_id"] = _race_id(w)
     speed = _num(w["wind_speed"]).tolist()
-    comp = [wind_mod.components(wind_mod.icon_from_compass(v, d), s) for v, d, s in zip(w["venue"], w["wind_from"], speed)]
+    icon = _num(w["wind_icon"]).tolist()
+    comp = [wind_mod.components(int(i) if i == i else wind_mod.icon_from_compass(v, d), s)
+            for v, d, s, i in zip(w["venue"], w.get("wind_from", pd.Series(np.nan, index=w.index)), speed, icon)]
     w["wind_tail"] = [c[0] for c in comp]
     w["wind_cross"] = [c[1] for c in comp]
     w["wave_cm"] = _num(w["wave_cm"])
