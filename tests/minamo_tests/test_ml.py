@@ -811,6 +811,12 @@ def test_ev_check_report(tmp_path):
     text = ev_check.build(ml, raw)
     assert "1. 選び方ごとの成績" in text and "イン逃し的中" in text and "3. MINAMOの①の1着確率" in text
     assert "データ" not in ev_check.build(tmp_path / "none", raw)[:0]  # 材料が無くても落ちない
+    # 補正：当たりはいつも確率1位の組なので、確率をとがらせる（a>1）。補正後もレースごとに合計1
+    a, b = ev_check.fit_calibration(races, market=False)
+    assert a > 1 and b == 0
+    cal = ev_check.apply_calibration(races, *ev_check.fit_calibration(races))
+    assert abs(sum(cal[0]["probs"].values()) - 1) < 1e-9 and len(cal[0]["probs"]) == 120
+    assert "4. 確率の補正（前半20R" in text and " 補正B" in text and "補正Bの期待値の帯ごと" in text
 
 
 def test_day_flags(tmp_path):
