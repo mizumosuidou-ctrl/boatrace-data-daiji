@@ -60,10 +60,37 @@ EV_MIN_P = 0.005  # 確率0.5%未満は期待値が高くても買わない（�
 EV_MAX = 6  # 最大の点数
 
 
-def ev_picks(trifecta: list, odds: Optional[dict[str, float]]) -> list[str]:
-    """確率上位40組のうち、期待値 EV_MIN 以上の組を確率の高い順に最大 EV_MAX 点。無ければ空（見送り）。"""
+# 確率の補正（ev-check が検証期間で決めて、良くなったときだけ書く）：p^a × 市場の確率^b をレースごとに合計1へ
+EV_CALIB = Path(os.environ.get("MINAMO_ML_DIR", Path(__file__).resolve().parent.parent / "var" / "ml")) / "ev_calib.json"
+
+
+def ev_calib() -> Optional[tuple[float, float]]:
+    d = read_json(EV_CALIB)
+    try:
+        return float(d["a"]), float(d["b"])
+    except (TypeError, KeyError, ValueError):
+        return None
+
+
+def calibrate(trifecta: list, odds: dict[str, float], a: float, b: float) -> list[tuple[str, float]]:
+    """MINAMOの確率と市場の確率（オッズの逆数を合計1に。オッズの無い組は一番小さい値）を合わせ、確率の高い順に。"""
+    inv = {c: 1 / o for c, o in odds.items() if o and o > 0}
+    if not inv:
+        return list(trifecta)
+    low = min(inv.values())
+    tot = sum(inv.get(c, low) for c, _ in trifecta)
+    w = {c: max(p, 1e-9) ** a * max(inv.get(c, low) / tot, 1e-9) ** b for c, p in trifecta}
+    s = sum(w.values())
+    return sorted(((c, v / s) for c, v in w.items()), key=lambda kv: -kv[1])
+
+
+def ev_picks(trifecta: list, odds: Optional[dict[str, float]], calib: Optional[tuple[float, float]] = None) -> list[str]:
+    """確率上位40組のうち、期待値 EV_MIN 以上の組を確率の高い順に最大 EV_MAX 点。無ければ空（見送り）。
+    calib=(a, b) があれば、補正した確率で選ぶ。"""
     if not odds:
         return []
+    if calib:
+        trifecta = calibrate(trifecta, odds, *calib)
     out = []
     for c, p in trifecta[:40]:
         o = odds.get(c)

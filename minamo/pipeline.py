@@ -222,7 +222,9 @@ class Pipeline:
         if odds and card.deadline:
             hh, mm = map(int, card.deadline.split(":"))
             if now < datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST):
-                st["ev_pick"] = {"combos": store.ev_picks(predict(card, before, odds).trifecta, odds), "at": now.isoformat()}
+                cal = store.ev_calib()
+                st["ev_pick"] = {"combos": store.ev_picks(predict(card, before, odds).trifecta, odds, cal),
+                                 "at": now.isoformat(), "cal": list(cal) if cal else None}
         st["odds"] = odds or st.get("odds")
         st["odds2"] = odds2 or st.get("odds2")
         st["before_at"] = now.isoformat()
