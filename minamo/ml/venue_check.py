@@ -31,6 +31,10 @@
   27. 攻めた艇（③・④）ごとの、⑤・⑥の2連対率と3着以内率
   28. ①の展示タイムが3位以下でも、一周・回り足・直線のどれかが2位以内のときの、①の1着率
   29. 初日とそれ以外の日で、展示タイム・一周・回り足・直線が1位の艇の1着率・3着以内率
+  30. 隊形安定（外の艇が内の隣より平均スタート順位で0.5以上早い所が無い）レースの、①の1着率と展示上位3艇の3着以内の数
+  31. 周回・回り足が上位の艇（3着機力救済候補）の、ちょうど3着の率と3着以内率
+  32. ①が直線と回り足の両方で1位のときの、①の1着率
+  33. ⑤の平均スタート順位（遅い・それ以外）×展示系の上位があるか、ごとの⑤の1着率
 """
 from __future__ import annotations
 
@@ -286,6 +290,7 @@ def build(raw: Path, venue: str) -> str:
         lines.extend(_amagasaki(part, pers, exr))
         lines.extend(_naruto(part, pers, exr, orig, piv if len(ok) else None))
         lines.extend(_first_day_ex(part, exr, orig))
+        lines.extend(_kojima(part, exr, orig, piv if len(ok) else None))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -489,6 +494,65 @@ def _first_day_ex(part: pd.DataFrame, exr: pd.DataFrame, orig: pd.DataFrame) -> 
             if not out:
                 out.append("29. 初日とそれ以外 → 1位の艇の1着率 / 3着以内率（%）（走数）")
             out.append(f"  {wind_table._pad(tag, 8)}" + "  ".join(cells))
+    return out
+
+
+def _kojima(part: pd.DataFrame, exr: pd.DataFrame, orig: pd.DataFrame, piv) -> list[str]:
+    """30〜33：隊形安定、3着機力救済、①の直線＋回り足1位、⑤の足。"""
+    out = []
+    br = _boat_ranks(part, exr, orig)
+    fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
+    # 30
+    if piv is not None and all(c in piv for c in range(1, 7)):
+        r = piv.dropna(subset=list(range(1, 7)))
+        r = r[r.index.isin(fin.index)]
+        if len(r) >= 50:
+            attack = pd.concat([(r[c] - r[c + 1]) >= 0.5 for c in range(1, 6)], axis=1).any(axis=1)  # 外の艇が0.5以上早い
+            exb = br.dropna(subset=["ex"])
+            top3ex = exb[exb["ex"] <= 3].groupby("race_id")["finish"].apply(lambda f: int((f <= 3).sum()))
+            out.append("30. 隊形安定（外の艇が内の隣より平均スタート順位で0.5以上早い所が無い）→ ①1着率 ／ 展示上位3艇の3着以内の数（レース数）")
+            for tag, m in (("隊形安定", ~attack), ("攻めあり", attack)):
+                ids = r.index[m]
+                f1 = fin.loc[ids, 1]
+                t = top3ex.reindex(ids).dropna()
+                extra = f"  展示上位3艇 平均{t.mean():.2f}艇・3艇とも{100 * (t == 3).mean():.1f}%" if len(t) else ""
+                out.append(f"  {wind_table._pad(tag, 10)}①1着 {100 * (f1 == 1).mean():5.1f}%  ({len(ids)}R){extra}")
+    # 31
+    o = br.dropna(subset=["lap", "turn"])
+    if len(o) >= 100:
+        out.append("31. 3着機力救済候補（周回・回り足）→ ちょうど3着 ／ 3着以内（%）（走数）")
+        for tag, m in (("周回2位以内", o["lap"] <= 2), ("回り足2位以内", o["turn"] <= 2),
+                       ("周回・回り足とも3位以内", (o["lap"] <= 3) & (o["turn"] <= 3)),
+                       ("どちらも4位以下", (o["lap"] >= 4) & (o["turn"] >= 4))):
+            g = o[m]
+            if len(g):
+                cells = " ".join(f"{c}C {100 * (g.loc[g['course'] == c, 'finish'] == 3).mean():.0f}/{100 * (g.loc[g['course'] == c, 'finish'] <= 3).mean():.0f}"
+                                 for c in range(2, 7) if (g["course"] == c).sum() >= 10)
+                out.append(f"  {wind_table._pad(tag, 24)}全体 {100 * (g['finish'] == 3).mean():.0f}/{100 * (g['finish'] <= 3).mean():.0f}({len(g)})  {cells}")
+    # 32
+    one = br[(br["course"] == 1)].dropna(subset=["straight", "turn"])
+    if len(one) >= 50:
+        both = (one["straight"] == 1) & (one["turn"] == 1)
+        out.append("32. ①の直線・回り足 → ①1着率（走数）")
+        for tag, m in (("直線1位＋回り足1位", both), ("どちらか1位", ~both & ((one["straight"] == 1) | (one["turn"] == 1))),
+                       ("どちらも1位でない", (one["straight"] > 1) & (one["turn"] > 1))):
+            g = one[m]
+            if len(g):
+                out.append(f"  {wind_table._pad(tag, 20)}{100 * (g['finish'] == 1).mean():5.1f}%  ({len(g)})")
+    # 33
+    five = part[(part["course"] == 5) & part["finish"].notna()][["race_id", "lane", "avg_sr"]].merge(
+        br[["race_id", "lane", "finish", "ex", "lap", "turn", "straight"]], on=["race_id", "lane"], how="inner")
+    five = five.dropna(subset=["avg_sr"])
+    if len(five) >= 100:
+        ashi = (five[["ex", "lap", "turn", "straight"]] <= 2).any(axis=1)
+        out.append("33. ⑤の平均スタート順位 × 展示・周回・回り足・直線のどれかが2位以内 → ⑤1着率 ／ 2連対率（走数）")
+        for st_tag, sm in (("ST順位3.5より遅い", five["avg_sr"] > 3.5), ("ST順位3.5まで", five["avg_sr"] <= 3.5)):
+            cells = []
+            for tag, m in (("足あり", ashi), ("足なし", ~ashi)):
+                g = five[sm & m]
+                if len(g):
+                    cells.append(f"{tag} {100 * (g['finish'] == 1).mean():.1f}/{100 * (g['finish'] <= 2).mean():.1f}({len(g)})")
+            out.append(f"  {wind_table._pad(st_tag, 18)}" + "  ".join(cells))
     return out
 
 
