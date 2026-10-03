@@ -112,6 +112,10 @@
 - `python -m minamo odds-check`：オッズの動き（15分前→5分前→確定）と結果。`db_export.sh` の odds_hist・odds_results が材料。
 - `python -m minamo rtm-compare`：レースタイムモニターの DEEP（場別・全国）・NORMAL・time（shadow）とMINAMOを同じレースで比べる。
   10/1〜10/2：MINAMOは3千〜9千円台 2本/94R・万舟 0本/53R、DEEP場別は21本・time12点は25本。回収率は time12点 85.5%・DEEP場別＋追加 86.0%。
+- 10/3〜 公開の推奨買い目を「確率上位6点」に変更（model._picks。Claude の見解も買い目だけは上位6点にそろえ、Claude の組は ai.claude_picks に残す）。
+  理由：10/1〜10/3 の rtm-compare の逃げ判定ごとの比べで、どの判定でも予想手順の形より上位6点の回収率が同じか上（逃げ危険 56→113%、イン逃し本線 89→103%）。
+  予想手順の6点は prediction.method_picks に残し、settle の m6_* と成績ページ「買い目の組み方」で比べ続ける。
+- 10/3〜 試験：締切前のオッズで「確率×オッズ≧1.2」の組を最大6点（無ければ見送り）を ev_pick に記録し、settle の ev_* で数える（公開の買い目は変えない）。
 - `python -m minamo ev-check`：買い目の選び方（確率上位6点／期待値1.0・1.2・1.5以上／上位3＋期待値3）を検証期間で比べる。ml_refresh.sh の最後に自動で出る。
 
 ## 予想手順でまだ入っていないもの

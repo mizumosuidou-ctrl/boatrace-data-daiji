@@ -81,6 +81,7 @@ class Prediction:
     engine: str = "model"  # model / lightgbm-pre / lightgbm-post
     shadow_win: dict[int, float] = field(default_factory=dict)  # 比較用：もう一方のエンジンの1着確率
     escape: dict = field(default_factory=dict)  # イン逃げ指数 {"boat", "index", "label", "p"}
+    method_picks: list = field(default_factory=list)  # 比べ用：予想手順（逃げ判定ごとの形）で組んだ6点
     wind: dict = field(default_factory=dict)  # 風の補正 {"category", "speed", "stabilizer", "factors"}
 
     def to_dict(self) -> dict:
@@ -110,6 +111,7 @@ class Prediction:
             "engine": self.engine,
             "shadow_win": {str(k): round(v, 4) for k, v in self.shadow_win.items()},
             "escape": self.escape,
+            "method_picks": self.method_picks,
             "wind": self.wind,
         }
 
@@ -253,6 +255,7 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         engine=engine,
         shadow_win=shadow,
         escape=escape,
+        method_picks=method_combos(tri_sorted, escape),
         wind={k: v for k, v in (wind_adj or {}).items() if k != "second"} if wind_adj else {},
     )
 
@@ -352,10 +355,14 @@ def method_combos(tri_sorted: list[tuple[str, float]], escape: dict, n: int = N_
 
 
 def _picks(tri_sorted: list[tuple[str, float]], odds: dict[str, float], escape: Optional[dict] = None) -> list[dict]:
-    """推奨買い目：予想手順で組んだ6点、加えてオッズがあれば期待値上位。"""
+    """推奨買い目：確率の高い順に6点（逃げ指数が高いレースは自然に①頭の6点になる）、加えてオッズがあれば期待値上位。
+
+    10/1〜10/3 の284Rで、予想手順の形（method_combos）より確率上位6点の方が、どの逃げ判定でも回収率が同じか上だった
+    （逃げ危険 56%→113%、イン逃し本線 89%→103%）。予想手順の6点は比べ用に method_picks に残す。
+    """
     prob = dict(tri_sorted)
     picks: list[dict] = []
-    for combo in method_combos(tri_sorted, escape or {}):
+    for combo, _ in tri_sorted[:N_PICKS]:
         p = prob[combo]
         o = odds.get(combo)
         picks.append({"combo": combo, "p": round(p, 4), "odds": o, "ev": round(p * o, 2) if o else None, "kind": "本線"})
