@@ -51,6 +51,12 @@ class MLPredictor:
             path = self.dir / f"stats_{name}.csv.gz"
             if path.exists():
                 self.new[name] = pd.read_csv(path, dtype={"toban": str}).assign(date=self.stats_date)
+        # 画面のデータ欄：選手×コースの期間別（半年・1年・全期間）と F持ちのときの成績
+        self.profile = {}
+        path = self.dir / "stats_profile.csv.gz"
+        if path.exists():
+            for r in pd.read_csv(path, dtype={"toban": str}).to_dict("records"):
+                self.profile.setdefault((r["toban"], int(r["course"])), {})[r["scope"]] = ds.profile_row(r)
         # 2着・3着の専用モデル（採用されたときだけ）
         self.place = {}
         for name, info in (self.meta.get("place") or {}).items():
@@ -154,7 +160,8 @@ class MLPredictor:
                 "start_order": float(df[order].iloc[i]),
                 "motor_kp": _num_or_none(df["motor_kp_raw"].iloc[i]),
                 "n_c": int(df["n_c"].iloc[i]),
-                "stats": _stats(df.iloc[i]),
+                "stats": {**_stats(df.iloc[i]),
+                          "profile": self.profile.get((str(df["toban"].iloc[i]), int(df["course"].iloc[i])), {})},
             }
             if q is not None:
                 out[int(boat)]["q"] = (float(q[i, 0]), float(q[i, 1]))  # ちょうど2着・ちょうど3着

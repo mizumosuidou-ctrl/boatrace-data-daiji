@@ -431,26 +431,51 @@ function sheetHtml(race) {
     <tbody>${rows}</tbody></table></div>`;
 }
 
-// 実力：進入コースでの選手の成績（前日まで・全場）。隊形トゥエルブの元の平均ST順位・トップスタート率・壁率も
-function abilityHtml(race) {
+// 実力：進入コースでの選手の成績（前日まで・全場）。期間（半年・1年・全期間）を切り替え、F持ちの選手はF持ちのときの成績
+const SCOPES = [["6m", "半年"], ["1y", "1年"], ["all", "全期間"]];
+const getScope = () => { try { return localStorage.getItem("minamo-scope") || "1y"; } catch { return "1y"; } };
+function abilityHtml(race, scope = getScope()) {
   const C = courseOf(race);
   const S = Object.fromEntries(race.prediction.boats.map((b) => [b.boat, b.stats || {}]));
-  if (!Object.values(S).some((s) => s.n_c)) return "";
+  if (!Object.values(S).some((s) => s.n_c || (s.profile && Object.keys(s.profile).length))) return "";
+  const hasProfile = Object.values(S).some((s) => s.profile && Object.keys(s.profile).length);
   const ex = exEntry(race);
   const E = race.entries.slice().sort((a, b) => (C[a.boat] ?? a.boat) - (C[b.boat] ?? b.boat));
   const pc = (v) => (v == null ? "--" : (v * 100).toFixed(1));
-  const cols = [["1着率", "win_c", false, pc], ["2連対率", "top2_c", false, pc], ["3連対率", "top3_c", false, pc],
-    ["平均ST順位", "sr_c", true, (v) => (v == null ? "--" : v.toFixed(2))], ["トップST率", "top_st", false, pc]];
-  const rows = E.map((e, i) => {
+  // 表に出す数字：F持ちの選手はF持ちのとき（全期間ためた分）、それ以外は選んだ期間。古いレースは前の形（全期間）
+  const pick = (e) => {
     const s = S[e.boat] || {};
-    const cells = cols.map(([, k, lb, f]) => `<td class="${rankClass(E.map((x) => (S[x.boat] || {})[k]), i, lb)}">${f(s[k])}</td>`).join("");
+    if (!hasProfile) return { v: { n: s.n_c, win: s.win_c, top2: s.top2_c, top3: s.top3_c, sr: s.sr_c, topst: s.top_st }, tag: "" };
+    const P = s.profile || {};
+    if (e.f_count && P.f && P.f.n) return { v: P.f, tag: "F" };
+    return { v: P[scope] || {}, tag: "" };
+  };
+  const V = E.map(pick);
+  const cols = [["1着率", "win", false, pc], ["2連対率", "top2", false, pc], ["3連対率", "top3", false, pc],
+    ["平均ST順位", "sr", true, (v) => (v == null ? "--" : v.toFixed(2))], ["トップST率", "topst", false, pc],
+    ...(hasProfile ? [["トップ時1着", "topst_win", false, pc], ["トップ時2連", "topst_top2", false, pc]] : [])];
+  const rows = E.map((e, i) => {
+    const { v, tag } = V[i];
+    const cells = cols.map(([, k, lb, f]) => `<td class="${rankClass(V.map((x) => x.v[k]), i, lb)}">${f(v[k])}</td>`).join("");
+    const s = S[e.boat] || {};
     const wall = (C[e.boat] || e.boat) === 1 ? `<td class="muted">--</td>` : `<td>${pc(s.wall)}<small class="muted">${s.wall_n ? `（${s.wall_n}走）` : ""}</small></td>`;
     return `<tr class="${C[e.boat] && C[e.boat] !== e.boat ? "moved" : ""}"><td>${C[e.boat] ? courseTag(C[e.boat], e.boat, ex) : "--"}</td><td>${boat(e.boat, "sm")}</td>
-      <td class="name">${esc(e.name)}</td><td class="num">${s.n_c ?? 0}</td>${cells}${wall}</tr>`;
+      <td class="name">${esc(e.name)}${tag ? ` <span class="ftag" title="F持ちのときの成績">F持ち時</span>` : ""}</td><td class="num">${v.n ?? 0}</td>${cells}${wall}</tr>`;
   }).join("");
-  return `<div class="panel sheet"><table>
+  const seg = hasProfile ? `<div class="seg" role="group" aria-label="期間">${SCOPES.map(([k, l]) => `<button type="button" data-scope="${k}" class="${k === scope ? "on" : ""}">${l}</button>`).join("")}</div>` : "";
+  return `${seg}<div class="panel sheet"><table>
     <thead><tr><th>進入</th><th>艇</th><th>選手</th><th>出走</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}<th>壁率</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
+}
+function bindAbility(race) {
+  const box = $("#ability");
+  if (!box) return;
+  box.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-scope]");
+    if (!b) return;
+    try { localStorage.setItem("minamo-scope", b.dataset.scope); } catch { /* 保存できなくても切替はする */ }
+    box.innerHTML = abilityHtml(race, b.dataset.scope);
+  });
 }
 
 function boardHtml(race) {
@@ -606,8 +631,8 @@ async function renderRace(r, refresh = false) {
     <section class="section">
       <div class="section-head"><div><h2 class="section-title">出走表データ<small>出走表・直前情報（● はレース内1位）。${exEntry(race) ? "展示の進入コース順" : "枠なり想定のコース順"}</small></h2></div></div>
       ${sheetHtml(race)}
-      ${abilityHtml(race) ? `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">実力（進入コースでの成績）<small>この進入コースに入ったときの成績（前日まで・全場、%）</small></h2></div></div>${abilityHtml(race)}
-      <p class="small muted" style="margin:10px 2px 0;line-height:1.7">出走＝そのコースでの出走数。平均ST順位＝そのコースでの本番のスタート順位の平均（小さいほど早い。スタート隊形トゥエルブの元の数字）。トップST率＝本番でスタート1番だった割合（全コース）。壁率＝その選手がこのコースのとき①が1着だった割合（高いほど①が逃げやすい）。</p>` : ""}
+      ${abilityHtml(race) ? `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">実力（進入コースでの成績）<small>この進入コースに入ったときの成績（前日まで・全場、%）。F持ちの選手は、F持ちだったときの成績</small></h2></div></div><div id="ability">${abilityHtml(race)}</div>
+      <p class="small muted" style="margin:10px 2px 0;line-height:1.7">出走＝そのコースでの出走数。平均ST順位＝そのコースでの本番のスタート順位の平均（小さいほど早い。スタート隊形トゥエルブの元の数字）。トップST率＝そのコースで本番のスタートが1番だった割合。トップ時1着・2連＝そのトップスタートのときの1着率・2連対率。「F持ち時」＝今F持ちの選手は、F持ちだったときの成績（期間で区切らず、ためていく）。壁率＝その選手がこのコースのとき①が1着だった割合（高いほど①が逃げやすい）。</p>` : ""}
       ${prevNext}
     </section>
   </div>`;
@@ -618,6 +643,7 @@ async function renderRace(r, refresh = false) {
     scrollTo({ top: y });
   } else main.innerHTML = html;
   animateRings(main, refresh);
+  bindAbility(race);
   const canvas = $("#sim");
   document.fonts.ready.then(() => {
     if (!canvas.isConnected) return;
