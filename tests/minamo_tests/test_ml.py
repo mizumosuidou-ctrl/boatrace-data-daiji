@@ -142,6 +142,7 @@ def test_live_prediction_through_engine(trained, monkeypatch):
     assert any(b.stats.get("n_c") and b.stats.get("win_c") is not None and 1 <= b.stats["sr_c"] <= 6 for b in pred.boats)
     assert pred.boats[0].stats.get("wall") is None
     # データ欄：選手×進入コースの期間別（半年・1年・全期間）。全期間の出走は半年以上
+    assert all(isinstance(b.stats.get("abilities"), list) for b in pred.boats)
     prof = pred.boats[0].stats["profile"]
     assert {"6m", "1y", "all"} <= set(prof) and prof["all"]["n"] >= prof["1y"]["n"] >= prof["6m"]["n"]
     assert 0 <= prof["all"]["win"] <= prof["all"]["top2"] <= prof["all"]["top3"] <= 1 and 1 <= prof["all"]["sr"] <= 6

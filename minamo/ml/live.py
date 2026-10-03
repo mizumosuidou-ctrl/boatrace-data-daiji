@@ -10,6 +10,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from .. import abilities as abilities_mod
 from .. import wind as wind_mod
 from . import dataset as ds
 
@@ -123,6 +124,27 @@ class MLPredictor:
         era += sum(1 for d in _live_swaps().get(jcd, []) if last < d <= str(date))
         return era
 
+    def abilities(self, df: pd.DataFrame, use_post: bool, before=None) -> tuple[dict, dict, list]:
+        """選手別アビリティ（展示後の進入コースで判定。欠けている値は None のまま、0や推測で埋めない）。"""
+        boats = []
+        for i in range(len(df)):
+            r = df.iloc[i]
+            toban, course = str(r["toban"]), int(r["course"])
+            wn = _num_or_none(r.get("disp_wall_n"), 0)
+            boats.append({
+                "boat": int(r["lane"]), "toban": toban, "course": course,
+                "prof": (self.profile.get((toban, course)) or {}).get("1y") or {},
+                "wall": _num_or_none(r.get("disp_wall"), 3), "wall_n": int(wn) if wn else 0,
+                "motor_2": _num_or_none(r.get("motor_2"), 2),
+                "rt_series_rank": _num_or_none(r.get("rt_series_rank"), 0),
+                "lap_time": _num_or_none(r.get("lap_time"), 2) if use_post else None,
+            })
+        try:
+            return abilities_mod.evaluate(boats, prelim=not (before is not None and before.complete))
+        except Exception:  # noqa: BLE001 — アビリティが出せなくても予想は続ける
+            log.exception("abilities failed")
+            return {}, {}, []
+
     def predict(self, card, before=None) -> Optional[dict]:
         """{boat: {"p":..., "factors":{...}, "start_order":...}} と使ったモデル名。"""
         try:
@@ -135,6 +157,11 @@ class MLPredictor:
             raw = booster.predict(X)
             p = np.clip(raw, 1e-6, 1 - 1e-6)
             p = p / p.sum()
+            # 選手別アビリティ（展示後の進入コースで判定）。買い目反映ありのものだけ1着の強さに効かせる
+            found, mult, keep = self.abilities(df, use_post, before)
+            if mult:
+                p = p * np.array([mult.get(int(b), 1.0) for b in df["lane"]])
+                p = p / p.sum()
             contrib = booster.predict(X, pred_contrib=True)[:, :-1]
             q, place_w = None, 0.0
             pl = self.place.get("post" if use_post else "pre")
@@ -161,11 +188,13 @@ class MLPredictor:
                 "motor_kp": _num_or_none(df["motor_kp_raw"].iloc[i]),
                 "n_c": int(df["n_c"].iloc[i]),
                 "stats": {**_stats(df.iloc[i]),
-                          "profile": self.profile.get((str(df["toban"].iloc[i]), int(df["course"].iloc[i])), {})},
+                          "profile": self.profile.get((str(df["toban"].iloc[i]), int(df["course"].iloc[i])), {}),
+                          "abilities": found.get(int(boat), [])},
             }
             if q is not None:
                 out[int(boat)]["q"] = (float(q[i, 0]), float(q[i, 1]))  # ちょうど2着・ちょうど3着
         return {"engine": "lightgbm-post" if use_post else "lightgbm-pre", "boats": out, "pl_decay": self.meta.get("pl_decay"),
+                "keep": keep,  # 買い目反映ありの報告登録アビリティ：買い目内に残す組の指示
                 "place_w": place_w,
                 "wind": "wind_tail" in feats}  # 風をモデルが使っていれば、場の風の表では補正しない
 

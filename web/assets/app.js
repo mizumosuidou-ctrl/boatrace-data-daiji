@@ -494,6 +494,27 @@ function abilityHtml(race, scope = getScope()) {
     <thead><tr><th>進入</th><th>艇</th><th>選手</th><th>出走</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}<th>壁率</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
+// 選手別アビリティ：展示後の進入コースで判定（展示前は枠なり想定で「仮」）。買い目反映ありのものだけ予想に効く
+function skillsHtml(race) {
+  const C = courseOf(race);
+  const S = Object.fromEntries(race.prediction.boats.map((b) => [b.boat, (b.stats || {}).abilities || []]));
+  if (!Object.values(S).some((l) => l.length)) return "";
+  const ex = exEntry(race);
+  const E = race.entries.slice().sort((a, b) => (C[a.boat] ?? a.boat) - (C[b.boat] ?? b.boat));
+  const rows = E.filter((e) => (S[e.boat] || []).length).map((e) => `<div class="skill-row">
+    <div class="who">${C[e.boat] ? courseTag(C[e.boat], e.boat, ex) : ""}${boat(e.boat, "sm")}<b>${esc(e.name)}</b></div>
+    <div class="skills">${S[e.boat].map((a) => `<div class="skill ${a.bet ? "bet" : ""}">
+      <div class="skill-h"><span class="rank r-${esc(a.rank)}">${esc(a.rank || "-")}</span><b>${esc(a.name)}</b>
+        <span class="chip">${a.kind === "report" ? "報告登録" : "自動検出"}</span>${a.bet ? `<span class="chip src-claude">買い目反映あり</span>` : ""}${a.prelim ? `<span class="chip">仮（展示前）</span>` : ""}</div>
+      ${a.detail ? `<div class="small">${esc(a.detail)}</div>` : ""}
+      ${a.strengthen ? `<div class="small muted">強化条件：${esc(a.strengthen)}</div>` : ""}
+      ${a.example ? `<div class="small muted">実例：${esc(a.example)}</div>` : ""}
+    </div>`).join("")}</div>
+  </div>`).join("");
+  return `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">選手別アビリティ<small>${ex ? "展示の進入コース" : "枠なり想定のコース（展示後に進入コースで判定し直します）"}で判定。原則は検証用の表示で、「買い目反映あり」だけが予想・買い目に効きます</small></h2></div></div>
+    <div class="panel skills-panel">${rows}</div>`;
+}
+
 function bindAbility(race) {
   const box = $("#ability");
   if (!box) return;
@@ -534,7 +555,7 @@ function ticketsHtml(race) {
   const P = Object.fromEntries((race.prediction.trifecta || []).map((t) => [t.combo, t.p]));
   const modelPicks = Object.fromEntries((race.prediction.picks || []).map((p) => [p.combo, p]));
   const won = race.result && race.result.trifecta;
-  const main = (ai.picks || []).map((p) => ({ combo: p.combo, weight: p.weight, kind: "本線" }));
+  const main = (ai.picks || []).map((p) => ({ combo: p.combo, weight: p.weight, kind: "本線", ability: p.ability }));
   const value = (race.prediction.picks || []).filter((p) => p.kind === "妙味" && !main.some((m) => m.combo === p.combo)).map((p) => ({ combo: p.combo, kind: "妙味" }));
   const all = [...main, ...value];
   return `<div class="tickets">${all.map((t, i) => {
@@ -542,7 +563,7 @@ function ticketsHtml(race) {
     const o = odds[t.combo];
     const ev = p && o ? p * o : null;
     return `<div class="ticket ${t.kind === "妙味" ? "value" : ""} ${won === t.combo ? "won" : ""} rv" style="--i:${i}">
-      <div class="kind"><span>3連単 ${String(i + 1).padStart(2, "0")} · <b>${won === t.combo ? "的中" : t.kind}</b></span>${t.weight ? `<span class="weight">${t.weight}<small>%</small></span>` : ""}</div>
+      <div class="kind"><span>3連単 ${String(i + 1).padStart(2, "0")} · <b>${won === t.combo ? "的中" : t.kind}</b>${t.ability ? ` · ${esc(t.ability)}` : ""}</span>${t.weight ? `<span class="weight">${t.weight}<small>%</small></span>` : ""}</div>
       <div class="cmb">${t.combo.split("-").map((b) => boat(b)).join(`<span class="arrow"></span>`)}</div>
       <div class="stats"><div><span>確率</span>${p != null ? pct(p, 1) + "%" : "--"}</div><div><span>オッズ</span>${o ?? "--"}</div><div><span>期待値</span>${ev ? ev.toFixed(2) : "--"}</div></div>
     </div>`;
@@ -663,6 +684,7 @@ async function renderRace(r, refresh = false) {
       ${race.entries.some((e) => e.rt_best != null) ? `<p class="small muted" style="margin:10px 2px 0;line-height:1.7">ﾀｲﾑ6艇内＝節間ベストのレースタイムの、このレースの6艇の中での順位。選手別順位＝節間ベストの、その節に出ている選手の中での順位（順位/人数）。全走順位＝節間ベストの、その節の全部の走り（1走ずつ数える）の中での順位。前走順位＝いちばん新しい走りのタイムの、各選手のいちばん新しい走りの中での順位（数字に触れると前走のタイム）。ﾀｲﾑ評価＝この「6艇内の順位」と「節内の順位（上位10%・10〜30%・30〜60%・それより下）」だった選手の過去の3連対率が、同じコースの平均より何ポイント高いか${ins && ins.racetime && ins.racetime.n ? `（${ins.racetime.n.toLocaleString("ja-JP")}走から）` : ""}。</p>` : ""}
       ${abilityHtml(race) ? `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">実力（進入コースでの成績）<small>この進入コースに入ったときの成績（前日まで・全場、%）。F持ちの選手は、F持ちだったときの成績</small></h2></div></div><div id="ability">${abilityHtml(race)}</div>
       <p class="small muted" style="margin:10px 2px 0;line-height:1.7">出走＝そのコースでの出走数。平均ST順位＝そのコースでの本番のスタート順位の平均（小さいほど早い。スタート隊形トゥエルブの元の数字）。トップST率＝そのコースで本番のスタートが1番だった割合。トップ時1着・2連＝そのトップスタートのときの1着率・2連対率。「F持ち時」＝今F持ちの選手は、F持ちだったときの成績（期間で区切らず、ためていく）。壁率＝その選手がこのコースのとき①が1着だった割合（高いほど①が逃げやすい）。</p>` : ""}
+      ${skillsHtml(race)}
       ${prevNext}
     </section>
   </div>`;
