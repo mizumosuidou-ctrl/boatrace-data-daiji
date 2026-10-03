@@ -597,6 +597,14 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .calib { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 14px; }
 .calib .panel { padding: 20px; }
 .calib h4 { margin: 0; font-size: 20px; font-weight: 900; }
+.streak-name { margin: 26px 0 0; font-size: 17px; font-weight: 900; }
+.streak-name small { font-size: 12px; font-weight: 500; }
+.streak-grid { display: grid; grid-template-columns: 1fr 1.6fr; gap: 14px; align-items: start; }
+.streak-t { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.streak-t th, .streak-t td { padding: 9px 6px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.streak-t thead th { font-family: var(--f-mono); font-size: 10px; letter-spacing: .08em; color: var(--muted); font-weight: 500; }
+.streak-t th:first-child, .streak-t td:first-child { text-align: left; }
+.streak-t td { font-family: var(--f-mono); }
 .calib .big { font-family: var(--f-display); font-size: 42px; font-weight: 800; line-height: 1; margin-top: 10px; }
 .calib .small { font-family: var(--f-mono); font-size: 11px; color: var(--muted); margin-top: 6px; }
 
@@ -662,6 +670,8 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 @media (max-width: 720px) {
   /* 収支表：スマホでは的中率・投資・払戻の列を省いて画面幅に収める（レースごとの表は横スクロール） */
   .ledger { padding: 4px 10px 10px; }
+  .streak-grid { grid-template-columns: 1fr; }
+  .streak-t { font-size: 12px; }
   .ledger-t:not(.races) { min-width: 0; font-size: 12px; }
   .ledger-t:not(.races) th:nth-child(4), .ledger-t:not(.races) td:nth-child(4),
   .ledger-t:not(.races) th:nth-child(5), .ledger-t:not(.races) td:nth-child(5),
