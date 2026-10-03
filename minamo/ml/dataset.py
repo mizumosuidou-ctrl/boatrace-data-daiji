@@ -16,6 +16,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from . import series as series_mod
+
 GRADE_ORD = {"A1": 4, "A2": 3, "B1": 2, "B2": 1}
 SMOOTH = 6.0  # 出走数が少ない選手を全体平均へ寄せる強さ
 F_WINDOW_DAYS = 180
@@ -54,32 +56,43 @@ FORM_DAYS = 90
 MOTOR_DAYS = None  # モーターは交換日で区切るので、今のモーターの全期間を使う（ボートレース日和と同じ）
 ABILITY_DAYS = 365  # 貢献Pの「選手の実力」＝そのモーターに乗る前、直近1年の勝率
 WIN_POINTS = {1: 10.0, 2: 8.0, 3: 6.0, 4: 4.0, 5: 2.0, 6: 1.0}  # 勝率の点数（失格などは0点）
-EX_FEATURES = [
-    "ex_time_rel", "ex_time_rank", "ex_st", "ex_st_rank", "tilt",
-    "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap",
-    "combo_start_order",
-]
+# 展示STは予想に使わない（ユーザーの方針：スタートはすべて平均スタート順位で見る。
+# 展示STの順位は本番のスタート順位とほとんど関係がなかった）。列は作るが、学習・予想の材料には入れない。
+EX_FEATURES = ["ex_time_rel", "ex_time_rank", "tilt"]
 # オリジナル展示（一周・まわり足・直線）。場ごとに区間が違うので、レース内の差と順位だけ
 ORIG_FEATURES = [
     "lap_rel", "lap_rank", "turn_rel", "turn_rank", "straight_rel", "straight_rank",
 ]
 ORIG_BOUNDS = {"lap_time": (15.0, 45.0), "turn_time": (3.0, 15.0), "straight_time": (5.0, 10.0)}
+# 修正7で試す特徴量（それぞれ、入れた方が良いときだけ採用）
+# F持ち：F持ちのときに、ふだんよりどれだけスタート順位が遅くなる選手か（選手ごと、前日まで）
+FHOLD_FEATURES = ["f_hold", "sr_fgap", "sr_c_f", "pred_start_order_f"]
+# 壁：2〜6コースの選手が、そのコースに入ったときに1コースが1着だった割合（選手×コース、前日まで）
+WALL_FEATURES = ["wall_self", "wall_c2", "wall_min"]
+# 風（展示後だけ）：追い風の強さ（向かい風はマイナス）・右横風の強さ（左横風はマイナス）・波
+WIND_FEATURES = ["wind_tail", "wind_cross", "wave_cm"]
+# レース番号（若松などで前半のレースほど①が弱い。ナイター・モーニングの時間帯もここに出る）
+RACE_FEATURES = ["race_no"]
+# 節の初日・最終日（開催一覧の「初日」「最終日」。分からなければ空）。最終日は多くの場で①が強かった
+DAY_FEATURES = ["day_first", "day_last"]
+WALL_SMOOTH = 10.0
 
 # 画面の「要因」表示用のまとまり
 FACTOR_GROUPS = {
-    "course": ["course", "venue_i", "course_winrate_prior"],
-    "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order", "sr_90"],
+    "course": ["course", "venue_i", "course_winrate_prior", "race_no", "day_first", "day_last"],
+    "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order", "sr_90", "sr_c_f", "pred_start_order_f"],
     "tenkai": ["sr_gap_inner", "sr_gap_c1", "sr_gap_outer", "sr_inner_slowest_gap", "n_inner_slower",
-               "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap", "combo_start_order"],
+               ],
     "skill": ["grade_o", "win_c", "top2_c", "top3_c", "n_all", "win_all", "top2_all"],
     "motor": ["motor_2", "motor_2_rel", "n_m", "motor_res", "motor_kp"],
     "local": ["n_v", "win_v", "top2_v"],
     "form": ["n_90", "win_90", "top2_90"],
     "racetime": RT_FEATURES,
     "exhibition": ["ex_time_rel", "ex_time_rank", "tilt"],
-    "exh_st": ["ex_st", "ex_st_rank"],
     "original": ORIG_FEATURES,
-    "flying": ["f_recent"],
+    "flying": ["f_recent", "f_hold", "sr_fgap"],
+    "wall": WALL_FEATURES,
+    "wind": WIND_FEATURES,
 }
 
 
@@ -214,11 +227,20 @@ def load_exhibition(path: Optional[Path]) -> pd.DataFrame:
 
 
 def load_original(path: Optional[Path]) -> pd.DataFrame:
-    """ボートレース日和から取り寄せたオリジナル展示（一周・まわり足・直線）。"""
+    """オリジナル展示（一周・まわり足・直線）。ボートレース日和から取り寄せた分（original.csv）と、
+    データベースから書き出した分（同じ場所の original_db.csv）を合わせる。同じ艇は後者を使う。"""
     cols = ["race_id", "lane"] + list(ORIG_BOUNDS)
-    if not path or not Path(path).exists():
+    paths = [Path(path), Path(path).with_name("original_db.csv")] if path else []
+    frames = [pd.read_csv(p, dtype=str, usecols=lambda c: c in {"race_date", "venue", "race_no", "lane", "captured_at", *ORIG_BOUNDS})
+              for p in paths if p.exists()]
+    if not frames:
         return pd.DataFrame(columns=cols)
-    o = pd.read_csv(path, dtype=str, usecols=lambda c: c in {"race_date", "venue", "race_no", "lane", *ORIG_BOUNDS})
+    o = pd.concat(frames, ignore_index=True)
+    for c in [*ORIG_BOUNDS, "captured_at"]:
+        if c not in o:
+            o[c] = None
+    o = o.dropna(subset=list(ORIG_BOUNDS), how="all")  # 3つとも空の行で、取り寄せた値を消さない
+    o = o.sort_values("captured_at", na_position="first", kind="stable")  # 同じ艇が何回もあれば、最後に取った値
     o["race_date"] = o["race_date"].str.replace("-", "", regex=False).str[:8]
     o["venue"] = o["venue"].str.zfill(2)
     o["race_no"] = _num(o["race_no"])
@@ -252,6 +274,43 @@ def load_motors(path: Optional[Path]) -> pd.DataFrame:
     if mo["motor_2"].dropna().between(0, 1).mean() > 0.9:
         mo["motor_2"] *= 100
     return mo[cols]
+
+
+def load_f_state(path: Optional[Path]) -> pd.DataFrame:
+    """選手ごと・日ごとの F の数（データベースの racer_f_state_daily）。"""
+    cols = ["toban", "date", "f_hold"]
+    if not path or not Path(path).exists():
+        return pd.DataFrame(columns=cols)
+    f = pd.read_csv(path, dtype=str)
+    f["date"] = pd.to_datetime(f["race_date"].str.replace("-", "", regex=False).str[:8], format="%Y%m%d", errors="coerce")
+    f["f_hold"] = _num(f["f_count"])
+    f = f.dropna(subset=["toban", "date", "f_hold"])
+    return f.drop_duplicates(["toban", "date"], keep="last")[cols]
+
+
+def load_weather(path: Optional[Path]) -> pd.DataFrame:
+    """レースごとの風（追い風・横風の強さ）と波。方角は場の水面の向きで公式の風アイコンに直してから。"""
+    from .. import wind as wind_mod
+
+    cols = ["race_id"] + WIND_FEATURES
+    if not path or not Path(path).exists():
+        return pd.DataFrame(columns=cols)
+    w = pd.read_csv(path, dtype=str)
+    w["race_date"] = w["race_date"].str.replace("-", "", regex=False).str[:8]
+    w["venue"] = w["venue"].str.zfill(2)
+    w["race_no"] = _num(w["race_no"])
+    w = w.dropna(subset=["race_date", "venue", "race_no"])
+    if "updated_at" in w:
+        w = w.sort_values("updated_at", na_position="first")
+    w = w.drop_duplicates(["race_date", "venue", "race_no"], keep="last")
+    w["race_id"] = _race_id(w)
+    speed = _num(w["wind_speed"]).tolist()
+    comp = [wind_mod.components(wind_mod.icon_from_compass(v, d), s) for v, d, s in zip(w["venue"], w["wind_from"], speed)]
+    w["wind_tail"] = [c[0] for c in comp]
+    w["wind_cross"] = [c[1] for c in comp]
+    w["wave_cm"] = _num(w["wave_cm"])
+    w.loc[~w["wave_cm"].between(0, 100), "wave_cm"] = np.nan
+    return w[cols]
 
 
 # モーターの交換日（新モーターの使用開始日）。データから見つけたものに加えて、調べた日付も使う。
@@ -499,6 +558,53 @@ def apply_extra(rows: pd.DataFrame, tables: dict[str, pd.DataFrame]) -> pd.DataF
     return rows.drop(columns=drop)
 
 
+def fhold_stats(facts: pd.DataFrame, fstate: pd.DataFrame, next_date: Optional[pd.Timestamp] = None) -> tuple[pd.DataFrame, float]:
+    """F持ちのときと、ふだんの、スタート順位のずれ（コース平均との差）の合計（選手ごと、前日まで）と、全体のずれの差。"""
+    f = facts[["toban", "date", "course", "start_rank"]].merge(fstate, on=["toban", "date"], how="left")
+    sr0 = f.groupby(f["course"].astype(int))["start_rank"].mean()
+    dev = f["start_rank"] - f["course"].astype(int).map(sr0).astype(float)
+    ok = f["start_rank"].notna() & f["f_hold"].notna()
+    hold = (ok & (f["f_hold"] >= 1)).astype(float)
+    norm = (ok & (f["f_hold"] == 0)).astype(float)
+    g0 = float(dev[hold > 0].mean() - dev[norm > 0].mean()) if hold.sum() and norm.sum() else 0.0
+    d = pd.DataFrame({"toban": f["toban"], "date": f["date"], "fh_n": hold, "fh_sum": dev.fillna(0) * hold,
+                      "nm_n": norm, "nm_sum": dev.fillna(0) * norm})
+    daily = d.groupby(["toban", "date"], as_index=False)[["fh_n", "fh_sum", "nm_n", "nm_sum"]].sum()
+    return asof(daily, ["toban"], ["fh_n", "fh_sum", "nm_n", "nm_sum"], None, next_date), (0.0 if np.isnan(g0) else g0)
+
+
+def wall_stats(facts: pd.DataFrame, next_date: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+    """2〜6コースに入ったレース数と、そのとき1コースが1着だった数（選手×コース、前日まで）。"""
+    c1 = facts.loc[(facts["course"] == 1) & (facts["finish"] == 1), "race_id"]
+    f = facts.loc[facts["course"].between(2, 6), ["toban", "course", "date", "race_id"]].copy()
+    f["course_i"] = f["course"].astype(int)
+    f["w_n"] = 1.0
+    f["w_c1"] = f["race_id"].isin(set(c1)).astype(float)
+    daily = f.groupby(["toban", "course_i", "date"], as_index=False)[["w_n", "w_c1"]].sum()
+    return asof(daily, ["toban", "course_i"], ["w_n", "w_c1"], None, next_date)
+
+
+def apply_new(rows: pd.DataFrame, tables: dict[str, pd.DataFrame], priors: dict) -> pd.DataFrame:
+    """修正7の特徴量（F持ちのスタートのずれ・壁）を付ける。apply_stats の後に呼ぶ。表が無ければ空のまま。"""
+    if "fhold" in tables:
+        rows = rows.merge(tables["fhold"], on=["toban", "date"], how="left")
+    if "wall" in tables:
+        rows = rows.merge(tables["wall"], on=["toban", "course_i", "date"], how="left")
+    k = SMOOTH
+    z = lambda c: rows[c].fillna(0) if c in rows else pd.Series(0.0, index=rows.index)
+    g0 = float(priors.get("fgap", 0.0) or 0.0)
+    fh_n, nm_n = z("fh_n"), z("nm_n")
+    raw = z("fh_sum") / fh_n.where(fh_n > 0) - z("nm_sum") / nm_n.where(nm_n > 0)
+    w = fh_n / (fh_n + k)
+    rows["sr_fgap"] = (w * raw.fillna(g0) + (1 - w) * g0) if "fh_n" in rows else np.nan
+    rows["f_hold"] = pd.to_numeric(rows["f_hold"], errors="coerce") if "f_hold" in rows else np.nan
+    p0 = float((priors.get("win") or {}).get(1, 0.55))
+    wall = (z("w_c1") + WALL_SMOOTH * p0) / (z("w_n") + WALL_SMOOTH)
+    rows["wall_self"] = wall.where(rows["course_i"] >= 2) if "w_n" in rows else np.nan
+    drop = [c for c in ("fh_n", "fh_sum", "nm_n", "nm_sum", "w_n", "w_c1") if c in rows]
+    return rows.drop(columns=drop)
+
+
 def meetings(facts: pd.DataFrame) -> pd.DataFrame:
     """場×日ごとの節番号（meet）と何日目（rt_day）。日が空くか節の名前が変わったら別の節。"""
     title = facts["series_title"] if "series_title" in facts else pd.Series(np.nan, index=facts.index)
@@ -590,6 +696,7 @@ def add_race_features(df: pd.DataFrame, with_ex: bool) -> pd.DataFrame:
         df["motor_2"] = np.nan
     df["motor_2_rel"] = df["motor_2"] - df.groupby("race_id")["motor_2"].transform("mean")
     df = add_racetime(df)
+    add_new_race_features(df)
     if with_ex:
         df["ex_time_rel"] = df["ex_time"] - df.groupby("race_id")["ex_time"].transform("mean")
         df["ex_time_rank"] = df.groupby("race_id")["ex_time"].rank(method="average")
@@ -600,6 +707,23 @@ def add_race_features(df: pd.DataFrame, with_ex: bool) -> pd.DataFrame:
         combo = 0.5 * df["pred_start_order"] + 0.5 * df["ex_st_rank"].fillna(df["pred_start_order"])
         df["combo_start_order"] = combo.groupby(df["race_id"]).rank(method="average")
         add_original(df)
+    return df
+
+
+def add_new_race_features(df: pd.DataFrame) -> pd.DataFrame:
+    """F持ちを入れた予想スタート順位と、レースの壁（2コースの壁・いちばん弱い壁）。"""
+    for c in ("f_hold", "sr_fgap", "wall_self"):
+        if c not in df:
+            df[c] = np.nan
+    gap = pd.to_numeric(df["sr_fgap"], errors="coerce")
+    hold = pd.to_numeric(df["f_hold"], errors="coerce") >= 1
+    df["sr_c_f"] = df["sr_c"] + gap.where(hold, 0.0).fillna(0.0)
+    df["pred_start_order_f"] = df.groupby("race_id")["sr_c_f"].rank(method="average")
+    wall = pd.to_numeric(df["wall_self"], errors="coerce")
+    g = wall.groupby(df["race_id"])
+    df["wall_min"] = g.transform("min")
+    c2 = wall.where(df["course_i"] == 2)
+    df["wall_c2"] = c2.groupby(df["race_id"]).transform("max")
     return df
 
 
@@ -646,11 +770,15 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     f_recent = recent_f_counts(facts)
     nxt = facts["date"].max() + pd.Timedelta(days=1)
     extra = extra_stats(facts, next_date=nxt)
+    fstate = load_f_state(raw_dir / "f_state.csv")
+    extra["fhold"], priors["fgap"] = fhold_stats(facts, fstate, next_date=nxt)
+    extra["wall"] = wall_stats(facts, next_date=nxt)
     rt = racetime_stats(facts)
 
     rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank", "motor_no"]].copy()
     del facts
     gc.collect()
+    rows = add_day_flags(rows, raw_dir)
     rows = rows.merge(load_exhibition(raw_dir / "exhibition.csv"), on=["race_id", "lane"], how="left")
     rows = rows.merge(motors.drop(columns=["motor_no_m"]), on=["race_id", "lane"], how="left")
     rows = rows.merge(load_original(raw_dir / "original.csv"), on=["race_id", "lane"], how="left")
@@ -660,15 +788,22 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows.loc[dup, "course"] = rows.loc[dup, "lane"]
     rows = apply_stats(rows, pc, pa, priors, f_recent)
     rows = apply_extra(rows, extra)
+    rows = rows.merge(fstate, on=["toban", "date"], how="left")
+    rows = apply_new(rows, extra, priors)
+    rows = rows.merge(load_weather(raw_dir / "weather.csv"), on="race_id", how="left")
+    for c in WIND_FEATURES:
+        rows[c] = pd.to_numeric(rows[c], errors="coerce")
     rows = rows.merge(rt, on=["venue", "date", "toban"], how="left")
     del rt
     del pc, pa
     gc.collect()
     rows = add_race_features(rows, with_ex=True)
     rows["win"] = (rows["finish"] == 1).astype("int8")
+    rows["top2"] = (rows["finish"] <= 2).astype("int8")  # 2着・3着を別に学習するとき用
+    rows["top3"] = (rows["finish"] <= 3).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
     rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
-    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "has_ex", "has_orig", "course"])
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":
@@ -677,6 +812,26 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     live_tables = {k: t[t["date"] == nxt].drop(columns=["date"]) for k, t in extra.items()}
     priors["motor_swaps"] = swaps
     return rows, priors, pc_tot, pa_tot, live_tables
+
+
+def day_flags(label) -> tuple[float, float]:
+    """開催一覧の日の表示（初日・2日目・最終日など）→（初日か, 最終日か）。分からなければ NaN。"""
+    if not isinstance(label, str) or not label.strip():
+        return np.nan, np.nan
+    return float("初日" in label or label.strip() == "1日目"), float("最終日" in label)
+
+
+def add_day_flags(rows: pd.DataFrame, raw_dir: Path) -> pd.DataFrame:
+    """rows に day_first・day_last を足す（開催一覧 series.csv から）。"""
+    ser = series_mod.load(raw_dir)
+    lab = dict(zip(ser["race_date"].astype(str).str.replace("-", "", regex=False).str[:8] + ser["venue"].astype(str),
+                   ser["day_label"]))
+    key = rows["race_date"].astype(str) + rows["venue"].astype(str)
+    flags = {k: day_flags(v) for k, v in lab.items()}
+    pair = key.map(flags)
+    rows["day_first"] = pair.map(lambda t: t[0] if isinstance(t, tuple) else np.nan).astype("float32")
+    rows["day_last"] = pair.map(lambda t: t[1] if isinstance(t, tuple) else np.nan).astype("float32")
+    return rows
 
 
 def totals(facts: pd.DataFrame, pc: pd.DataFrame | None = None, pa: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:

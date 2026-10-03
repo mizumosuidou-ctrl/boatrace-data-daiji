@@ -7,6 +7,7 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pct = (p, d = 0) => (p == null ? "--" : (p * 100).toFixed(d));
 const yen = (n) => (n == null ? "--" : "¥" + Number(n).toLocaleString("ja-JP"));
+const signedYen = (n) => (n == null ? "--" : (n < 0 ? "−" : "+") + "¥" + Math.abs(Number(n)).toLocaleString("ja-JP"));
 const boat = (b, size = "") => `<span class="boat ${size}" data-b="${b}" aria-label="${b}号艇">${b}</span>`;
 const combo = (c, size = "sm") => c ? `<span class="combo" aria-label="3連単 ${esc(c)}">${c.split("-").map((b) => boat(b, size)).join("<i></i>")}</span>` : "";
 const arrow = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 8h11M9 4l4 4-4 4"/></svg>`;
@@ -68,14 +69,14 @@ async function loadLatest() {
   const today = todayJst();
   if (!state.date) state.date = dates.includes(today) ? today : state.latest.date;
   const sel = $("#dateSelect");
-  sel.innerHTML = [...dates].reverse().map((d) => `<option value="${d}" ${d === state.date ? "selected" : ""}>${fmtDate(d)} (${weekday(d)})${d === today ? " TODAY" : ""}</option>`).join("");
+  sel.innerHTML = [...dates].reverse().map((d) => `<option value="${d}" ${d === state.date ? "selected" : ""}>${fmtDate(d)} (${weekday(d)})${d === today ? " 今日" : ""}</option>`).join("");
   $("#demoBadge").hidden = !state.latest.demo;
   if (state.latest.demo && state.latest.generated_at) clockOffset = Date.parse(state.latest.generated_at) - Date.now();
 }
 
 async function loadDay(date = state.date) {
   state.day = await getJSON(`data/${date}/day.json`);
-  $("#footerMeta").textContent = `UPDATED ${state.day.generated_at.replace("T", " ").slice(0, 16)} JST`;
+  $("#footerMeta").textContent = `更新 ${state.day.generated_at.replace("T", " ").slice(0, 16)}`;
   return state.day;
 }
 
@@ -102,7 +103,7 @@ async function route() {
   $$(".nav a").forEach((a) => (a.dataset.nav === r.name ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
   if (state.sim) { state.sim.destroy(); state.sim = null; }
   if (!same) {
-    $("#main").innerHTML = `<div class="loading"><div class="wave"><i></i><i></i><i></i><i></i><i></i></div>LOADING WATER SURFACE</div>`;
+    $("#main").innerHTML = `<div class="loading"><div class="wave"><i></i><i></i><i></i><i></i><i></i></div>読み込み中…</div>`;
     window.scrollTo({ top: 0 });
   }
   try {
@@ -131,7 +132,7 @@ function ribbon(win) {
     const wide = p > 0.14 ? "wide" : p < 0.085 ? "tiny" : "";  // 細い区画は％を隠して艇番だけ見せる
     return `<div class="ribbon-seg ${wide}" data-b="${b}" style="${cVar(b)} flex-grow:${Math.max(p, 0.02)}" title="${b}号艇 1着率 ${pct(p, 1)}%"><span class="boatno">${b}</span><span class="pct">${pct(p)}%</span></div>`;
   }).join("");
-  return `<div class="ribbon"><div class="ribbon-bar" role="img" aria-label="各艇の1着確率">${segs}</div><div class="ribbon-legend"><span>Win probability</span><span>Model × Claude</span></div></div>`;
+  return `<div class="ribbon"><div class="ribbon-bar" role="img" aria-label="各艇の1着確率">${segs}</div><div class="ribbon-legend"><span>1着確率</span><span>予想エンジン</span></div></div>`;
 }
 
 function ringSvg(value, size = 132) {
@@ -159,7 +160,7 @@ function heroHtml(h, now) {
   const dl = deadlineMs(state.date, r.deadline);
   const conf = r.confidence ?? 0;
   const tier = tierOf(conf);
-  const label = h.mode === "next" ? `<span class="live-dot"></span> Next to close` : `Best hit of the day`;
+  const label = h.mode === "next" ? `<span class="live-dot"></span> まもなく締切` : `本日の最高払戻`;
   return `
   <section class="hero wrap">
     <div class="hero-grid">
@@ -167,13 +168,13 @@ function heroHtml(h, now) {
         <div class="hero-top">
           <span class="eyebrow" style="gap:8px">${label}</span>
           ${v.grade && v.grade !== "一般" ? `<span class="chip grade-${esc(v.grade)}">${esc(v.grade)}</span>` : ""}
-          ${v.is_nighter ? `<span class="chip nighter">NIGHTER</span>` : ""}
+          ${v.is_nighter ? `<span class="chip nighter">ナイター</span>` : ""}
           <span class="chip">${esc(v.day_label)}</span>
         </div>
         <a href="${link}" class="hero-venue" aria-label="${esc(v.name)} ${r.rno}R の予想を見る">
           <span class="jp">${esc(v.name)}</span>
           <span class="rno">${r.rno}<small>R</small></span>
-          <span class="hero-roman">${esc(v.roman)}</span>
+          
         </a>
         <p class="hero-headline">${esc(r.headline)}</p>
         <div class="hero-meta"><span>${esc(v.title)}</span><span>${esc(r.race_name)}</span><span class="num">締切 ${esc(r.deadline)}</span></div>
@@ -181,19 +182,19 @@ function heroHtml(h, now) {
       </article>
       <div class="hero-side">
         <div class="panel countdown-card rv" style="--i:1">
-          <div class="countdown-label"><span class="eyebrow">${h.mode === "next" ? "Deadline in" : "Payout"}</span><span class="chip num">${esc(r.deadline)} JST</span></div>
+          <div class="countdown-label"><span class="eyebrow">${h.mode === "next" ? "締切まで" : "払戻"}</span><span class="chip num">${esc(r.deadline)} 締切</span></div>
           ${h.mode === "next"
             ? `<div class="countdown" data-deadline="${dl}" data-fmt="big" data-hero>${fmtCountdown(dl - now)}</div>
                <div class="countdown-sub"><span>本命 <b>${r.honmei ?? "-"}号艇</b></span><span>推奨 <b>${esc(r.top_pick || "-")}</b></span></div>
                <div class="progress"><i data-window="${dl}" style="transform:scaleX(0)"></i></div>`
             : `<div class="countdown" style="color:var(--hit)">${yen(r.payout)}</div>
                <div class="countdown-sub"><span>結果 <b>${esc(r.result || "-")}</b></span><span>推奨 <b>${esc(r.top_pick || "-")}</b></span></div>`}
-          <div style="margin-top:22px"><a class="btn" href="${link}">Claudeの予想を見る ${arrow}</a></div>
+          <div style="margin-top:22px"><a class="btn" href="${link}">予想を見る ${arrow}</a></div>
         </div>
         <div class="panel confidence-card rv" style="--i:2">
-          <div class="ring">${ringSvg(conf)}<div class="ring-center"><div><b>${conf}</b><span>CONFIDENCE</span></div></div></div>
+          <div class="ring">${ringSvg(conf)}<div class="ring-center"><div><b>${conf}</b><span>確信度</span></div></div></div>
           <div>
-            <div class="eyebrow">Race type</div>
+            <div class="eyebrow">レースの見立て</div>
             <div class="tier" style="margin-top:8px">${tier}</div>
             <div class="tier-note">${TIER_NOTE[tier]}</div>
           </div>
@@ -216,7 +217,7 @@ function upcomingHtml(list, now) {
     </a>`;
   }).join("");
   return `<section class="section wrap">
-    <div class="section-head"><div><span class="eyebrow">Up next</span><h2 class="section-title">Upcoming<small>締切が近い順に、Claudeの見出しと推奨買い目</small></h2></div></div>
+    <div class="section-head"><div><h2 class="section-title">まもなく締切<small>締切が近い順に、見出しと推奨買い目</small></h2></div></div>
     <div class="strip">${cards}</div>
   </section>`;
 }
@@ -231,7 +232,7 @@ function cellHtml(v, r, now, isNext) {
   if (st.startsWith("finished")) {
     body = `<div class="t"><span>${r.rno}R</span><b>${esc(r.deadline)}</b></div>
       <div class="res">${esc(r.result || "")}</div>
-      <div class="pay">${yen(r.payout)}</div>${r.hit ? `<span class="stamp">HIT</span>` : ""}`;
+      <div class="pay">${yen(r.payout)}</div>${r.hit ? `<span class="stamp">的中</span>` : ""}`;
   } else if (st === "cancelled") {
     body = `<div class="t"><span>${r.rno}R</span><b>中止</b></div>`;
   } else {
@@ -245,10 +246,10 @@ function cellHtml(v, r, now, isNext) {
 }
 
 const FILTERS = [
-  ["all", "ALL"],
-  ["graded", "SG / G"],
-  ["nighter", "NIGHTER"],
-  ["hits", "HITS"],
+  ["all", "すべて"],
+  ["graded", "重賞"],
+  ["nighter", "ナイター"],
+  ["hits", "的中"],
 ];
 
 function monitorHtml(day, now, filter) {
@@ -256,7 +257,7 @@ function monitorHtml(day, now, filter) {
   if (filter === "graded") venues = venues.filter((v) => v.grade && v.grade !== "一般");
   if (filter === "nighter") venues = venues.filter((v) => v.is_nighter);
   if (filter === "hits") venues = venues.filter((v) => v.races.some((r) => r.hit));
-  const head = `<div class="mon-head" role="row"><div>VENUE</div>${Array.from({ length: 12 }, (_, i) => `<div>${i + 1}R</div>`).join("")}</div>`;
+  const head = `<div class="mon-head" role="row"><div>場</div>${Array.from({ length: 12 }, (_, i) => `<div>${i + 1}R</div>`).join("")}</div>`;
   const rows = venues.map((v, i) => {
     const byR = Object.fromEntries(v.races.map((r) => [r.rno, r]));
     const next = v.races.find((r) => !r.result && deadlineMs(state.date, r.deadline) > now);
@@ -266,8 +267,8 @@ function monitorHtml(day, now, filter) {
     }).join("");
     return `<div class="mon-row ${state.firstPaint.monitor ? "" : "rv"}" style="--i:${Math.min(i, 12) + 4}">
       <div class="mon-venue">
-        <div class="name"><b>${esc(v.name)}</b><span>${esc(v.roman)}</span></div>
-        <div class="tags">${v.grade && v.grade !== "一般" ? `<span class="chip grade-${esc(v.grade)}">${esc(v.grade)}</span>` : ""}${v.is_nighter ? `<span class="chip nighter">N</span>` : ""}<span class="chip">${esc(v.day_label)}</span></div>
+        <div class="name"><b>${esc(v.name)}</b></div>
+        <div class="tags">${v.grade && v.grade !== "一般" ? `<span class="chip grade-${esc(v.grade)}">${esc(v.grade)}</span>` : ""}${v.is_nighter ? `<span class="chip nighter">ナイター</span>` : ""}<span class="chip">${esc(v.day_label)}</span></div>
         <div class="title">${esc(v.title)}</div>
       </div>
       <div class="mon-cells">${cells}</div>
@@ -282,10 +283,11 @@ function kpisHtml(t) {
   const roi = t.stake ? (t.return / t.stake) * 100 : null;
   const f = (x) => (x == null ? "--" : x.toFixed(1));
   return `<div class="kpis">
-    <div class="kpi"><b class="num">${t.settled}<span class="muted" style="font-size:.5em">/${t.races}</span></b><span>Settled</span></div>
-    <div class="kpi hit"><b>${f(hitRate)}<small style="font-size:.5em">%</small></b><span>3連単 Hit</span></div>
+    <div class="kpi"><b class="num">${t.settled}<span class="muted" style="font-size:.5em">/${t.races}</span></b><span>確定</span></div>
+    <div class="kpi hit"><b>${f(hitRate)}<small style="font-size:.5em">%</small></b><span>3連単的中</span></div>
     <div class="kpi"><b>${f(honmei)}<small style="font-size:.5em">%</small></b><span>本命 1着</span></div>
     <div class="kpi"><b>${f(roi)}<small style="font-size:.5em">%</small></b><span>回収率</span></div>
+    <div class="kpi"><b style="font-size:.7em">${t.stake ? signedYen((t.return - t.stake) * 10) : "--"}</b><span>収支（1点1,000円）</span></div>
   </div>`;
 }
 
@@ -301,7 +303,7 @@ async function renderHome(refresh = false) {
     ${upcomingHtml(hero.upcoming.slice(1), now)}
     <section class="section wrap" id="monitor">
       <div class="section-head">
-        <div><span class="eyebrow">${fmtDate(state.date)} · ${state.day.venues.length} venues</span><h2 class="section-title">Race Monitor<small>全場・全レースの本命と推奨、結果と的中をひと目で</small></h2></div>
+        <div><span class="eyebrow">${fmtDate(state.date)} · ${state.day.venues.length}場で開催</span><h2 class="section-title">全場のレース<small>本命・推奨買い目・結果をひと目で</small></h2></div>
         ${kpisHtml(state.day.totals)}
       </div>
       <div class="filters" role="group" aria-label="絞り込み">${FILTERS.map(([k, l]) => `<button class="filter" data-filter="${k}" aria-pressed="${k === filter}">${l}</button>`).join("")}</div>
@@ -338,10 +340,10 @@ function scrollCellsToNow(root) {
 /* ------------------------------------------------------------ race */
 const WIND_DIR = (n) => (n ? ((n - 1) * 22.5) : null);
 const FACTOR_KEYS_MODEL = [["skill", "選手力"], ["local", "当地"], ["motor", "モーター"], ["boat", "ボート"], ["start", "平均ST"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["flying", "F"], ["grade", "級別"], ["wind", "風"]];
-const FACTOR_KEYS_ML = [["course", "コース"], ["start", "スタート力"], ["tenkai", "展開(ST順差)"], ["skill", "選手力"], ["local", "当地"], ["form", "調子"], ["racetime", "ﾚｰｽﾀｲﾑ"], ["motor", "モーター"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["original", "ｵﾘｼﾞﾅﾙ展示"], ["flying", "F"]];
+const FACTOR_KEYS_ML = [["course", "コース"], ["start", "スタート力"], ["tenkai", "展開(ST順差)"], ["skill", "選手力"], ["local", "当地"], ["form", "調子"], ["racetime", "ﾚｰｽﾀｲﾑ"], ["motor", "モーター"], ["exhibition", "展示T"], ["exh_st", "展示ST"], ["original", "ｵﾘｼﾞﾅﾙ展示"], ["flying", "F"], ["wall", "壁"], ["wind", "風"]];
 const isML = (P) => String(P.engine || "").startsWith("lightgbm");
 const factorKeys = (P) => (isML(P) ? FACTOR_KEYS_ML : FACTOR_KEYS_MODEL);
-const ENGINE_LABEL = { "lightgbm-pre": "LightGBM · 展示前", "lightgbm-post": "LightGBM · 展示反映", model: "統計モデル" };
+const ENGINE_LABEL = { "lightgbm-pre": "機械学習 · 展示前", "lightgbm-post": "機械学習 · 展示反映", model: "統計モデル" };
 
 function factorBars(f, keys) {
   return `<div class="factors" aria-hidden="true">${keys.map(([k, label]) => {
@@ -349,6 +351,41 @@ function factorBars(f, keys) {
     const hgt = Math.min(13, Math.abs(v) * 30);
     return `<span class="factor" title="${label} ${v >= 0 ? "+" : ""}${v.toFixed(2)}">${v ? `<i class="${v > 0 ? "pos" : "neg"}" style="height:${hgt}px"></i>` : ""}</span>`;
   }).join("")}</div>`;
+}
+
+// 予想が使った進入コース（展示後は展示進入、展示前は枠なり）。表はこの順に並べる
+const courseOf = (race) => Object.fromEntries(race.prediction.boats.map((b) => [b.boat, b.course || b.boat]));
+const exEntry = (race) => race.stage === "exhibition";
+const courseTag = (c, boatNo, ex) => `<span class="ctag ${ex ? "" : "guess"} ${c !== boatNo ? "moved" : ""}" title="${ex ? "展示進入" : "枠なり想定"} ${c}コース">${c}<small>C</small></span>`;
+
+// 風の補正（場の風向き×風速別のコース別1着率）。変化の大きいコースを3つまで
+function windLine(P) {
+  const w = P.wind;
+  if (!w || !w.category) return "";
+  const ch = Object.entries(w.factors || {}).filter(([, f]) => Math.abs(f - 1) >= 0.05)
+    .sort((a, b) => Math.abs(b[1] - 1) - Math.abs(a[1] - 1)).slice(0, 3)
+    .map(([c, f]) => `${"①②③④⑤⑥"[c - 1]}×${f.toFixed(2)}`).join(" ");
+  return `風 ${esc(w.category)}${w.speed ? ` ${w.speed}m` : ""}${w.stabilizer ? "（安定板）" : ""}${ch ? `：${ch}` : ""}<br>`;
+}
+
+// スタート隊形トゥエルブ（予想手順 STEP②）と、その場・種類・隊形での過去の逃げ率と2着
+function formationLine(race) {
+  const f = race.formation;
+  if (!f) return "";
+  const s = f.stats;
+  const where = s ? `${s.scope === "ALL" ? "全場" : esc(race.venue.name)}・${esc(s.category || f.category)}` : "";
+  const sec = s && s.second ? Object.entries(s.second).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([c, p]) => `${"①②③④⑤⑥"[c - 1]}${pct(p)}%`).join(" ") : "";
+  return `隊形 <b>${esc(f.label)}</b>${s ? `（${where} 逃げ${pct(s.rate)}%・${s.rank}/12位）` : ""}<br>${sec ? `逃げたら2着 ${sec}<br>` : ""}`;
+}
+
+// 2連単オッズから見た「市場の1着の見込み」（1/オッズの割合）。予想手順 STEP⑥：人気順ではなく市場心理として見る
+function marketHead(race, b) {
+  const o = race.odds2 || {};
+  const inv = Object.entries(o).filter(([, v]) => v > 0).map(([c, v]) => [c, 1 / v]);
+  if (inv.length < 20) return "";
+  const tot = inv.reduce((a, [, x]) => a + x, 0);
+  const head = inv.filter(([c]) => c.split("-")[0] === String(b)).reduce((a, [, x]) => a + x, 0);
+  return `市場（2連単）の①頭 ${Math.round((head / tot) * 100)}%<br>`;
 }
 
 function rankClass(values, i, lowerBetter = false) {
@@ -361,7 +398,9 @@ function rankClass(values, i, lowerBetter = false) {
 }
 
 function sheetHtml(race) {
-  const E = race.entries;
+  const C = courseOf(race);
+  const ex = exEntry(race);
+  const E = race.entries.slice().sort((a, b) => (C[a.boat] ?? a.boat) - (C[b.boat] ?? b.boat));
   const col = (k) => E.map((e) => e[k]);
   const cols = [
     ["全国勝率", "nat_win", false, 2], ["全国2連", "nat_2", false, 1], ["当地勝率", "loc_win", false, 2],
@@ -373,7 +412,8 @@ function sheetHtml(race) {
     ["チルト", "tilt", null, 1], ["体重", "weight", null, 1],
   ];
   const fmt = (v, d) => (v == null || v === 0 && d === 2 && false ? "--" : typeof v === "number" ? v.toFixed(d) : "--");
-  const rows = E.map((e, i) => `<tr>
+  const rows = E.map((e, i) => `<tr class="${C[e.boat] && C[e.boat] !== e.boat ? "moved" : ""}">
+    <td>${C[e.boat] ? courseTag(C[e.boat], e.boat, ex) : "--"}</td>
     <td>${boat(e.boat, "sm")}</td>
     <td class="name">${esc(e.name)} <small class="muted num">${esc(e.toban)} ${esc(e.grade)}</small></td>
     ${cols.map(([, k, lb, d]) => {
@@ -387,7 +427,7 @@ function sheetHtml(race) {
     <td class="${e.f_count ? "f" : "muted"}">${e.f_count ? "F" + e.f_count : "-"}</td>
   </tr>`).join("");
   return `<div class="panel sheet"><table>
-    <thead><tr><th>艇</th><th>選手</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}<th>F</th></tr></thead>
+    <thead><tr><th>進入</th><th>艇</th><th>選手</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}<th>F</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 
@@ -395,11 +435,12 @@ function boardHtml(race) {
   const P = race.prediction;
   const E = Object.fromEntries(race.entries.map((e) => [e.boat, e]));
   const maxWin = Math.max(...P.boats.map((b) => b.win));
-  const rows = P.boats.map((b) => {
+  const ex = exEntry(race);
+  const rows = P.boats.slice().sort((a, b) => (a.course || a.boat) - (b.course || b.boat)).map((b) => {
     const e = E[b.boat] || {};
     return `<div class="board-row ${b.win === maxWin ? "top" : ""}">
-      <div>${boat(b.boat, "lg")}</div>
-      <div class="racer"><b>${esc(e.name)}<span class="g ${esc(e.grade)}">${esc(e.grade)}</span></b><small>${b.start_order != null ? `<span class="so">予想ST順 ${Number.isInteger(b.start_order) ? b.start_order : b.start_order.toFixed(1)}番手</span> · ` : ""}${esc(e.branch)} · ${e.age ?? "-"}歳 · ${b.course}コース${e.ex_course && e.ex_course !== e.boat ? " (進入変化)" : ""}</small></div>
+      <div class="lane">${courseTag(b.course || b.boat, b.boat, ex)}${boat(b.boat, "lg")}</div>
+      <div class="racer"><b>${esc(e.name)}<span class="g ${esc(e.grade)}">${esc(e.grade)}</span></b><small>${b.start_order != null ? `<span class="so">予想ST順 ${Number.isInteger(b.start_order) ? b.start_order : b.start_order.toFixed(1)}番手</span> · ` : ""}${esc(e.branch)} · ${e.age ?? "-"}歳 · ${b.course}コース${e.ex_course && e.ex_course !== e.boat ? "（進入変化）" : ""}</small></div>
       <div class="winbar" data-b="${b.boat}" style="${cVar(b.boat)}"><div class="track"><span class="fill" style="width:${(b.win / maxWin) * 100}%"></span></div><span class="v">${pct(b.win)}<small>%</small></span></div>
       <div class="num">${pct(b.top2)}%</div>
       <div class="num" data-l="3連対">${pct(b.top3)}%</div>
@@ -407,7 +448,7 @@ function boardHtml(race) {
     </div>`;
   }).join("");
   return `<div class="panel board">
-    <div class="board-head"><div>艇</div><div>選手</div><div>1着確率</div><div style="text-align:right">2連対</div><div style="text-align:right">3連対</div><div>要因（＋/−）</div></div>
+    <div class="board-head"><div>進入</div><div>選手</div><div>1着確率</div><div style="text-align:right">2連対</div><div style="text-align:right">3連対</div><div>要因（＋/−）</div></div>
     ${rows}
     <div class="factor-legend"><span class="chip ${isML(P) ? "src-claude" : ""}">${esc(ENGINE_LABEL[P.engine] || "統計モデル")}</span>${factorKeys(P).map(([, l], i) => `<span>${i + 1}.${l}</span>`).join("")}</div>
   </div>`;
@@ -427,9 +468,9 @@ function ticketsHtml(race) {
     const o = odds[t.combo];
     const ev = p && o ? p * o : null;
     return `<div class="ticket ${t.kind === "妙味" ? "value" : ""} ${won === t.combo ? "won" : ""} rv" style="--i:${i}">
-      <div class="kind"><span>3連単 ${String(i + 1).padStart(2, "0")} · <b>${won === t.combo ? "HIT" : t.kind}</b></span>${t.weight ? `<span class="weight">${t.weight}<small>%</small></span>` : ""}</div>
+      <div class="kind"><span>3連単 ${String(i + 1).padStart(2, "0")} · <b>${won === t.combo ? "的中" : t.kind}</b></span>${t.weight ? `<span class="weight">${t.weight}<small>%</small></span>` : ""}</div>
       <div class="cmb">${t.combo.split("-").map((b) => boat(b)).join(`<span class="arrow"></span>`)}</div>
-      <div class="stats"><div><span>PROB</span>${p != null ? pct(p, 1) + "%" : "--"}</div><div><span>ODDS</span>${o ?? "--"}</div><div><span>EV</span>${ev ? ev.toFixed(2) : "--"}</div></div>
+      <div class="stats"><div><span>確率</span>${p != null ? pct(p, 1) + "%" : "--"}</div><div><span>オッズ</span>${o ?? "--"}</div><div><span>期待値</span>${ev ? ev.toFixed(2) : "--"}</div></div>
     </div>`;
   }).join("")}</div>`;
 }
@@ -450,12 +491,12 @@ function weatherHtml(w) {
 function resultHtml(race) {
   const r = race.result;
   if (!r) return "";
-  if (r.cancelled) return `<div class="result-band"><div><div class="lbl">Result</div><b>レース中止</b></div></div>`;
+  if (r.cancelled) return `<div class="result-band"><div><div class="lbl">結果</div><b>レース中止</b></div></div>`;
   const s = race.settle || {};
   return `<div class="result-band ${s.trifecta_hit ? "hit" : ""} rv">
-    <div><div class="lbl">Result · ${esc(r.kimarite || "")}</div><div class="result-order">${combo(r.trifecta, "")}</div></div>
+    <div><div class="lbl">結果 · ${esc(r.kimarite || "")}</div><div class="result-order">${combo(r.trifecta, "")}</div></div>
     <div><div class="lbl">3連単払戻${r.popularity ? ` · ${r.popularity}番人気` : ""}</div><div class="result-pay">${yen(r.payout)}</div></div>
-    <div>${s.trifecta_hit ? `<div class="hit-stamp">HIT</div>` : `<div class="miss-stamp">${s.honmei_win ? "本命1着" : "MISS"}</div>`}</div>
+    <div>${s.trifecta_hit ? `<div class="hit-stamp">的中</div>` : `<div class="miss-stamp">${s.honmei_win ? "本命1着" : "はずれ"}</div>`}</div>
   </div>`;
 }
 
@@ -471,9 +512,9 @@ async function renderRace(r, refresh = false) {
   const dl = deadlineMs(race.date, race.deadline);
   const now = nowMs();
   const done = !!race.result;
-  const srcChip = ai.source === "claude" ? `<span class="chip src-claude">● CLAUDE${ai.model ? " · " + esc(ai.model) : ""}</span>` : ai.source === "demo" ? `<span class="chip">DEMO · MODEL TEXT</span>` : `<span class="chip">STATISTICAL MODEL</span>`;
+  const srcChip = ai.source === "claude" ? `<span class="chip src-claude">● Claudeの見解</span>` : ai.source === "demo" ? `<span class="chip">デモ</span>` : `<span class="chip">自動の見解</span>`;
   const stage = (race.stage === "exhibition" ? `<span class="chip">展示反映済</span>` : `<span class="chip">出走表段階</span>`)
-    + (isML(race.prediction) ? `<span class="chip src-claude">LightGBM</span>` : "");
+    + (isML(race.prediction) ? `<span class="chip src-claude">機械学習</span>` : "");
   race.__showResult = done;
   const prevNext = `
     <div style="display:flex;gap:8px;margin-top:26px;flex-wrap:wrap">
@@ -482,10 +523,10 @@ async function renderRace(r, refresh = false) {
     </div>`;
   const html = `
   <div class="wrap">
-    <a class="back" href="#/"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 8H3M7 4L3 8l4 4"/></svg>Race monitor</a>
+    <a class="back" href="#/"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 8H3M7 4L3 8l4 4"/></svg>レース一覧へ</a>
     <header class="race-hero">
       <div class="rv">
-        <div class="race-title"><span class="jp">${esc(race.venue.name)}</span><span class="rno">${race.rno}<small>R</small></span><span class="roman">${esc(race.venue.roman)}</span></div>
+        <div class="race-title"><span class="jp">${esc(race.venue.name)}</span><span class="rno">${race.rno}<small>R</small></span></div>
         <div class="race-sub">
           <span class="t">${esc(race.title)}</span>
           ${race.grade && race.grade !== "一般" ? `<span class="chip grade-${esc(race.grade)}">${esc(race.grade)}</span>` : ""}
@@ -496,50 +537,52 @@ async function renderRace(r, refresh = false) {
         ${weatherHtml(race.weather)}
       </div>
       <div class="race-clock rv" style="--i:1">
-        ${done ? `<div class="cd done">FINISHED</div>` : `<div class="cd" data-deadline="${dl}" data-fmt="big">${fmtCountdown(dl - now)}</div>`}
-        <div class="lbl">締切 ${esc(race.deadline)} JST · ${fmtDate(race.date)}</div>
+        ${done ? `<div class="cd done">終了</div>` : `<div class="cd" data-deadline="${dl}" data-fmt="big">${fmtCountdown(dl - now)}</div>`}
+        <div class="lbl">締切 ${esc(race.deadline)} · ${fmtDate(race.date)}</div>
       </div>
     </header>
     ${resultHtml(race)}
     <div class="verdict-grid">
       <article class="panel verdict rv" style="--i:2">
-        <div class="who"><span class="eyebrow">Claude's verdict</span>${srcChip}</div>
+        <div class="who"><span class="eyebrow">見解</span>${srcChip}</div>
         <h2>${esc(ai.headline)}</h2>
         <p class="body">${esc(ai.verdict)}</p>
         <div class="marks">${MARK_SYM.map(([k, sym, label]) => ai[k] ? `<div class="mark"><span class="sym">${sym}</span>${boat(ai[k])}<span class="nm">${esc(E[ai[k]]?.name || "")}<small>${label}</small></span></div>` : "").join("")}</div>
         ${ai.key_points && ai.key_points.length ? `<ol class="points">${ai.key_points.map((p) => `<li>${esc(p)}</li>`).join("")}</ol>` : ""}
-        ${ai.risk ? `<p class="risk">RISK — ${esc(ai.risk)}</p>` : ""}
+        ${ai.risk ? `<p class="risk">注意 — ${esc(ai.risk)}</p>` : ""}
       </article>
       <div class="side-stack">
         <div class="panel confidence-card rv" style="--i:3">
-          <div class="ring">${ringSvg(ai.confidence ?? P.confidence)}<div class="ring-center"><div><b>${ai.confidence ?? P.confidence}</b><span>CONFIDENCE</span></div></div></div>
-          <div><div class="eyebrow">Race type</div><div class="tier" style="margin-top:8px">${tierOf(ai.confidence ?? P.confidence)}</div><div class="tier-note">モデル確信度 ${P.confidence} · ${esc(P.tier)}</div></div>
+          ${P.escape && P.escape.index != null ? `<div class="ring">${ringSvg(P.escape.index)}<div class="ring-center"><div><b>${P.escape.index}</b><span>逃げ指数</span></div></div></div>
+          <div><div class="eyebrow">イン逃げ指数</div><div class="tier" style="margin-top:8px">${esc(P.escape.label)}</div><div class="tier-note">1コース ${boat(P.escape.boat, "sm")} ${esc(E[P.escape.boat]?.name || "")} · 1着率 ${pct(P.escape.p)}%<br>${marketHead(race, P.escape.boat)}${formationLine(race)}${windLine(P)}モデル確信度 ${P.confidence} · ${esc(P.tier)}</div></div>`
+          : `<div class="ring">${ringSvg(ai.confidence ?? P.confidence)}<div class="ring-center"><div><b>${ai.confidence ?? P.confidence}</b><span>確信度</span></div></div></div>
+          <div><div class="eyebrow">レースの見立て</div><div class="tier" style="margin-top:8px">${tierOf(ai.confidence ?? P.confidence)}</div><div class="tier-note">モデル確信度 ${P.confidence} · ${esc(P.tier)}</div></div>`}
         </div>
         <div class="panel scenario rv" style="--i:4">
-          <div class="eyebrow">Winning move · 決まり手予測</div>
+          <div class="eyebrow">決まり手予測</div>
           ${Object.entries(P.scenario).slice(0, 5).map(([k, v]) => `<div class="scen-row"><span>${esc(k)}</span><span class="bar"><i style="width:${v * 100}%"></i></span><span class="num">${pct(v)}%</span></div>`).join("")}
         </div>
       </div>
     </div>
 
     <section class="panel sim rv" style="--i:5">
-      <div class="sim-head"><span class="eyebrow">${done ? "First turn · result replay" : "First turn simulation"}</span><button class="replay" id="replay" type="button"><svg viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7.5-4.5z"/></svg>Replay</button></div>
+      <div class="sim-head"><span class="eyebrow">${done ? "1周1マーク（結果の再現）" : "1周1マークのイメージ"}</span><button class="replay" id="replay" type="button"><svg viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7.5-4.5z"/></svg>もう一度</button></div>
       <canvas class="sim-canvas" id="sim" role="img" aria-label="1周1マークの展開シミュレーション"></canvas>
       <div class="sim-foot"><span>進入 ${P.boats.slice().sort((a, b) => a.course - b.course).map((b) => b.boat).join("")} ${race.stage === "exhibition" ? "（展示進入）" : "（枠なり想定）"}</span><span>${isML(P) ? "予想スタート順" : "ST"}・予想着順から描画したイメージです</span></div>
     </section>
 
     <section class="section">
-      <div class="section-head"><div><span class="eyebrow">Probability board</span><h2 class="section-title">Who wins<small>予想エンジンが出した1着・2連対・3連対確率と、その根拠</small></h2></div></div>
+      <div class="section-head"><div><h2 class="section-title">1着確率と根拠<small>予想エンジンが出した1着・2連対・3連対確率と、その根拠。${exEntry(race) ? "展示の進入コース順" : "枠なり想定のコース順（展示後に展示進入で並べ替え）"}</small></h2></div></div>
       ${boardHtml(race)}
     </section>
 
     <section class="section">
-      <div class="section-head"><div><span class="eyebrow">Tickets</span><h2 class="section-title">Picks<small>Claudeの推奨買い目（配分％）と、オッズから見た妙味</small></h2></div></div>
+      <div class="section-head"><div><h2 class="section-title">推奨買い目<small>買い目と配分（％）、オッズから見た妙味</small></h2></div></div>
       ${ticketsHtml(race)}
     </section>
 
     <section class="section">
-      <div class="section-head"><div><span class="eyebrow">Data sheet</span><h2 class="section-title">The numbers<small>出走表・直前情報（● はレース内1位）</small></h2></div></div>
+      <div class="section-head"><div><h2 class="section-title">出走表データ<small>出走表・直前情報（● はレース内1位）。${exEntry(race) ? "展示の進入コース順" : "枠なり想定のコース順"}</small></h2></div></div>
       ${sheetHtml(race)}
       ${prevNext}
     </section>
@@ -578,7 +621,8 @@ async function renderRecord() {
     t[0]++; t[1] += r.honmei_win ? 1 : 0; t[2] += r.hit ? 1 : 0;
     if (r.hit && (!best || r.payout > best.payout)) best = { ...r, v, date: d.date };
   }
-  const dd = rec.days.slice(-14);
+  // まだ1レースも確定していない日（当日の朝など）は 0% に見えてしまうので描かない
+  const dd = rec.days.filter((d) => d.settled).slice(-14);
   const W = 800, H = 260, pad = 36;
   const maxRoi = Math.max(150, ...dd.map((d) => (d.stake ? (d.return / d.stake) * 100 : 0)));
   const bw = (W - pad * 2) / Math.max(1, dd.length);
@@ -591,12 +635,15 @@ async function renderRecord() {
       <text x="${cx}" y="${H - pad + 16}" text-anchor="middle">${d.date.slice(4, 6)}/${d.date.slice(6)}</text>
       <text x="${cx}" y="${y(r) - 6}" text-anchor="middle">${r.toFixed(0)}%</text>`;
   }).join("");
-  const line = dd.map((d, i) => `${pad + i * bw + bw * 0.5},${y(d.settled ? (d.hits / d.settled) * 100 : 0)}`).join(" ");
+  const pts = dd.map((d, i) => [pad + i * bw + bw * 0.5, y((d.hits / d.settled) * 100), d]);
+  const line = pts.map(([x, py]) => `${x},${py}`).join(" ");
+  // 点も打つ（1日だけだと線にならないため）。横に伸びる SVG でも丸く見えるよう、長さ0の線の丸端で描く
+  const dots = pts.map(([x, py, d]) => `<path class="dot" d="M${x} ${py}h0"><title>${fmtDate(d.date)} 的中率 ${((d.hits / d.settled) * 100).toFixed(1)}%</title></path>`).join("");
   $("#main").innerHTML = `
   <div class="wrap">
     <section class="section">
-      <span class="eyebrow">Track record · ${rec.days.length} days</span>
-      <h1 class="section-title" style="font-size:clamp(48px,7vw,110px)">Record<small>すべての予想は締切前に公開し、結果と自動照合しています。${rec.demo ? "（現在はデモデータ）" : ""}</small></h1>
+      <span class="eyebrow">${rec.days.filter((d) => d.settled).length}日分</span>
+      <h1 class="section-title" style="font-size:clamp(40px,6vw,90px)">成績<small>すべての予想は締切前に公開し、結果と自動照合しています。${rec.demo ? "（現在はデモデータ）" : ""}</small></h1>
       <div class="rec-hero">
         <div class="panel rec-kpi gold rv"><span class="eyebrow">3連単 的中率</span><div class="v">${hitRate.toFixed(1)}<small>%</small></div><p>${T.hits} / ${T.settled} レース</p></div>
         <div class="panel rec-kpi rv" style="--i:1"><span class="eyebrow">回収率</span><div class="v">${roi.toFixed(1)}<small>%</small></div><p>推奨買い目を各100円で購入した場合</p></div>
@@ -604,24 +651,44 @@ async function renderRecord() {
         <div class="panel rec-kpi rv" style="--i:3"><span class="eyebrow">最高払戻</span><div class="v" style="font-size:clamp(36px,4vw,56px)">${best ? yen(best.payout) : "--"}</div><p>${best ? `${fmtDate(best.date)} ${esc(best.v.name)}${best.rno}R ${esc(best.result)}` : "まだありません"}</p></div>
       </div>
       <div class="panel chart rv" style="--i:4">
-        <div class="section-head" style="margin:0 0 8px"><span class="eyebrow">Daily return rate / hit rate</span><span class="chip">■ 回収率 ― 的中率</span></div>
+        <div class="section-head" style="margin:0 0 8px"><span class="eyebrow">日別の回収率・的中率</span><span class="chip">■ 回収率 ― 的中率</span></div>
         <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="日別回収率">
           <line class="ref" x1="${pad}" x2="${W - pad}" y1="${y(100)}" y2="${y(100)}"/>
           <text x="${W - pad}" y="${y(100) - 6}" text-anchor="end">100%</text>
           ${bars}
           <polyline class="line" points="${line}"/>
+          ${dots}
           <line class="axis" x1="${pad}" x2="${W - pad}" y1="${H - pad}" y2="${H - pad}"/>
         </svg>
       </div>
-      ${T.ml_races ? `<div class="section-head" style="margin-top:40px"><div><span class="eyebrow">Engine duel</span><h2 class="section-title">LightGBM vs 統計モデル<small>同じレースで、それぞれの本命（1着確率1位）が1着になった割合</small></h2></div></div>
+      <div class="section-head" style="margin-top:40px"><div><h2 class="section-title">1点1,000円で買った場合<small>推奨買い目を各1,000円で買ったときの金額（払戻は100円あたりの配当×10）。回収率は100円のときと同じです</small></h2></div></div>
       <div class="calib">
-        <div class="panel rv"><h4>LightGBM</h4><div class="big" style="color:var(--accent)">${((T.ml_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
+        <div class="panel rv"><h4>投資</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${yen(T.stake * 10)}</div><div class="small">${T.settled}レース</div></div>
+        <div class="panel rv" style="--i:1"><h4>払戻</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${yen(T.return * 10)}</div><div class="small">的中 ${T.hits}レース</div></div>
+        <div class="panel rv" style="--i:2"><h4>収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.return >= T.stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.return - T.stake) * 10)}</div><div class="small">払戻 − 投資</div></div>
+        <div class="panel rv" style="--i:3"><h4>回収率</h4><div class="big">${roi.toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">払戻 ÷ 投資</div></div>
+      </div>
+      ${T.ev_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：オッズで絞った買い目<small>締切前のオッズで「MINAMOの確率×オッズ」が1.2以上の組だけを最大6点（無ければ見送り）。実際の推奨買い目は変えず、成績だけを数えています</small></h2></div></div>
+      <div class="calib">
+        <div class="panel rv"><h4>的中率</h4><div class="big">${T.ev_bought ? ((T.ev_hits / T.ev_bought) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.ev_hits}/${T.ev_bought}R（買ったレースのうち）</div></div>
+        <div class="panel rv" style="--i:1"><h4>回収率</h4><div class="big" style="color:var(--accent)">${T.ev_stake ? ((T.ev_return / T.ev_stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">払戻 ÷ 投資</div></div>
+        <div class="panel rv" style="--i:2"><h4>買ったレース</h4><div class="big">${T.ev_bought}<small style="font-size:.45em">R</small></div><div class="small">見送り ${T.ev_races - T.ev_bought}R · 平均 ${T.ev_bought ? (T.ev_stake / 100 / T.ev_bought).toFixed(1) : "--"}点</div></div>
+        <div class="panel rv" style="--i:3"><h4>1点1,000円の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.ev_return >= T.ev_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.ev_return - T.ev_stake) * 10)}</div><div class="small">投資 ${yen(T.ev_stake * 10)} · 払戻 ${yen(T.ev_return * 10)}</div></div>
+      </div>` : ""}
+      ${T.ml_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">予想エンジンの比較<small>同じレースで、それぞれの本命（1着確率1位）が1着になった割合</small></h2></div></div>
+      <div class="calib">
+        <div class="panel rv"><h4>機械学習</h4><div class="big" style="color:var(--accent)">${((T.ml_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
         <div class="panel rv" style="--i:1"><h4>統計モデル</h4><div class="big">${((T.shadow_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
       </div>` : ""}
-      <div class="section-head" style="margin-top:40px"><div><span class="eyebrow">Daily results</span><h2 class="section-title">日別・場別の収支<small>推奨買い目を1点100円で買った場合。日付を押すと、その日の場ごと・レースごとの成績が出ます</small></h2></div></div>
+      ${T.alt_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">買い目の組み方<small>予想手順（逃げるか→展開→相手）で組んだ6点と、確率の高い順の6点を、同じレースで比べた成績</small></h2></div></div>
+      <div class="calib">
+        <div class="panel rv"><h4>予想手順</h4><div class="big" style="color:var(--accent)">${((T.method_return / T.method_stake) * 100 || 0).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">回収率 · 的中 ${T.method_hits}/${T.alt_races}R</div></div>
+        <div class="panel rv" style="--i:1"><h4>確率上位6点</h4><div class="big">${((T.alt_return / T.alt_stake) * 100 || 0).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">回収率 · 的中 ${T.alt_hits}/${T.alt_races}R</div></div>
+      </div>` : ""}
+      <div class="section-head" style="margin-top:40px"><div><h2 class="section-title">日別・場別の収支<small>推奨買い目を1点1,000円で買った場合。日付を押すと、その日の場ごと・レースごとの成績が出ます</small></h2></div></div>
       <div class="panel ledger rv">${ledgerDays(days)}</div>
       <div id="ledger-day"></div>
-      <div class="section-head" style="margin-top:40px"><div><span class="eyebrow">Calibration</span><h2 class="section-title">By confidence<small>確信度の帯ごとの成績。数字が高いレースほど当たっているかを検証</small></h2></div></div>
+      <div class="section-head" style="margin-top:40px"><div><h2 class="section-title">確信度別の成績<small>確信度の帯ごとの成績。数字が高いレースほど当たっているかを検証</small></h2></div></div>
       <div class="calib">${Object.entries(tiers).map(([k, [n, h1, h3]], i) => `<div class="panel rv" style="--i:${i}"><h4>${k}</h4><div class="big">${n ? ((h3 / n) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">3連単的中 · 本命1着 ${n ? ((h1 / n) * 100).toFixed(1) : "--"}% · ${n}R</div></div>`).join("")}</div>
     </section>
   </div>`;
@@ -629,6 +696,7 @@ async function renderRecord() {
 }
 
 /* ------------------------------------------------------------ ledger（日別・場別の収支） */
+const BET_UNIT = 10;  // 保存は1点100円。サイトの表示は1点1,000円にそろえる
 function sumRaces(races) {
   const t = { races: 0, hits: 0, stake: 0, ret: 0, known: true };
   for (const r of races) {
@@ -636,7 +704,7 @@ function sumRaces(races) {
     t.races++;
     t.hits += r.hit ? 1 : 0;
     if (r.stake == null) { t.known = false; continue; }
-    t.stake += r.stake; t.ret += r.return || 0;
+    t.stake += r.stake * BET_UNIT; t.ret += (r.return || 0) * BET_UNIT;
   }
   return t;
 }
@@ -659,7 +727,7 @@ function ledgerDay(day) {
     const t = sumRaces(v.races);
     const races = v.races.map((r) => {
       const done = r.result && !r.cancelled;
-      const profit = done && r.stake != null ? (r.return || 0) - r.stake : null;
+      const profit = done && r.stake != null ? ((r.return || 0) - r.stake) * BET_UNIT : null;
       return `<tr class="${r.hit ? "hitrow" : ""}">
         <td><a href="#/race/${day.date}/${v.jcd}/${r.rno}">${r.rno}R</a></td>
         <td class="num">${r.cancelled ? "中止" : esc(r.result || "--")}</td>
@@ -667,8 +735,8 @@ function ledgerDay(day) {
         <td class="num picks">${(r.picks || []).map((c) => `<span class="${c === r.result ? "on" : ""}">${esc(c)}</span>`).join(" ") || "--"}</td>
         <td>${r.pick_no ? `<b class="pos">${r.pick_no}点目</b>` : done ? "×" : "--"}</td>
         <td>${r.model_rank ? `${r.model_rank}番目` : done ? "41番目以下" : "--"}</td>
-        <td>${r.stake != null ? yen(r.stake) : "--"}</td>
-        <td>${done ? yen(r.return || 0) : "--"}</td>
+        <td>${r.stake != null ? yen(r.stake * BET_UNIT) : "--"}</td>
+        <td>${done ? yen((r.return || 0) * BET_UNIT) : "--"}</td>
         <td>${profit == null ? "--" : plus(profit)}</td>
       </tr>`;
     }).join("");
@@ -699,7 +767,7 @@ function renderAbout() {
   $("#main").innerHTML = `
   <div class="wrap">
     <section class="section">
-      <span class="eyebrow">About MINAMO</span>
+      <span class="eyebrow">MINAMOについて</span>
       <p class="manifesto rv">水面は、<em>数字</em>でできている。</p>
       <div class="about">
         <div class="panel rv" style="--i:1"><div class="step">01</div><h3>取得する</h3><p>毎朝、BOAT RACE公式サイトから開催場と全レースの出走表を取得。締切30分前からは展示タイム・展示進入・スタート展示・気象・3連単オッズを数分おきに取り直します。アクセスは1秒1回以下に抑えています。</p></div>
@@ -720,7 +788,7 @@ function tick() {
   $("#clock").textContent = `${pad(p.hh)}:${pad(p.mm)}:${pad(p.ss)}`;
   for (const el of $$("[data-deadline]")) {
     const left = Number(el.dataset.deadline) - now;
-    const txt = left <= 0 ? "CLOSED" : fmtCountdown(left);
+    const txt = left <= 0 ? "締切" : fmtCountdown(left);
     if (el.dataset.fmt === "big" && left > 0) {
       const [a, b, c] = txt.split(":");
       el.innerHTML = c ? `${a}<span class="sep">:</span>${b}<span class="sep">:</span>${c}` : `${a}<span class="sep">:</span>${b}`;

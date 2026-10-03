@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from .. import wind as wind_mod
+
 COURSE_BASE = [2.3, 0.4, 0.25, 0.0, -0.6, -1.3]
 
 
@@ -25,8 +27,10 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
             "grade": rng.choices(["A1", "A2", "B1", "B2"], [20, 20, 48, 12])[0],
             "skill": rng.gauss(0, 0.5),
             "st": [st + rng.gauss(0, 0.01) for _ in range(6)],
+            # 1割の選手は途中からF持ち（スタートを控えて遅くなる）
+            "f_from": rng.randint(days // 4, days) if i % 10 == 0 else None,
         })
-    facts, exh, motors, orig = [], [], [], []
+    facts, exh, motors, orig, weather = [], [], [], [], []
     # 場ごとのモーター（実力は隠れていて、2連率の表示は半分くらいしか当てにならない）
     pool = {f"{v:02d}": [rng.gauss(0, 1) for _ in range(40)] for v in range(1, 25)}
     d0 = date(2025, 1, 1)
@@ -36,7 +40,12 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
             venue = f"{k % 24 + 1:02d}"
             rno = k // 24 + 1
             field = rng.sample(racers, 6)
-            sts = [max(0.01, rng.gauss(r["st"][c], 0.03)) for c, r in enumerate(field)]
+            hold = [r["f_from"] is not None and d >= r["f_from"] for r in field]
+            sts = [max(0.01, rng.gauss(r["st"][c] + (0.04 if hold[c] else 0.0), 0.03)) for c, r in enumerate(field)]
+            frm, speed = rng.choice(wind_mod.COMPASS), rng.randint(0, 7)
+            tail = wind_mod.components(wind_mod.icon_from_compass(venue, frm), speed)[0]
+            weather.append({"race_date": day, "venue": venue, "race_no": rno, "wind_from": frm, "wind_speed": speed, "wave_cm": speed,
+                            "weather": "雨" if (d + k) % 5 == 0 else "晴"})
             order = sorted(range(6), key=lambda i: sts[i])
             srank = {i: order.index(i) + 1 for i in range(6)}
             mnos = rng.sample(range(40), 6)
@@ -45,7 +54,7 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
             feel = [rng.gauss(0, 1) for _ in range(6)]  # その日の足（オリジナル展示にだけ表れる）
             util = []
             for i, r in enumerate(field):
-                u = COURSE_BASE[i] + r["skill"] + 0.35 * mq[i] + 0.5 * feel[i]
+                u = COURSE_BASE[i] + r["skill"] + 0.35 * mq[i] + 0.5 * feel[i] + (0.12 * tail if i == 0 else 0.0)
                 u -= 0.35 * (srank[i] - 3.5)
                 if i > 0 and srank[i] + 2 <= srank[i - 1]:
                     u += 0.9  # 内の隣より2つ以上早い → 攻めが決まる
@@ -101,3 +110,8 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
     pd.DataFrame(exh).to_csv(out_dir / "exhibition.csv", index=False)
     pd.DataFrame(motors).to_csv(out_dir / "motors.csv", index=False)
     pd.DataFrame(orig).to_csv(out_dir / "original.csv", index=False)
+    pd.DataFrame(weather).to_csv(out_dir / "weather.csv", index=False)
+    fstate = [{"race_date": (d0 + timedelta(days=d)).strftime("%Y%m%d"), "toban": r["toban"],
+               "f_count": int(r["f_from"] is not None and d >= r["f_from"]), "l_count": 0}
+              for d in range(days) for r in racers]
+    pd.DataFrame(fstate).to_csv(out_dir / "f_state.csv", index=False)

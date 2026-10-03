@@ -10,6 +10,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from .. import wind as wind_mod
 from . import dataset as ds
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,18 @@ class MLPredictor:
             path = self.dir / f"stats_{name}.csv.gz"
             t = pd.read_csv(path, dtype={k: str for k in keys}) if path.exists() else pd.DataFrame(columns=keys)
             self.extra[name] = t.assign(date=self.stats_date)
+        # 修正7：F持ちのスタートのずれ・壁（無ければ使わない）
+        self.new = {}
+        for name in ("fhold", "wall"):
+            path = self.dir / f"stats_{name}.csv.gz"
+            if path.exists():
+                self.new[name] = pd.read_csv(path, dtype={"toban": str}).assign(date=self.stats_date)
+        # 2着・3着の専用モデル（採用されたときだけ）
+        self.place = {}
+        for name, info in (self.meta.get("place") or {}).items():
+            files = [self.dir / f"model_top2_{name}.txt", self.dir / f"model_top3_{name}.txt"]
+            if info.get("adopt") and all(f.exists() for f in files):
+                self.place[name] = (lgb.Booster(model_file=str(files[0])), lgb.Booster(model_file=str(files[1])), float(info["w"]))
         self.mtime = (self.dir / "meta.json").stat().st_mtime
 
     @property
@@ -59,12 +72,15 @@ class MLPredictor:
         rt = getattr(card, "racetime", None) or {}
         rt_racers = rt.get("racers") or {}
         era = self.motor_era(card.jcd, card.date)
+        wind = wind_mod.components(before.wind_dir, before.wind_speed) if before else (np.nan, np.nan)
+        day_first, day_last = ds.day_flags(getattr(card, "day_label", None))
         rows = []
         for e in entries:
             b = be.get(e.boat)
             r = rt_racers.get(e.toban)
             rows.append({
-                "race_id": "live", "date": self.stats_date, "venue": card.jcd, "lane": e.boat,
+                "race_id": "live", "date": self.stats_date, "venue": card.jcd, "lane": e.boat, "race_no": float(card.rno),
+                "day_first": day_first, "day_last": day_last,
                 "course": courses[e.boat], "toban": e.toban, "grade_o": ds.GRADE_ORD.get(e.grade, np.nan),
                 "motor_no": f"{e.motor_no}@{era}" if e.motor_no else np.nan,
                 "rt_day": rt.get("day", np.nan),
@@ -72,7 +88,9 @@ class MLPredictor:
                 "rt_best": r[0] if r else np.nan,
                 "rt_series_rank": r[2] if r else np.nan,
                 "rt_series_n": r[3] if r else np.nan,
-                "motor_2": e.motor_2, "f_recent": float(e.f_count or 0),
+                "motor_2": e.motor_2, "f_recent": float(e.f_count or 0), "f_hold": float(e.f_count or 0),
+                "wind_tail": wind[0], "wind_cross": wind[1],
+                "wave_cm": getattr(before, "wave_cm", None) if before else np.nan,
                 "ex_time": b.exhibition_time if b else np.nan,
                 "ex_st": b.start_st if b else np.nan,
                 "tilt": b.tilt if b else np.nan,
@@ -82,12 +100,13 @@ class MLPredictor:
             })
         df = pd.DataFrame(rows)
         for c in ("motor_2", "ex_time", "ex_st", "tilt", "lap_time", "turn_time", "straight_time",
-                  "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n"):
+                  "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n", "wave_cm"):
             df[c] = pd.to_numeric(df[c], errors="coerce")
         for c, (lo, hi) in ds.ORIG_BOUNDS.items():
             df.loc[~df[c].between(lo, hi), c] = np.nan
         df = ds.apply_stats(df, self.pc, self.pa, self.meta["priors"])
         df = ds.apply_extra(df, self.extra)
+        df = ds.apply_new(df, self.new, self.meta["priors"])
         return df
 
     def motor_era(self, jcd: str, date: str) -> int:
@@ -111,6 +130,13 @@ class MLPredictor:
             p = np.clip(raw, 1e-6, 1 - 1e-6)
             p = p / p.sum()
             contrib = booster.predict(X, pred_contrib=True)[:, :-1]
+            q, place_w = None, 0.0
+            pl = self.place.get("post" if use_post else "pre")
+            if pl:
+                from .train import place_q
+
+                q = place_q(df, p, pl[0].predict(X), pl[1].predict(X))
+                place_w = pl[2]
         except Exception:  # noqa: BLE001 — 予想は統計モデルで続行できる
             log.exception("ML prediction failed for %s%02d", card.jcd, card.rno)
             return None
@@ -121,7 +147,7 @@ class MLPredictor:
                 idx = [feats.index(c) for c in cols if c in feats]
                 if idx:
                     groups[g] = float(contrib[i, idx].sum())
-            order = "combo_start_order" if use_post else "pred_start_order"
+            order = "pred_start_order"  # 展示STは使わず、平均スタート順位だけで並べる
             out[int(boat)] = {
                 "p": float(p[i]),
                 "factors": groups,
@@ -129,7 +155,11 @@ class MLPredictor:
                 "motor_kp": _num_or_none(df["motor_kp_raw"].iloc[i]),
                 "n_c": int(df["n_c"].iloc[i]),
             }
-        return {"engine": "lightgbm-post" if use_post else "lightgbm-pre", "boats": out, "pl_decay": self.meta.get("pl_decay")}
+            if q is not None:
+                out[int(boat)]["q"] = (float(q[i, 0]), float(q[i, 1]))  # ちょうど2着・ちょうど3着
+        return {"engine": "lightgbm-post" if use_post else "lightgbm-pre", "boats": out, "pl_decay": self.meta.get("pl_decay"),
+                "place_w": place_w,
+                "wind": "wind_tail" in feats}  # 風をモデルが使っていれば、場の風の表では補正しない
 
 
 def _num_or_none(v) -> Optional[float]:

@@ -13,6 +13,7 @@ from itertools import permutations
 from statistics import mean
 from typing import Optional
 
+from . import wind as wind_mod
 from .models import BeforeInfo, Entry, RaceCard
 from .venues import course_base_rates
 
@@ -25,9 +26,15 @@ W_MOTOR = 0.022  # モーター2連率 1%
 W_BOAT = 0.006  # ボート2連率 1%
 W_AVG_ST = -9.0  # 平均ST 1.00秒（0.01速いと +0.09）
 W_EXH_TIME = -3.2  # 展示タイム 1.00秒（0.05速いと +0.16）
-W_EXH_ST = -2.5  # 展示ST
 W_F = -0.14  # F持ち1本あたり（スタートを張り込めない）
 PL_DECAY = 0.82  # 2着・3着の決まりやすさの平坦化
+
+# イン逃げ指数：1コース艇の1着確率を100点満点に直したもの（0.85以上で100点）。
+# 判定の区切りは予想手順のとおり。2026-10-01の168Rで、点数が高いほど実際によく逃げていた
+# （85点以上 79%、70〜84点 66%、55〜69点 47%、40〜54点 46%、39点以下 20%）。
+ESCAPE_FULL = 0.85
+ESCAPE_TIERS = ((85, "逃げ濃厚"), (70, "逃げ優勢"), (55, "五分"), (40, "逃げ危険"), (0, "イン逃し本線"))
+N_PICKS = 6
 
 FACTOR_LABELS = {
     "course": "進入コース",
@@ -38,7 +45,6 @@ FACTOR_LABELS = {
     "start": "スタート力",
     "tenkai": "展開(ST順差)",
     "exhibition": "展示タイム",
-    "exh_st": "展示ST",
     "original": "オリジナル展示",
     "form": "最近の調子",
     "racetime": "レースタイム",
@@ -74,6 +80,8 @@ class Prediction:
     has_odds: bool
     engine: str = "model"  # model / lightgbm-pre / lightgbm-post
     shadow_win: dict[int, float] = field(default_factory=dict)  # 比較用：もう一方のエンジンの1着確率
+    escape: dict = field(default_factory=dict)  # イン逃げ指数 {"boat", "index", "label", "p"}
+    wind: dict = field(default_factory=dict)  # 風の補正 {"category", "speed", "stabilizer", "factors"}
 
     def to_dict(self) -> dict:
         return {
@@ -101,7 +109,15 @@ class Prediction:
             "has_odds": self.has_odds,
             "engine": self.engine,
             "shadow_win": {str(k): round(v, 4) for k, v in self.shadow_win.items()},
+            "escape": self.escape,
+            "wind": self.wind,
         }
+
+
+def escape_index(p: float) -> tuple[int, str]:
+    """1コース艇の1着確率 → (イン逃げ指数, 判定)。"""
+    idx = max(0, min(100, round(100 * p / ESCAPE_FULL)))
+    return idx, next(label for floor, label in ESCAPE_TIERS if idx >= floor)
 
 
 def _avg(values: list[Optional[float]]) -> Optional[float]:
@@ -133,7 +149,6 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
     ref_boat = _avg([e.boat_2 for e in entries])
     ref_st = _avg([e.avg_st for e in entries])
     ref_exh = _avg([be_map[e.boat].exhibition_time for e in entries if e.boat in be_map])
-    ref_exst = _avg([abs(be_map[e.boat].start_st) for e in entries if e.boat in be_map and be_map[e.boat].start_st is not None])
     wind = before.wind_speed if before and before.wind_speed is not None else 0.0
 
     scores: list[BoatScore] = []
@@ -152,10 +167,8 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         be = be_map.get(e.boat)
         if be and be.exhibition_time and ref_exh:
             f["exhibition"] = W_EXH_TIME * max(-0.25, min(0.25, be.exhibition_time - ref_exh))
-        if be and be.start_st is not None and ref_exst is not None:
-            penalty = 0.08 if be.start_st < 0 else 0.0
-            f["exh_st"] = W_EXH_ST * max(-0.15, min(0.15, abs(be.start_st) - ref_exst)) - penalty
-        if wind >= 5:
+        # 展示STは使わない（スタートは平均スタート順位で見る）
+        if wind >= 5 and not wind_mod.has_table(card.jcd):  # 場の風の表がある場は、あとで表で補正する
             # 強風はイン有利が崩れやすい
             f["wind"] = -0.07 * (wind - 4) if c == 1 else 0.03 * (wind - 4)
         scores.append(BoatScore(boat=e.boat, course=c, score=sum(f.values()), factors=f))
@@ -175,23 +188,37 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         decay = ml.get("pl_decay") or PL_DECAY  # 学習で合わせた値
 
     strengths = {s.boat: math.exp(s.score) for s in scores}
+    # 風の補正（場の風向き×風速別のコース別1着率。直前情報で風が分かってから）
+    wind_adj = wind_mod.adjustment(card.jcd, before.wind_dir, before.wind_speed, getattr(before, "stabilizer", None)) if before else None
+    if ml and ml.get("wind") and engine == "lightgbm-post":
+        wind_adj = None  # 学習したモデルが風をもう使っている（二重に効かせない）
+    if wind_adj:
+        for s in scores:
+            strengths[s.boat] *= wind_adj["factors"].get(s.course, 1.0)
     total = sum(strengths.values())
     for s in scores:
         s.win = strengths[s.boat] / total
 
-    # Plackett-Luce（2着以降は強さを平坦化）
+    # Plackett-Luce（2着以降は強さを平坦化）。2着・3着の専用モデルがあれば、その割合だけ混ぜる
     boats = [s.boat for s in scores]
     soft = {b: strengths[b] ** decay for b in boats}
+    s2, s3 = soft, soft
+    w = float(ml.get("place_w") or 0.0) if ml and engine.startswith("lightgbm") else 0.0
+    if w > 0 and all("q" in ml["boats"].get(b, {}) for b in boats):
+        s2 = {b: soft[b] ** (1 - w) * ml["boats"][b]["q"][0] ** w for b in boats}
+        s3 = {b: soft[b] ** (1 - w) * ml["boats"][b]["q"][1] ** w for b in boats}
     tri: dict[str, float] = {}
     ex: dict[str, float] = {}
     for a, b, c in permutations(boats, 3):
         p1 = strengths[a] / total
-        rest1 = sum(soft[x] for x in boats if x != a)
-        p2 = soft[b] / rest1
-        rest2 = rest1 - soft[b]
-        p3 = soft[c] / rest2
+        p2 = s2[b] / sum(s2[x] for x in boats if x != a)
+        p3 = s3[c] / sum(s3[x] for x in boats if x not in (a, b))
         tri[f"{a}-{b}-{c}"] = p1 * p2 * p3
-        ex[f"{a}-{b}"] = ex.get(f"{a}-{b}", 0.0) + p1 * p2 * p3
+    if wind_adj and wind_adj.get("second"):
+        _wind_second(tri, scores, wind_adj["second"])
+    for combo, p in tri.items():
+        a, b, _ = combo.split("-")
+        ex[f"{a}-{b}"] = ex.get(f"{a}-{b}", 0.0) + p
     tri_sorted = sorted(tri.items(), key=lambda kv: -kv[1])
     ex_sorted = sorted(ex.items(), key=lambda kv: -kv[1])
 
@@ -207,7 +234,12 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
     tier = "鉄板" if confidence >= 72 else "本線" if confidence >= 55 else "混戦" if confidence >= 40 else "波乱"
 
     scenario = _scenario(scores)
-    picks = _picks(tri_sorted, odds or {})
+    inner = next((s for s in scores if s.course == 1), None)
+    escape = {}
+    if inner:
+        idx, label = escape_index(inner.win)
+        escape = {"boat": inner.boat, "index": idx, "label": label, "p": round(inner.win, 4)}
+    picks = _picks(tri_sorted, odds or {}, escape)
     return Prediction(
         boats=scores,
         trifecta=tri_sorted,
@@ -220,7 +252,34 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         has_odds=bool(odds),
         engine=engine,
         shadow_win=shadow,
+        escape=escape,
+        wind={k: v for k, v in (wind_adj or {}).items() if k != "second"} if wind_adj else {},
     )
+
+
+def _wind_second(tri: dict[str, float], scores: list[BoatScore], shares: list[float]) -> None:
+    """イン（1コース）が1着のときの2着を、風の表の割合とモデルの半々（幾何平均）に寄せる。1着の確率は変えない。"""
+    inner = next((s for s in scores if s.course == 1), None)
+    if not inner:
+        return
+    b1 = str(inner.boat)
+    course_of = {str(s.boat): s.course for s in scores}
+    head = {k: v for k, v in tri.items() if k.split("-")[0] == b1}
+    p1 = sum(head.values())
+    if p1 <= 0:
+        return
+    cond: dict[str, float] = {}
+    for k, v in head.items():
+        cond[k.split("-")[1]] = cond.get(k.split("-")[1], 0.0) + v / p1
+    target = {b: max(shares[course_of[b] - 2], 0.1) if 2 <= course_of[b] <= 6 else 1.0 for b in cond}
+    t_sum = sum(target.values())
+    w = wind_mod.SECOND_WEIGHT
+    mixed = {b: (cond[b] ** (1 - w)) * ((target[b] / t_sum) ** w) for b in cond if cond[b] > 0}
+    m_sum = sum(mixed.values())
+    for k in head:
+        b = k.split("-")[1]
+        if cond.get(b, 0) > 0:
+            tri[k] = tri[k] * (mixed[b] / m_sum) / cond[b]
 
 
 def _ml_result(card: RaceCard, before: Optional[BeforeInfo]) -> Optional[dict]:
@@ -265,16 +324,41 @@ def _scenario(scores: list[BoatScore]) -> dict[str, float]:
     return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
 
-def _picks(tri_sorted: list[tuple[str, float]], odds: dict[str, float]) -> list[dict]:
-    """推奨買い目：確率上位で累積45%か最大8点、加えてオッズがあれば期待値上位。"""
+def method_combos(tri_sorted: list[tuple[str, float]], escape: dict, n: int = N_PICKS) -> list[str]:
+    """予想手順どおりの買い目：まず①（1コース艇）が逃げるかを決め、その判定ごとに組む。
+
+    2着・3着の相手は、①を頭に固定したときの確率（スタート順位の展開と各艇の力）の高い順。
+      逃げ濃厚・逃げ優勢 … ①頭だけ
+      五分             … ①頭4点 ＋ ①2着残し2点
+      逃げ危険         … ①頭3点 ＋ ①以外の頭3点（①は2・3着に残る形が上位に来る）
+      イン逃し本線     … ①以外の頭だけ（①を消すのではなく、2・3着には残す）
+    """
+    if not escape:
+        return [c for c, _ in tri_sorted[:n]]
+    b1 = str(escape["boat"])
+    head = [c for c, _ in tri_sorted if c.split("-")[0] == b1]
+    second = [c for c, _ in tri_sorted if c.split("-")[1] == b1]
+    other = [c for c, _ in tri_sorted if c.split("-")[0] != b1]
+    label = escape["label"]
+    if label in ("逃げ濃厚", "逃げ優勢"):
+        out = head[:n]
+    elif label == "五分":
+        out = head[: n - 2] + second[:2]
+    elif label == "逃げ危険":
+        out = head[: n // 2] + other[: n - n // 2]
+    else:
+        out = other[:n]
+    return sorted(out, key=lambda c: -dict(tri_sorted)[c])
+
+
+def _picks(tri_sorted: list[tuple[str, float]], odds: dict[str, float], escape: Optional[dict] = None) -> list[dict]:
+    """推奨買い目：予想手順で組んだ6点、加えてオッズがあれば期待値上位。"""
+    prob = dict(tri_sorted)
     picks: list[dict] = []
-    cum = 0.0
-    for combo, p in tri_sorted:
-        if len(picks) >= 8 or (cum >= 0.45 and len(picks) >= 3):
-            break
+    for combo in method_combos(tri_sorted, escape or {}):
+        p = prob[combo]
         o = odds.get(combo)
         picks.append({"combo": combo, "p": round(p, 4), "odds": o, "ev": round(p * o, 2) if o else None, "kind": "本線"})
-        cum += p
     if odds:
         chosen = {x["combo"] for x in picks}
         value = sorted(

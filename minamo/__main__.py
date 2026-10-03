@@ -9,11 +9,13 @@
   python -m minamo ml-train         LightGBMを学習（var/ml/raw のCSVから）
   python -m minamo ml-backfill      過去の展示データを公式サイトから取り寄せる
   python -m minamo ml-original      過去のオリジナル展示をボートレース日和から取り寄せる
+  python -m minamo wind-table       場ごとの風の表を、データベースの過去の天気から作る
 """
 from __future__ import annotations
 
 import argparse
 import functools
+import json
 import http.server
 import logging
 from pathlib import Path
@@ -45,6 +47,28 @@ def main() -> None:
     mlo = sub.add_parser("ml-original", help="過去のオリジナル展示（一周・まわり足・直線）をボートレース日和から取り寄せる（3〜5秒に1件）")
     mlo.add_argument("--days", type=int, default=183, help="さかのぼる日数（既定 183＝約6か月）")
     mlo.add_argument("--limit", type=int, default=None)
+    mls = sub.add_parser("ml-series", help="過去の開催（大会名・グレード）を公式サイトから取り寄せる（1日1件）")
+    mls.add_argument("--raw", default=None)
+    mlf = sub.add_parser("formation", help="スタート隊形トゥエルブの分布表をデータベースの実績から作る")
+    mlf.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
+    mlf.add_argument("--venue", default=None, help="表示する場（例 01）。省略すると作るだけ")
+    mlf.add_argument("--category", default="一般", help="一般・SG・G1・女子・マスターズ・ルーキーズ・正月・お盆")
+    mlf.add_argument("--show", action="store_true", help="作り直さず、前に作った表を表示するだけ")
+    mlw = sub.add_parser("wind-table", help="場ごとの風の表を、データベースの過去の天気とレース結果から作る")
+    mlw.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
+    mlw.add_argument("--venue", default=None, help="詳しく表示する場（例 01）")
+    mlw.add_argument("--check", type=int, default=0, help="各場この数のレースで、風の向きを公式サイトの結果ページと照合（1秒1件）")
+    mlw.add_argument("--show", action="store_true", help="作り直さず、前に作った表を表示するだけ")
+    mlv = sub.add_parser("venue-check", help="場ごとの予想ルールを、データベースの実績で確かめる表を出す")
+    mlv.add_argument("--venue", required=True, help="場（例 03）")
+    mlv.add_argument("--raw", default=None)
+    mlq = sub.add_parser("odds-check", help="オッズの動き（締切15分前→5分前→確定）と結果を突き合わせる表を出す")
+    mlq.add_argument("--raw", default=None)
+    mle = sub.add_parser("ev-check", help="買い目の選び方（確率上位・期待値）を、学習に使っていない期間のオッズと結果で比べる")
+    mle.add_argument("--raw", default=None)
+    mlr = sub.add_parser("rtm-compare", help="レースタイムモニターの予想（DEEP・NORMAL・裏の予想）とMINAMOを同じレースで比べる")
+    mlr.add_argument("--raw", default=None)
+    mlr.add_argument("--data", default=None, help="MINAMOのレースのJSONの場所（既定 web/data）")
     sub.add_parser("rebuild", help="保存済みのレースから日ごとの一覧と成績を作り直す")
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
@@ -73,6 +97,59 @@ def main() -> None:
         else:
             meta = train.run(raw, live.ML_DIR, test_days=args.test_days)
             print(train.summary_ja(meta))
+    elif args.cmd == "ml-series":
+        from .ml import live, series
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        print(f"{series.run(raw)} days fetched")
+    elif args.cmd == "formation":
+        from .ml import formation_table, live
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        if args.show:
+            data = json.loads((live.ML_DIR / "formation.json").read_text(encoding="utf-8"))
+        else:
+            data = formation_table.build(raw, live.ML_DIR)
+        print(f"{data['meta']['races']} races {data['meta']['data_range']} {data['meta'].get('by_category', '')}")
+        if args.venue:
+            print(formation_table.format_table(data, args.venue.zfill(2), args.category))
+    elif args.cmd == "wind-table":
+        from .ml import live, wind_table
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        if args.check:  # 先に向きを確かめ、公式サイトと合わなければ表を作らない（作ると当日の予想に使われるため）
+            from .fetcher import Fetcher
+
+            rows = wind_table.check_icons(raw, Fetcher(), per_venue=args.check)
+            print(wind_table.format_check(rows))
+            if not wind_table.check_ok(rows):
+                print("向きが公式サイトと合わないので、表は作りません")
+                return
+        if args.show:
+            data = json.loads((live.ML_DIR / wind_table.OUT_NAME).read_text(encoding="utf-8"))
+        else:
+            data = wind_table.build(raw, live.ML_DIR)
+        print(wind_table.report(data))
+        if args.venue:
+            print(wind_table.detail(data, args.venue.zfill(2)))
+    elif args.cmd == "venue-check":
+        from .ml import live, venue_check
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        print(venue_check.build(raw, args.venue))
+    elif args.cmd == "odds-check":
+        from .ml import live, odds_history
+
+        print(odds_history.build(Path(args.raw) if args.raw else live.ML_DIR / "raw"))
+    elif args.cmd == "ev-check":
+        from .ml import ev_check, live
+
+        print(ev_check.build(live.ML_DIR, Path(args.raw) if args.raw else live.ML_DIR / "raw"))
+    elif args.cmd == "rtm-compare":
+        from .ml import live, rtm_compare
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        print(rtm_compare.build(raw, Path(args.data) if args.data else store.DATA_DIR))
     elif args.cmd == "rebuild":
         print(f"作り直した日数: {store.rebuild_days()}")
     elif args.cmd == "serve":

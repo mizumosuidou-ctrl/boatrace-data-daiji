@@ -6,6 +6,7 @@ tick       常時：締切30分前から直前情報・オッズを取り直し�
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -28,6 +29,10 @@ STATE_DIR = Path(os.environ.get("MINAMO_STATE_DIR", Path(__file__).resolve().par
 PRE_WINDOW = timedelta(minutes=int(os.environ.get("MINAMO_PRE_WINDOW_MIN", "30")))
 BEFORE_REFRESH = timedelta(minutes=int(os.environ.get("MINAMO_BEFORE_REFRESH_MIN", "4")))
 RESULT_DELAY = timedelta(minutes=int(os.environ.get("MINAMO_RESULT_DELAY_MIN", "6")))
+# 結果の取り込み：最初の20回は毎分、そのあとは5分おきに、締切から12時間まで取り直す（あきらめない）
+RESULT_FAST_TRIES = 20
+RESULT_SLOW_EVERY = timedelta(minutes=5)
+RESULT_GIVE_UP = timedelta(hours=12)
 ORIG_TRIES = 4  # オリジナル展示を場のサイトに取りに行く回数（展示後、数分おき）
 AI_EARLY = os.environ.get("MINAMO_AI_EARLY", "0") == "1"  # 出走表段階でもClaudeを呼ぶか
 
@@ -63,6 +68,7 @@ class Pipeline:
         self.fetcher = fetcher or Fetcher()
         self.ai_enabled = ai_enabled
         self.racetimes = racetime.RaceTimes(self.fetcher, STATE_DIR, self._load)
+        self._formations = None
 
     # ---- state files
     def _state_path(self, date: str, name: str) -> Path:
@@ -84,6 +90,7 @@ class Pipeline:
         if not st:
             return None
         card = _card_from(st["card"])
+        card.day_label = vday.day_label if vday else ""  # 予想の材料（節の初日・最終日）
         before = _before_from(st.get("before"))
         odds = st.get("odds") or None
         result = _result_from(st.get("result"))
@@ -94,7 +101,10 @@ class Pipeline:
             st["ai"] = ai
             st["ai_stage"] = "card"
             self._save(date, f"{jcd}-{rno:02d}", st)
-        payload = store.build_race(card, before, odds, pred, ai, result, vday)
+        ev = (st.get("ev_pick") or {}).get("combos")
+        payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev)
+        payload["odds2"] = st.get("odds2") or {}
+        payload["formation"] = self._formation(card, pred, vday)
         store.write_json(store.race_path(date, jcd, rno), payload)
         return payload
 
@@ -104,13 +114,20 @@ class Pipeline:
         self._save(date, "venues", {"venues": [asdict(v) for v in vdays]})
         log.info("%s: %d venues", date, len(vdays))
         for vd in vdays:
-            rt = None
+            rt, rt_tried = None, False  # 失敗しても1場につき1回だけ試す
             for rno in range(1, 13):
                 name = f"{vd.jcd}-{rno:02d}"
-                if self._load(date, name):
+                saved = self._load(date, name)
+                if saved:
+                    # レースタイムを取る前（古いプログラムや取得失敗）に保存した出走表には、ここで足す
+                    if "racetime" not in saved["card"] and not saved.get("result"):
+                        if not rt_tried:
+                            rt, rt_tried = self._racetime(date, vd), True
+                        if rt is not None:
+                            saved["card"]["racetime"] = rt
+                            self._save(date, name, saved)
+                            self.publish(date, vd.jcd, rno, vd)
                     continue
-                if rt is None:
-                    rt = self._racetime(date, vd)
                 try:
                     card = parsers.parse_racelist(self.fetcher.racelist(date, vd.jcd, rno), date, vd.jcd, rno)
                 except requests.RequestException as exc:
@@ -121,8 +138,13 @@ class Pipeline:
                     continue
                 if not vd.title:
                     vd.title = card.title
-                card.racetime = rt
-                self._save(date, name, {"card": asdict(card)})
+                if not rt_tried:
+                    rt, rt_tried = self._racetime(date, vd), True
+                card.racetime = rt or {}
+                saved = asdict(card)
+                if rt is None:
+                    del saved["racetime"]  # 取れなかった：次の sync で取り直す
+                self._save(date, name, {"card": saved})
                 self.publish(date, vd.jcd, rno, vd)
         self._save(date, "venues", {"venues": [asdict(v) for v in vdays]})
         for vd in vdays:
@@ -145,13 +167,13 @@ class Pipeline:
             store.write_json(path, swaps)
             log.info("motor swap detected: %s %s", jcd, date)
 
-    def _racetime(self, date: str, vd: VenueDay) -> dict:
-        """節の前日までのレースタイム。取れなくても予想は続ける。"""
+    def _racetime(self, date: str, vd: VenueDay) -> Optional[dict]:
+        """節の前日までのレースタイム。取れなくても予想は続ける（そのときは None）。"""
         try:
             return self.racetimes.table(date, vd.jcd, vd.day_label)
         except Exception as exc:  # noqa: BLE001
             log.warning("racetime %s %s: %s", date, vd.jcd, exc)
-            return {}
+            return None
 
     # ---- per-minute tick
     def tick(self, date: str, now: Optional[datetime] = None) -> int:
@@ -170,8 +192,8 @@ class Pipeline:
                 hh, mm = map(int, card["deadline"].split(":"))
                 deadline = datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST)
                 try:
-                    if now >= deadline + RESULT_DELAY:
-                        if self._settle(date, vd, rno, st):
+                    if deadline + RESULT_DELAY <= now <= deadline + RESULT_GIVE_UP:
+                        if self._settle(date, vd, rno, st, now):
                             changed += 1
                     elif deadline - PRE_WINDOW <= now < deadline + timedelta(minutes=1):
                         last = st.get("before_at")
@@ -187,13 +209,22 @@ class Pipeline:
     def _refresh(self, date: str, vd: VenueDay, rno: int, st: dict, now: datetime) -> None:
         before = parsers.parse_beforeinfo(self.fetcher.beforeinfo(date, vd.jcd, rno))
         odds = parsers.parse_odds3t(self.fetcher.odds3t(date, vd.jcd, rno))
+        odds2 = self._odds2(date, vd.jcd, rno)
         card = _card_from(st["card"])
+        card.day_label = vd.day_label
+        self._log_odds(date, vd.jcd, rno, card.deadline, now, "pre", odds, odds2)
         new_orig = before.complete and self._original(date, vd.jcd, rno, st, card, now)
         for b in before.entries:
             o = (st.get("orig") or {}).get(str(b.boat)) or {}
             b.lap_time, b.turn_time, b.straight_time = o.get("lap_time"), o.get("turn_time"), o.get("straight_time")
         st["before"] = asdict(before)
+        # 試験中：オッズで絞った買い目。締切前のオッズで決めた組だけを残す（締切後は上書きしない）
+        if odds and card.deadline:
+            hh, mm = map(int, card.deadline.split(":"))
+            if now < datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST):
+                st["ev_pick"] = {"combos": store.ev_picks(predict(card, before, odds).trifecta, odds), "at": now.isoformat()}
         st["odds"] = odds or st.get("odds")
+        st["odds2"] = odds2 or st.get("odds2")
         st["before_at"] = now.isoformat()
         if before.complete and (st.get("ai_stage") != "exhibition" or new_orig):
             pred = predict(card, before, odds or None)
@@ -201,6 +232,49 @@ class Pipeline:
             st["ai_stage"] = "exhibition"
         self._save(date, f"{vd.jcd}-{rno:02d}", st)
         self.publish(date, vd.jcd, rno, vd)
+
+    def _formation(self, card: RaceCard, pred, vday: Optional[VenueDay]) -> Optional[dict]:
+        """スタート隊形トゥエルブと、その場・種類・隊形の過去成績（表が無ければ None）。"""
+        try:
+            if self._formations is None:
+                from .ml import formation_table, live
+
+                self._formations = formation_table.LiveTables(live.ML_DIR)
+            ft = self._formations
+            # その日のその場で、全員女子のレースがどれだけあるか（ダブル優勝戦の見分けに使う）
+            races = [self._load(card.date, f"{card.jcd}-{r:02d}") for r in range(1, 13)]
+            cards = [x["card"] for x in races if x and x.get("card")]
+            share = sum(ft.is_female_race(e["toban"] for e in c["entries"] if not e.get("absent")) for c in cards) / len(cards) if cards else None
+            return ft.info(
+                card.jcd, {e.boat: e.toban for e in card.entries if not e.absent}, {b.boat: b.course for b in pred.boats},
+                card.title or (vday.title if vday else ""), vday.grade if vday else None, share,
+            )
+        except ImportError:
+            return None
+
+    def _odds2(self, date: str, jcd: str, rno: int) -> dict[str, float]:
+        """2連単オッズ。取れなくても予想は続ける。"""
+        try:
+            return parsers.parse_odds2t(self.fetcher.odds2tf(date, jcd, rno))
+        except requests.RequestException as exc:
+            log.warning("odds2tf %s %s %dR: %s", date, jcd, rno, exc)
+            return {}
+
+    def _log_odds(self, date: str, jcd: str, rno: int, deadline: Optional[str], now: datetime, kind: str,
+                  t3: dict, t2: dict) -> None:
+        """オッズ履歴を var/state/odds/{date}.jsonl に1行ずつ足す（締切まで何分か付き）。展開単位の補正を作るための材料。"""
+        if not t3 and not t2:
+            return
+        mins = None
+        if deadline:
+            hh, mm = map(int, deadline.split(":"))
+            dl = datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST)
+            mins = round((dl - now).total_seconds() / 60, 1)
+        row = {"race": f"{date}-{jcd}-{rno:02d}", "at": now.isoformat(timespec="seconds"), "min": mins, "kind": kind, "t2": t2, "t3": t3}
+        path = STATE_DIR / "odds" / f"{date}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
 
     def _original(self, date: str, jcd: str, rno: int, st: dict, card: RaceCard, now: datetime) -> bool:
         """場の公式サイトからオリジナル展示（一周・まわり足・直線）を取る。新しく取れたら True。"""
@@ -222,14 +296,24 @@ class Pipeline:
         st["orig"] = {str(b): v for b, v in got.items()}
         return True
 
-    def _settle(self, date: str, vd: VenueDay, rno: int, st: dict) -> bool:
+    def _settle(self, date: str, vd: VenueDay, rno: int, st: dict, now: Optional[datetime] = None) -> bool:
+        now = now or store.now_jst()
         tries = st.get("result_tries", 0)
-        if tries >= 20:
+        last = st.get("result_at")
+        if tries >= RESULT_FAST_TRIES and last and now - datetime.fromisoformat(last) < RESULT_SLOW_EVERY:
             return False
+        st["result_at"] = now.isoformat()
         result = parsers.parse_result(self.fetcher.result(date, vd.jcd, rno))
         st["result_tries"] = tries + 1
         if result.cancelled or (result.trifecta and len(result.rows) >= 3):
             st["result"] = asdict(result)
+            if not result.cancelled:  # 確定オッズも記録しておく（オッズ履歴の最後の1枚）
+                try:
+                    final3 = parsers.parse_odds3t(self.fetcher.odds3t(date, vd.jcd, rno))
+                except requests.RequestException as exc:
+                    log.warning("final odds %s %s %dR: %s", date, vd.jcd, rno, exc)
+                    final3 = {}
+                self._log_odds(date, vd.jcd, rno, st["card"].get("deadline"), store.now_jst(), "final", final3, self._odds2(date, vd.jcd, rno))
             self._save(date, f"{vd.jcd}-{rno:02d}", st)
             self.publish(date, vd.jcd, rno, vd)
             return True
