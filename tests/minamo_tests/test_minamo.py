@@ -568,3 +568,31 @@ def test_place_models_change_second_and_third(monkeypatch):
     assert second(mixed) > second(plain)
     assert sum(v for _, v in mixed.trifecta) == pytest.approx(1.0)
     assert [b.win for b in mixed.boats] == pytest.approx([b.win for b in plain.boats])
+
+
+def test_facts_backfill_adds_days_after_the_database(tmp_path):
+    """データベースの実績が止まった次の日から、公式サイトの結果・出走表・直前情報で実績・展示・風を足す。"""
+    import pandas as pd
+
+    from minamo.ml import dataset as ds
+    from minamo.ml import facts_backfill as fb
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pd.DataFrame([{"race_date": "2026-09-30", "venue": "12", "race_no": 1, "lane": b, "course": b, "toban": f"40{b:02d}",
+                   "st": "0.15", "finish": b, "updated_at": "x"} for b in range(1, 7)]).to_csv(raw / "facts.csv", index=False)
+    assert fb.last_fact_date(raw) == "20260930"
+    assert fb.race_time_ms("1'49\"8") == 109800 and fb.race_time_ms("") is None
+    fetcher = FakeFetcher()
+    assert fb.run(raw, date_to="20261001", fetcher=fetcher) == 1
+    assert [c[0] for c in fetcher.calls[:4]] == ["index", "result", "racelist", "beforeinfo"]
+    # 取り終えた日はとばす
+    n = len(fetcher.calls)
+    assert fb.run(raw, date_to="20261001", fetcher=fetcher) == 0 and len(fetcher.calls) == n
+    facts = ds.load_facts(raw / "facts.csv")
+    new = facts[facts["race_date"].astype(str) == "20261001"]
+    assert len(new) >= 4 and new["finish"].notna().any() and new["start_rank"].notna().all()
+    ex = pd.read_csv(raw / "exhibition_backfill.csv", dtype=str)
+    assert (ex["race_date"] == "20261001").any()
+    w = ds.load_weather(raw / "weather.csv")
+    assert len(w) >= 1 and w["wind_tail"].notna().any()
