@@ -144,7 +144,6 @@ def main() -> None:
 
         print(ev_check.build(live.ML_DIR, Path(args.raw) if args.raw else live.ML_DIR / "raw"))
     elif args.cmd == "rtm-compare":
-        from . import store
         from .ml import live, rtm_compare
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
