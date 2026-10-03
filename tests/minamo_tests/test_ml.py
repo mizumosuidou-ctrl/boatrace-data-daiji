@@ -882,3 +882,24 @@ def test_profile_stats_windows_and_f_hold():
     assert a["sr"] == pytest.approx(5 / 3, abs=1e-2)
     f1, f2 = row("f", 1), row("f", 2)
     assert f1["n"] == 1 and f1["win"] == 1.0 and f2["n"] == 1 and f2["top3"] == 0.0
+
+
+def test_racetime_eval_by_race_rank_and_series_band():
+    """レースタイムの6艇内の順位・節内の順位の帯ごとに、同じコースの平均と比べた3連対率の差を出す。"""
+    import numpy as np
+
+    from minamo.ml import dataset as ds
+
+    rng = np.random.default_rng(0)
+    n = 6000
+    rank = rng.integers(1, 7, n)
+    course = rng.integers(1, 7, n)
+    # タイムが速いほど3着以内に入りやすい
+    finish = np.where(rng.random(n) < 0.75 - 0.08 * rank, rng.integers(1, 4, n), rng.integers(4, 7, n))
+    rows = pd.DataFrame({"rt_rank_race": rank.astype(float), "rt_series_pct": rank / 6 - 0.1, "finish": finish,
+                         "course": course, "race_date": "20260901"})
+    ev = ds.racetime_eval(rows)
+    assert ev["n"] == n and ev["rank"]["1"]["top3_pt"] > 0 > ev["rank"]["6"]["top3_pt"]
+    assert ev["rank"]["1"]["top3"] > ev["rank"]["6"]["top3"] and "1-0" in ev["cell"]
+    assert ds.rt_band(0.05) == 0 and ds.rt_band(0.2) == 1 and ds.rt_band(1.0) == 3 and ds.rt_band(None) is None
+    assert ds.racetime_eval(rows.head(10)) == {}

@@ -697,6 +697,49 @@ def racetime_stats(facts: pd.DataFrame) -> pd.DataFrame:
     return grid[["venue", "date", "toban", "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n"]]
 
 
+RT_BANDS = [(0.0, 0.1, "上位10%"), (0.1, 0.3, "10〜30%"), (0.3, 0.6, "30〜60%"), (0.6, 9.0, "60%より下")]
+
+
+def rt_band(pct) -> Optional[int]:
+    """節内の順位÷人数 → 帯の番号（0＝上位10%）。分からなければ None。"""
+    if pct is None or pct != pct:
+        return None
+    return next(i for i, (lo, hi, _) in enumerate(RT_BANDS) if lo < pct <= hi or (i == 0 and pct <= hi))
+
+
+def racetime_eval(rows: pd.DataFrame) -> dict:
+    """節間タイムの「6艇内の順位」「節内の順位の帯」ごとに、1着率・3連対率と、同じコースの平均との差（ポイント）。
+    画面の「タイム評価」に使う（2日目以降のレースだけ）。"""
+    need = {"rt_rank_race", "rt_series_pct", "finish", "course", "race_date"}
+    if not need <= set(rows.columns):
+        return {}
+    d = rows.loc[rows["rt_rank_race"].between(1, 6) & rows["rt_series_pct"].notna(), list(need)]
+    if len(d) < 1000:
+        return {}
+    win = (d["finish"] == 1).astype(float)
+    top3 = (d["finish"] <= 3).astype(float)
+    c = d["course"].astype(int)
+    dw, d3 = win - win.groupby(c).transform("mean"), top3 - top3.groupby(c).transform("mean")
+    rank = d["rt_rank_race"].astype(int)
+    band = d["rt_series_pct"].map(rt_band)
+
+    def summ(mask) -> dict:
+        n = int(mask.sum())
+        return {"n": n, "win": round(float(win[mask].mean()), 3), "top3": round(float(top3[mask].mean()), 3),
+                "win_pt": round(100 * float(dw[mask].mean()), 1), "top3_pt": round(100 * float(d3[mask].mean()), 1)}
+    out = {"n": int(len(d)), "from": str(d["race_date"].min()), "to": str(d["race_date"].max()),
+           "bands": [t for _, _, t in RT_BANDS], "rank": {}, "band": {}, "cell": {}}
+    for r in range(1, 7):
+        out["rank"][str(r)] = summ(rank == r)
+        for b in range(len(RT_BANDS)):
+            m = (rank == r) & (band == b)
+            if m.sum() >= 200:
+                out["cell"][f"{r}-{b}"] = summ(m)
+    for b in range(len(RT_BANDS)):
+        out["band"][str(b)] = summ(band == b)
+    return out
+
+
 def add_racetime(df: pd.DataFrame) -> pd.DataFrame:
     """節間タイムを、レース内の比較（6人中の順位・ベストとの差）と上位15位以内に直す。"""
     for c in ("rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n"):

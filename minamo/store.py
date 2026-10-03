@@ -164,6 +164,7 @@ def build_race(
             "motor_kp": kp.get(e.boat),  # モーター貢献P（MINAMO計算）
             "rt_best": r[0] / 1000 if r else None,  # 節間ベスト（秒）
             "rt_series_rank": r[2] if r else None,  # 節の出場選手の中での順位
+            "rt_series_n": r[3] if r else None,  # 順位の付いた人数
             "exhibition_time": b.exhibition_time if b else None,
             "tilt": b.tilt if b else None,
             "ex_course": b.course if b else None,

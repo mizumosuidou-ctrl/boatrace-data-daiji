@@ -103,6 +103,9 @@ def main() -> None:
             print(f"synthetic CSV written to {raw}")
         else:
             meta = train.run(raw, live.ML_DIR, test_days=args.test_days)
+            # 画面が読む「データの見方」（レースタイムの順位ごとの過去の成績など）
+            store.write_json(store.DATA_DIR / "insights.json", {"racetime": meta.get("racetime_eval") or {},
+                                                                 "updated_at": meta.get("trained_at")})
             print(train.summary_ja(meta))
     elif args.cmd == "ml-series":
         from .ml import live, series

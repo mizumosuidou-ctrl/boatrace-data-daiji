@@ -550,6 +550,8 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .sheet td.name { font-family: var(--f-sans); font-weight: 700; }
 .sheet tr:last-child td { border-bottom: 0; }
 .sheet td.r1 { color: var(--accent); font-weight: 700; }
+.sheet td.pos { color: var(--hit); }
+.sheet td.neg { color: var(--miss); }
 .sheet td.r1::after { content: "●"; font-size: 7px; vertical-align: 3px; margin-left: 4px; }
 .sheet td.r6 { color: var(--muted); }
 .sheet td.f { color: var(--miss); font-weight: 700; }

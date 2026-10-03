@@ -339,6 +339,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         "metrics": metrics,
         "importance": {k: round(float(v), 1) for k, v in imp.head(15).items()},
         "adopt": bool(adopt),
+        "racetime_eval": ds.racetime_eval(rows),  # 画面の「タイム評価」（表示だけ）
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
