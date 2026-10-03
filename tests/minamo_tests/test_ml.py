@@ -141,6 +141,12 @@ def test_live_prediction_through_engine(trained, monkeypatch):
     assert set(st) >= {"n_c", "win_c", "top2_c", "top3_c", "sr_c", "top_st", "wall", "wall_n"}
     assert any(b.stats.get("n_c") and b.stats.get("win_c") is not None and 1 <= b.stats["sr_c"] <= 6 for b in pred.boats)
     assert pred.boats[0].stats.get("wall") is None
+    # データ欄：選手×進入コースの期間別（半年・1年・全期間）。全期間の出走は半年以上
+    prof = pred.boats[0].stats["profile"]
+    assert {"6m", "1y", "all"} <= set(prof) and prof["all"]["n"] >= prof["1y"]["n"] >= prof["6m"]["n"]
+    assert 0 <= prof["all"]["win"] <= prof["all"]["top2"] <= prof["all"]["top3"] <= 1 and 1 <= prof["all"]["sr"] <= 6
+    prof_t = pd.read_csv(out / "stats_profile.csv.gz", dtype={"toban": str})
+    assert set(prof_t["scope"]) >= {"6m", "1y", "all"}
 
     before = BeforeInfo(entries=[BeforeEntry(boat=i + 1, exhibition_time=6.8, course=i + 1, start_st=0.15) for i in range(6)])
     assert predict(card, before).engine == "lightgbm-post"
@@ -854,3 +860,25 @@ def test_day_flags(tmp_path):
     out = ds.add_day_flags(rows, tmp_path)
     assert list(out["day_first"].iloc[:2]) == [1.0, 0.0] and list(out["day_last"].iloc[:2]) == [0.0, 1.0]
     assert math.isnan(out["day_last"].iloc[2])
+
+
+def test_profile_stats_windows_and_f_hold():
+    """データ欄：期間（半年・1年・全期間）と、F持ちだったときだけの成績。F持ちはデータベースの F数、無ければ直近のFで決める。"""
+    from minamo.ml import dataset as ds
+
+    d = pd.to_datetime
+    facts = pd.DataFrame({
+        "toban": ["4001"] * 4, "course": [1, 1, 1, 2],
+        "date": [d("2025-01-10"), d("2026-03-01"), d("2026-08-01"), d("2026-08-02")],
+        "finish": [1, 2, 1, 4], "start_rank": [1, 3, 1, 2],
+    })
+    fstate = pd.DataFrame({"toban": ["4001"], "date": [d("2026-08-01")], "f_hold": [1.0]})
+    f_recent = pd.Series([0, 0, 0, 1], index=facts.index)  # 8/2 はデータベースに無い → 直近のFで F持ち
+    t = ds.profile_stats(facts, fstate, f_recent, d("2026-09-11"))
+    row = lambda scope, c: ds.profile_row(t[(t["scope"] == scope) & (t["course"] == c)].iloc[0])  # noqa: E731
+    assert row("all", 1)["n"] == 3 and row("1y", 1)["n"] == 2 and row("6m", 1)["n"] == 1
+    a = row("all", 1)
+    assert a["win"] == pytest.approx(2 / 3, abs=1e-3) and a["top2"] == 1.0 and a["topst"] == pytest.approx(2 / 3, abs=1e-3) and a["topst_win"] == 1.0
+    assert a["sr"] == pytest.approx(5 / 3, abs=1e-2)
+    f1, f2 = row("f", 1), row("f", 2)
+    assert f1["n"] == 1 and f1["win"] == 1.0 and f2["n"] == 1 and f2["top3"] == 0.0

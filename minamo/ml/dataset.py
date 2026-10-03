@@ -588,6 +588,43 @@ def fhold_stats(facts: pd.DataFrame, fstate: pd.DataFrame, next_date: Optional[p
     return asof(daily, ["toban"], ["fh_n", "fh_sum", "nm_n", "nm_sum"], None, next_date), (0.0 if np.isnan(g0) else g0)
 
 
+PROFILE_SCOPES = (("6m", 182), ("1y", 365), ("all", None))  # 画面のデータ欄：半年・1年・全期間（と F持ちのとき）
+
+
+def profile_stats(facts: pd.DataFrame, fstate: pd.DataFrame, f_recent: pd.Series, next_date: pd.Timestamp) -> pd.DataFrame:
+    """画面のデータ欄用：選手×コースの出走・1着・2連対・3連対・スタート順位・トップスタート（とそのときの1着・2連対）。
+    scope は 6m・1y・all（前日までの期間）と f（F持ちだったときだけ。全期間ためていく）。予想には使わない。"""
+    f = facts[["toban", "date", "course", "finish", "start_rank"]].copy()
+    f["course"] = f["course"].astype(int)
+    hold = f[["toban", "date"]].merge(fstate, on=["toban", "date"], how="left")["f_hold"].to_numpy(dtype=float) \
+        if len(fstate) else np.full(len(f), np.nan)
+    f["is_hold"] = np.where(np.isnan(hold), f_recent.to_numpy(dtype=float) >= 1, hold >= 1)
+    sr = f["start_rank"]
+    ok = sr.between(1, 6)
+    top = (sr == 1).astype(float)
+    f = f.assign(n=1.0, win=(f["finish"] == 1).astype(float), top2=(f["finish"] <= 2).astype(float),
+                 top3=(f["finish"] <= 3).astype(float), sr_n=ok.astype(float), sr_sum=sr.where(ok, 0.0).astype(float),
+                 topst=top, topst_win=top * (f["finish"] == 1), topst_top2=top * (f["finish"] <= 2))
+    cols = ["n", "win", "top2", "top3", "sr_n", "sr_sum", "topst", "topst_win", "topst_top2"]
+    parts = []
+    for scope, days in PROFILE_SCOPES:
+        sub = f if days is None else f[f["date"] >= next_date - pd.Timedelta(days=days)]
+        parts.append(sub.groupby(["toban", "course"], as_index=False)[cols].sum().assign(scope=scope))
+    parts.append(f[f["is_hold"]].groupby(["toban", "course"], as_index=False)[cols].sum().assign(scope="f"))
+    out = pd.concat(parts, ignore_index=True)
+    out[cols] = out[cols].astype("int32")
+    return out
+
+
+def profile_row(r) -> dict:
+    """profile_stats の1行 → 画面に出す数字（率は小数3桁、平均スタート順位は2桁）。"""
+    n, srn, tn = int(r["n"]), int(r["sr_n"]), int(r["topst"])
+    rate = lambda a, b: round(float(a) / b, 3) if b else None  # noqa: E731
+    return {"n": n, "win": rate(r["win"], n), "top2": rate(r["top2"], n), "top3": rate(r["top3"], n),
+            "sr": round(float(r["sr_sum"]) / srn, 2) if srn else None, "topst": rate(tn, srn), "topst_n": tn,
+            "topst_win": rate(r["topst_win"], tn), "topst_top2": rate(r["topst_top2"], tn)}
+
+
 def wall_stats(facts: pd.DataFrame, next_date: Optional[pd.Timestamp] = None) -> pd.DataFrame:
     """2〜6コースに入ったレース数と、そのとき1コースが1着だった数（選手×コース、前日まで）。"""
     c1 = facts.loc[(facts["course"] == 1) & (facts["finish"] == 1), "race_id"]
@@ -791,6 +828,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     fstate = load_f_state(raw_dir / "f_state.csv")
     extra["fhold"], priors["fgap"] = fhold_stats(facts, fstate, next_date=nxt)
     extra["wall"] = wall_stats(facts, next_date=nxt)
+    profile = profile_stats(facts, fstate, f_recent, nxt)
     rt = racetime_stats(facts)
 
     rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank", "motor_no"]].copy()
@@ -828,6 +866,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
             rows[c] = rows[c].astype("float32")
     gc.collect()
     live_tables = {k: t[t["date"] == nxt].drop(columns=["date"]) for k, t in extra.items()}
+    live_tables["profile"] = profile  # 画面のデータ欄用（期間別・F持ちのとき）
     priors["motor_swaps"] = swaps
     return rows, priors, pc_tot, pa_tot, live_tables
 
