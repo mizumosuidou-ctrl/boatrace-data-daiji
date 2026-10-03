@@ -633,6 +633,16 @@ def test_venue_check_report(tmp_path):
     assert "データなし" in venue_check.build(tmp_path, "99")
 
 
+def test_venue_check_more_sections(tmp_path):
+    """レースが多いときに出る項目（④の攻めトリガー・壁・尼崎の確認）。"""
+    from minamo.ml import synthetic, venue_check
+
+    synthetic.generate(tmp_path, days=200, races_per_day=48, n_racers=80)
+    text = venue_check.build(tmp_path, "3")
+    assert "0.3以上早い" in text and "21. 壁" in text and "22. ①の平均スタート順位" in text
+    assert "23. ②の選手の2コース1着率" in text and "24. ②の平均スタート順位" in text and "25. ②の展示" in text
+
+
 def test_venue_check_class_ranks_and_conditions():
     """級別×コースの1位/2位の差と、雨のときのコース別成績が表に出る。"""
     import pandas as pd
