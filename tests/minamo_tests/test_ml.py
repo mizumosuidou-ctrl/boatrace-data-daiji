@@ -752,8 +752,10 @@ def test_rtm_compare_report(tmp_path):
         p = data / "20261002" / f"24-{rno:02d}.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps({"date": "20261002", "jcd": "24", "rno": rno, "ai": {"picks": [{"combo": c} for c in picks]},
-                                 "prediction": {"trifecta": [{"combo": c} for c in picks]},
-                                 "result": {"trifecta": tri, "payout": pay, "cancelled": False}}), encoding="utf-8")
+                                 "prediction": {"trifecta": [{"combo": c} for c in picks],
+                                                "escape": {"boat": 1, "label": "逃げ濃厚" if rno == 4 else "五分"}},
+                                 "result": {"trifecta": tri, "payout": pay, "cancelled": False,
+                                            "order": [int(x) for x in tri.split("-")]}}), encoding="utf-8")
     rtm = rtm_compare.load_rtm(raw)
     assert rtm["DEEP（場別）"]["20261002-24-03"] == ["135", "315"]
     assert rtm["DEEP（場別）＋追加"]["20261002-24-03"] == ["135", "315", "153", "513"]
@@ -762,6 +764,7 @@ def test_rtm_compare_report(tmp_path):
     text = rtm_compare.build(raw, data)
     assert "■ DEEP（場別）  1R" in text and "■ DEEP（場別）＋追加  1R" in text and "万舟 1" in text
     assert "■ NORMAL  1R" in text and "■ time（shadow）本線5点  1R" in text
+    assert "3. MINAMOの逃げ判定ごと" in text and "■ 逃げ濃厚  1R  ①1着 100.0%" in text and "■ 五分  1R" in text
 
 
 def test_ev_check_report(tmp_path):
