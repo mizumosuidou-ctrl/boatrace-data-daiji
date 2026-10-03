@@ -35,6 +35,7 @@
   31. 周回・回り足が上位の艇（3着機力救済候補）の、ちょうど3着の率と3着以内率
   32. ①が直線と回り足の両方で1位のときの、①の1着率
   33. ⑤の平均スタート順位（遅い・それ以外）×展示系の上位があるか、ごとの⑤の1着率
+  34. ③の選手の3コース1着率（全場・直近1年）ごとの、⑤の2着率・2連対率と③の1着率
 """
 from __future__ import annotations
 
@@ -291,6 +292,7 @@ def build(raw: Path, venue: str) -> str:
         lines.extend(_naruto(part, pers, exr, orig, piv if len(ok) else None))
         lines.extend(_first_day_ex(part, exr, orig))
         lines.extend(_kojima(part, exr, orig, piv if len(ok) else None))
+        lines.extend(_three_five(part, pers))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -553,6 +555,25 @@ def _kojima(part: pd.DataFrame, exr: pd.DataFrame, orig: pd.DataFrame, piv) -> l
                 if len(g):
                     cells.append(f"{tag} {100 * (g['finish'] == 1).mean():.1f}/{100 * (g['finish'] <= 2).mean():.1f}({len(g)})")
             out.append(f"  {wind_table._pad(st_tag, 18)}" + "  ".join(cells))
+    return out
+
+
+def _three_five(part: pd.DataFrame, pers: pd.DataFrame) -> list[str]:
+    """34：③が攻撃型（3コース1着率が高い）なら⑤が2着に来るか。"""
+    three = part[part["course"] == 3][["race_id", "toban", "course", "date"]].merge(
+        pers[["toban", "course", "date", "win_rate", "t3_n"]], on=["toban", "course", "date"], how="inner")
+    three = three[three["t3_n"] >= 10].set_index("race_id")["win_rate"]
+    fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
+    ids = [r for r in three.index if r in fin.index]
+    if len(ids) < 50 or not all(c in fin for c in (3, 5)):
+        return []
+    w, f = three.loc[ids], fin.loc[ids]
+    out = ["34. ③の選手の3コース1着率（全場・直近1年・10走以上）→ ③1着 ／ ⑤2着 ／ ⑤2連対（%）（レース数）"]
+    for lo, hi, tag in ((0, 0.1, "10%未満"), (0.1, 0.2, "10〜20%"), (0.2, 0.3, "20〜30%"), (0.3, 1.01, "30%以上")):
+        m = (w >= lo) & (w < hi)
+        if m.sum():
+            out.append(f"  ③が{wind_table._pad(tag, 10)}③1着 {100 * (f.loc[m, 3] == 1).mean():5.1f}  ⑤2着 {100 * (f.loc[m, 5] == 2).mean():5.1f}"
+                       f"  ⑤2連対 {100 * (f.loc[m, 5] <= 2).mean():5.1f}  ({int(m.sum())}R)")
     return out
 
 
