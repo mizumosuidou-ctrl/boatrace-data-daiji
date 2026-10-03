@@ -42,6 +42,11 @@
   38. ①の選手の当地の1コース1着率（当地・直近1年・4走以上）ごとの①の1着率と、1コース1着率70%以上×風4m以上
   39. ③の平均スタート順位がレースの中で5位以下（遅い）のときの、③〜⑥の1着率・2連対率
   40. 展示タイム1位が2位より0.06秒以上速いとき／それ未満のときの、コース別1着率
+  41. 他艇①補正：②〜⑥の選手がそのコースに入ったときの①の1着率が低い艇の減点の合計ごとの、①の1着率
+  42. レース番号（1〜4R・5〜8R・9〜12R）ごとの、コース別1着率・展示タイム1位の1着率・④⑤⑥の本番スタート順位
+  43. 枠なりのレースと進入が変わったレースの、コース別1着率
+  44. 外の艇（④〜⑥）が周回2位以内＋直線1位のときの、3着以内率・ちょうど3着の率
+  45. 5分前オッズ（3連単から換算した2連単）で 1-2・1-3 が5.0倍未満の数ごとの、①の1着率
 """
 from __future__ import annotations
 
@@ -53,6 +58,7 @@ import pandas as pd
 from ..venues import VENUES
 from . import dataset as ds
 from . import formation_table as ft
+from . import odds_history
 from . import series as series_mod
 from . import wind_table
 from .. import wind as wind_mod
@@ -117,7 +123,8 @@ def build(raw: Path, venue: str) -> str:
     exr = _ex_ranks(raw)
     waves = ds.load_weather(raw / "weather.csv")[["race_id", "wave_cm"]].dropna()
     rain = _rain(raw)
-    wall1 = _wall_rates(allf)  # ②〜④の選手がそのコースに入ったときの①の逃げ率（全場・直近1年）
+    wall1 = _wall_rates(allf)  # ②〜⑥の選手がそのコースに入ったときの①の逃げ率（全場・直近1年）
+    odds = _odds_12_13(raw, venue)
     pers = _course_top3(allf)  # 選手のコース別成績（全場・直近1年）
     lines = [f"{name}：{df['date'].min().date()}〜{df['date'].max().date()}  {df['race_id'].nunique():,}レース"
              "（女子＝全員女子のレース）", "数字は1〜6コースの1着率（%）"]
@@ -301,6 +308,7 @@ def build(raw: Path, venue: str) -> str:
         lines.extend(_three_five(part, pers))
         lines.extend(_tokuyama(part, pers, piv if len(ok) else None))
         lines.extend(_shimonoseki(part, wall1, top3, pers, weather, exr))
+        lines.extend(_wakamatsu(part, wall1, exr, orig, odds))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -362,9 +370,9 @@ def _four_vs_three(part: pd.DataFrame, exr: pd.DataFrame, piv) -> list[str]:
 
 
 def _wall_rates(allf: pd.DataFrame) -> pd.DataFrame:
-    """（登番, コース, 日付）ごとに、その選手がそのコース（②〜④）に入ったレース（その日より前の直近1年・全場）で①が1着だった率。"""
+    """（登番, コース, 日付）ごとに、その選手がそのコース（②〜⑥）に入ったレース（その日より前の直近1年・全場）で①が1着だった率。"""
     c1 = allf[allf["course"] == 1].drop_duplicates("race_id").set_index("race_id")["finish"]
-    d = allf[allf["course"].between(2, 4)][["race_id", "toban", "course", "date"]].copy()
+    d = allf[allf["course"].between(2, 6)][["race_id", "toban", "course", "date"]].copy()
     d = d[d["race_id"].map(c1).notna()]
     d["w"] = (d["race_id"].map(c1) == 1).astype(float)
     daily = d.groupby(["toban", "course", "date"], as_index=False)["w"].agg(s="sum", n="count")
@@ -699,6 +707,108 @@ def _shimonoseki(part: pd.DataFrame, wall: pd.DataFrame, local: pd.DataFrame, pe
     return out
 
 
+def _odds_12_13(raw: Path, venue: str) -> pd.Series:
+    """レースごとに、5分前の3連単オッズから換算した2連単 1-2・1-3 のうち5.0倍未満の数（その場だけ）。"""
+    path = Path(raw) / "odds_hist.csv"
+    if not path.exists():
+        return pd.Series(dtype=float)
+    parts = []
+    for chunk in pd.read_csv(path, dtype=str, chunksize=50_000,
+                             usecols=lambda c: c in {"race_date", "venue", "race_no", "label", "captured_at", "trifecta"}):
+        chunk = chunk[(chunk["venue"].str.zfill(2) == venue) & (chunk["label"] == "T5")]
+        if len(chunk):
+            parts.append(chunk)
+    if not parts:
+        return pd.Series(dtype=float)
+    d = pd.concat(parts, ignore_index=True)
+    if "captured_at" in d:
+        d = d.sort_values("captured_at", na_position="first")
+    d["race_date"] = d["race_date"].str.replace("-", "", regex=False).str[:8]
+    d["venue"] = venue
+    d["race_no"] = ds._num(d["race_no"])
+    d = d.dropna(subset=["race_date", "race_no"])
+    d["race_id"] = ds._race_id(d)
+    d = d.drop_duplicates("race_id", keep="last")
+    out = {}
+    for rid, text in zip(d["race_id"], d["trifecta"]):
+        o = odds_history._parse(text)
+        if len(o) < 60:
+            continue
+        total = sum(1 / v for v in o.values())
+        cnt = 0
+        for pre in ("1-2-", "1-3-"):
+            p = sum(1 / v for c, v in o.items() if c.startswith(pre)) / total
+            cnt += p > 0 and 0.75 / p < 5.0  # 2連単の払戻率75%で換算
+        out[rid] = cnt
+    return pd.Series(out, dtype=float)
+
+
+def _wakamatsu(part: pd.DataFrame, wall: pd.DataFrame, exr: pd.DataFrame, orig: pd.DataFrame, odds: pd.Series) -> list[str]:
+    """41〜45：他艇①補正、レース番号、進入、外の艇の足、オッズの 1-2・1-3。"""
+    out = []
+    one = part[part["course"] == 1].drop_duplicates("race_id").set_index("race_id")["finish"].dropna()
+    # 41
+    w = part[part["course"].between(2, 6)][["race_id", "toban", "course", "date"]].merge(
+        wall, on=["toban", "course", "date"], how="inner")
+    w = w[w["c1_n"] >= 10].drop_duplicates(["race_id", "course"])
+    w["pen"] = np.select([w["c1_win"] < 0.3, w["c1_win"] < 0.4, w["c1_win"] < 0.5], [1.5, 1.0, 0.5], 0.0)
+    pen = w.groupby("race_id")["pen"].sum()
+    ids = [r for r in pen.index if r in one.index]
+    if len(ids) >= 50:
+        pe, f1 = pen.loc[ids], one.loc[ids]
+        out.append("41. 他艇①補正：②〜⑥の選手がそのコースのときの①の1着率（全場・直近1年・10走以上）"
+                   "40〜50%→-0.5、30〜40%→-1.0、30%未満→-1.5 の合計 → ①1着率（レース数）")
+        for tag, m in (("減点なし", pe == 0), ("-0.5", pe == 0.5), ("-1.0", pe == 1.0), ("-1.5〜-2.0", pe.between(1.5, 2.0)),
+                       ("-2.5以上", pe >= 2.5)):
+            if m.sum():
+                out.append(f"  {wind_table._pad(tag, 12)}①1着 {100 * (f1[m] == 1).mean():5.1f}%  ({int(m.sum())}R)")
+    # 42
+    if "race_no" in part:
+        out.append("42. レース番号ごと → 1〜6コース1着率 ／ 展示タイム1位の1着率 ／ ④⑤⑥の本番スタート順位の平均")
+        x = part.merge(exr[["race_id", "lane", "ex_rank"]], on=["race_id", "lane"], how="left")
+        for lo, hi, tag in ((1, 4, "1〜4R"), (5, 8, "5〜8R"), (9, 12, "9〜12R")):
+            g = x[x["race_no"].between(lo, hi)]
+            if not g["race_id"].nunique():
+                continue
+            e = g.loc[(g["ex_rank"] == 1) & g["finish"].notna(), "finish"]
+            sr = g.loc[g["course"].between(4, 6) & g["start_rank"].between(1, 6), "start_rank"]
+            out.append(f"  {wind_table._pad(tag, 8)}{_rates(g)}  展示1位 {100 * (e == 1).mean():.1f}%"
+                       f"  ④⑤⑥ST {sr.mean():.2f}位")
+    # 43
+    lanes = part.drop_duplicates(["race_id", "lane"])
+    full = lanes.groupby("race_id")["lane"].transform("count") == 6
+    lanes = lanes[full]
+    if lanes["race_id"].nunique() >= 50:
+        waku = (lanes["lane"] == lanes["course"]).groupby(lanes["race_id"]).all()
+        p = part[part["race_id"].isin(waku.index)]
+        m = p["race_id"].map(waku).astype(bool)
+        out.append(f"43. 進入 → 1〜6コース1着率（枠なり {100 * waku.mean():.1f}%）")
+        out.append(f"  {wind_table._pad('枠なり', 16)}{_rates(p[m])}")
+        if (~m).any():
+            out.append(f"  {wind_table._pad('進入が変わった', 16)}{_rates(p[~m])}")
+    # 44
+    br = _boat_ranks(part, exr, orig)
+    o = br[br["lap"].notna() & br["straight"].notna()]
+    if len(o):
+        cells = []
+        for tag, cm in (("⑥", o["course"] == 6), ("④〜⑥", o["course"].between(4, 6))):
+            hit = cm & (o["lap"] <= 2) & (o["straight"] == 1)
+            base = cm & ~hit
+            if hit.sum() >= 10:
+                t = lambda m: f"3着以内 {100 * (o.loc[m, 'finish'] <= 3).mean():.0f}% 3着 {100 * (o.loc[m, 'finish'] == 3).mean():.0f}% ({int(m.sum())})"
+                cells.append(f"  {wind_table._pad(tag, 8)}そのとき {t(hit)}  ふだん {t(base)}")
+        if cells:
+            out.append("44. 外の艇が周回2位以内＋直線1位 → 3着以内率 ／ ちょうど3着（走数）")
+            out.extend(cells)
+    # 45
+    ids = [r for r in odds.index if r in one.index]
+    if len(ids) >= 50:
+        c, f1 = odds.loc[ids], one.loc[ids]
+        out.append("45. 5分前オッズ（3連単から換算した2連単）で 1-2・1-3 のうち5.0倍未満の数 → ①1着率（レース数）")
+        out.append("  " + "  ".join(f"{k}つ {100 * (f1[c == k] == 1).mean():.1f}%({int((c == k).sum())})" for k in (0, 1, 2) if (c == k).any()))
+    return out
+
+
 def _rain(raw: Path) -> set:
     """雨・雪のレース（weather.csv の天気）。"""
     path = Path(raw) / "weather.csv"
@@ -732,6 +842,8 @@ def _conditions(part: pd.DataFrame, weather: pd.DataFrame, waves: pd.DataFrame, 
              ("追い風2m以上", (p["category"] == "追い風") & (p["speed"] >= 2)),
              ("追い風6m以上", (p["category"] == "追い風") & (p["speed"] >= 6)),
              ("向かい風6m以上", (p["category"] == "向かい風") & (p["speed"] >= 6)),
+             ("右横風3m以上", (p["category"] == "右横風") & (p["speed"] >= 3)),
+             ("左横風3m以上", (p["category"] == "左横風") & (p["speed"] >= 3)),
              ("波6cm以上", p["wave_cm"] >= 6),
              ("雨・雪", p["race_id"].isin(rain)))
     out = []
@@ -794,6 +906,7 @@ def _combos(br: pd.DataFrame) -> list[str]:
     one = {k: ok[k] == 1 for k in ("ex", "lap", "turn", "straight")}
     combos = (("ふだん（オリ展あり）", ok["race_id"].notna()),
               ("展示1位＋一周1位", one["ex"] & one["lap"]),
+              ("展示1位＋一周2位以内", one["ex"] & (ok["lap"] <= 2)),
               ("展示1位＋直線1位", one["ex"] & one["straight"]),
               ("展示・一周・回り足 全部1位", one["ex"] & one["lap"] & one["turn"]),
               ("展示1位だけ（他は2位以下）", one["ex"] & ~one["lap"] & ~one["turn"] & ~one["straight"]),
