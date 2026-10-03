@@ -10,10 +10,14 @@
   - 期待値（MINAMOの確率×5分前オッズ）が基準以上の組を、確率の高い順に最大6点
   - 確率上位3点＋期待値上位3点
 1点100円。払戻は確定オッズ×100円で数える。
+4. では確率の補正を試す。前半の期間で補正の強さを決め、後半の期間で補正前と同じレースを比べる。
+  - 補正A：MINAMOの3連単確率を p^a にしてレースごとに合計1へ（当たりにくい組を下げる）
+  - 補正B：p^a × 市場（5分前オッズ）の確率^b（MINAMOと市場を合わせる）
 """
 from __future__ import annotations
 
 import json
+from itertools import permutations
 from pathlib import Path
 
 import numpy as np
@@ -117,6 +121,93 @@ def strategies() -> dict:
     }
 
 
+COMBOS = [_key(c) for c in permutations(range(1, 7), 3)]
+GRID_A = np.round(np.arange(0.5, 3.01, 0.1), 2)
+GRID_B = np.round(np.arange(0.0, 1.51, 0.1), 2)
+
+
+def _matrices(races: list[dict]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """MINAMOの確率・市場の確率（5分前オッズの逆数を合計1に）・当たり組の位置。"""
+    p = np.array([[r["probs"].get(c, 0.0) for c in COMBOS] for r in races], dtype=float)
+    inv = np.array([[1 / r["t5"][c] if r["t5"].get(c) else np.nan for c in COMBOS] for r in races], dtype=float)
+    low = np.nanmin(np.where(np.isnan(inv), np.inf, inv), axis=1, keepdims=True)
+    inv = np.where(np.isnan(inv), np.where(np.isfinite(low), low, 1.0), inv)
+    m = inv / inv.sum(axis=1, keepdims=True)
+    hit = np.array([COMBOS.index(r["hit"]) if r["hit"] in COMBOS else -1 for r in races])
+    return np.clip(p, 1e-9, 1), np.clip(m, 1e-9, 1), hit
+
+
+def _calibrated(p: np.ndarray, m: np.ndarray, a: float, b: float) -> np.ndarray:
+    q = np.exp(a * np.log(p) + b * np.log(m))
+    return q / q.sum(axis=1, keepdims=True)
+
+
+def _logloss(q: np.ndarray, hit: np.ndarray) -> float:
+    ok = hit >= 0
+    return float(-np.log(q[ok, hit[ok]]).mean()) if ok.any() else float("nan")
+
+
+def fit_calibration(races: list[dict], market: bool = True) -> tuple[float, float]:
+    """当たり組の確率の対数損失が一番小さくなる a, b（market=False なら b=0）。"""
+    p, m, hit = _matrices(races)
+    best = (float("inf"), 1.0, 0.0)
+    for a in GRID_A:
+        for b in (GRID_B if market else (0.0,)):
+            best = min(best, (_logloss(_calibrated(p, m, a, b), hit), float(a), float(b)))
+    return best[1], best[2]
+
+
+def apply_calibration(races: list[dict], a: float, b: float) -> list[dict]:
+    p, m, _ = _matrices(races)
+    q = _calibrated(p, m, a, b)
+    return [{**r, "probs": dict(zip(COMBOS, row))} for r, row in zip(races, q)]
+
+
+def _ev_bands(races: list[dict]) -> list[str]:
+    rows = []
+    for r in races:
+        for c in sorted(r["probs"], key=r["probs"].get, reverse=True)[:40]:
+            if c in r["t5"] and c in r["final"]:
+                rows.append((_ev(r, c), r["probs"][c], c == r["hit"], r["final"][c]))
+    d = pd.DataFrame(rows, columns=["ev", "p", "hit", "final"])
+    out = []
+    for lo, hi, tag in ((0, 0.8, "0.8未満"), (0.8, 1.0, "0.8〜1.0"), (1.0, 1.2, "1.0〜1.2"), (1.2, 1.5, "1.2〜1.5"),
+                        (1.5, 2.0, "1.5〜2.0"), (2.0, 1e9, "2.0以上")):
+        g = d[(d["ev"] >= lo) & (d["ev"] < hi)]
+        if len(g):
+            out.append(f"  期待値{_pad(tag, 10)}{len(g):>7}組  MINAMOの確率 {100 * g['p'].mean():5.2f}%  実際 {100 * g['hit'].mean():5.2f}%"
+                       f"  回収率 {100 * (g['hit'] * g['final']).sum() / len(g):6.1f}%")
+    return out
+
+
+def calibration_report(races: list[dict]) -> list[str]:
+    races = sorted(races, key=lambda r: r["race"])
+    half = len(races) // 2
+    fit, test = races[:half], races[half:]
+    if len(fit) < 20 or len(test) < 20:
+        return ["\n4. 確率の補正：レースが少ないので試せません"]
+    a1, _ = fit_calibration(fit, market=False)
+    a2, b2 = fit_calibration(fit, market=True)
+    cal_a, cal_b = apply_calibration(test, a1, 0.0), apply_calibration(test, a2, b2)
+    p, m, hit = _matrices(test)
+    lines = [f"\n4. 確率の補正（前半{len(fit):,}R {fit[0]['race'][:8]}〜{fit[-1]['race'][:8]} で決め、"
+             f"後半{len(test):,}R {test[0]['race'][:8]}〜{test[-1]['race'][:8]} で比べる）",
+             f"  補正A a={a1:.1f}／補正B a={a2:.1f} b={b2:.1f}（a=1, b=0 なら補正なし）",
+             f"  当たり組の確率の対数損失（小さいほど良い）：補正前 {_logloss(p, hit):.3f}  補正A {_logloss(_calibrated(p, m, a1, 0.0), hit):.3f}"
+             f"  補正B {_logloss(_calibrated(p, m, a2, b2), hit):.3f}  市場だけ {_logloss(m, hit):.3f}"]
+    names = ["確率上位6点（今の形）", "確率上位12点", "期待値1.0以上・最大6点", "期待値1.2以上・最大6点", "期待値1.5以上・最大6点",
+             "期待値1.2〜2.0・最大6点", "期待値1.2以上・最大12点"]
+    picks = strategies()
+    for tag, rs in (("補正前", test), ("補正A", cal_a), ("補正B", cal_b)):
+        lines.append(f" {tag}")
+        lines += [_summary(n, rs, picks[n]) for n in names]
+    lines.append(" 補正Bの期待値の帯ごと（後半の期間）")
+    lines += _ev_bands(cal_b)
+    a_all, b_all = fit_calibration(races, market=True)
+    lines.append(f"  （全期間で決めると 補正B a={a_all:.1f} b={b_all:.1f}）")
+    return lines
+
+
 def _summary(name: str, races: list[dict], pick) -> str:
     n = pts = hits = ret = big = huge = upset_hits = 0
     pays = []
@@ -154,18 +245,7 @@ def build(ml_dir: Path, raw: Path) -> str:
         lines.append(_summary(name, races, pick))
     # 2. 期待値は本物か：確率上位40組の中で、期待値の帯ごとに実際の回収率
     lines.append("\n2. MINAMOの期待値（確率×5分前オッズ）の帯ごとの、実際の的中と回収率（各レースの確率上位40組）")
-    rows = []
-    for r in races:
-        for c in sorted(r["probs"], key=r["probs"].get, reverse=True)[:40]:
-            if c in r["t5"] and c in r["final"]:
-                rows.append((_ev(r, c), r["probs"][c], c == r["hit"], r["final"][c]))
-    d = pd.DataFrame(rows, columns=["ev", "p", "hit", "final"])
-    for lo, hi, tag in ((0, 0.8, "0.8未満"), (0.8, 1.0, "0.8〜1.0"), (1.0, 1.2, "1.0〜1.2"), (1.2, 1.5, "1.2〜1.5"),
-                        (1.5, 2.0, "1.5〜2.0"), (2.0, 1e9, "2.0以上")):
-        g = d[(d["ev"] >= lo) & (d["ev"] < hi)]
-        if len(g):
-            lines.append(f"  期待値{_pad(tag, 10)}{len(g):>7}組  MINAMOの確率 {100 * g['p'].mean():5.2f}%  実際 {100 * g['hit'].mean():5.2f}%"
-                         f"  回収率 {100 * (g['hit'] * g['final']).sum() / len(g):6.1f}%")
+    lines += _ev_bands(races)
     # 3. イン逃しを見抜けるか：①の1着確率の帯ごとに、実際の①1着率と市場（5分前）
     lines.append("\n3. MINAMOの①の1着確率の帯ごとの、実際の①1着率と、市場（5分前オッズ）の①頭の見立て")
     for lo, hi, tag in ((0, 0.35, "35%未満"), (0.35, 0.5, "35〜50%"), (0.5, 0.65, "50〜65%"), (0.65, 1.01, "65%以上")):
@@ -175,4 +255,5 @@ def build(ml_dir: Path, raw: Path) -> str:
             act = np.mean([r["hit"].startswith("1-") for r in g])
             lines.append(f"  ①{_pad(tag, 10)}{len(g):>5}R  実際の①1着 {100 * act:5.1f}%  市場の見立て {100 * mkt:5.1f}%"
                          f"  MINAMOの見立て {100 * np.mean([r['p1'] for r in g]):5.1f}%")
+    lines += calibration_report(races)
     return "\n".join(lines)
