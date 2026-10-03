@@ -431,6 +431,28 @@ function sheetHtml(race) {
     <tbody>${rows}</tbody></table></div>`;
 }
 
+// 実力：進入コースでの選手の成績（前日まで・全場）。隊形トゥエルブの元の平均ST順位・トップスタート率・壁率も
+function abilityHtml(race) {
+  const C = courseOf(race);
+  const S = Object.fromEntries(race.prediction.boats.map((b) => [b.boat, b.stats || {}]));
+  if (!Object.values(S).some((s) => s.n_c)) return "";
+  const ex = exEntry(race);
+  const E = race.entries.slice().sort((a, b) => (C[a.boat] ?? a.boat) - (C[b.boat] ?? b.boat));
+  const pc = (v) => (v == null ? "--" : (v * 100).toFixed(1));
+  const cols = [["1着率", "win_c", false, pc], ["2連対率", "top2_c", false, pc], ["3連対率", "top3_c", false, pc],
+    ["平均ST順位", "sr_c", true, (v) => (v == null ? "--" : v.toFixed(2))], ["トップST率", "top_st", false, pc]];
+  const rows = E.map((e, i) => {
+    const s = S[e.boat] || {};
+    const cells = cols.map(([, k, lb, f]) => `<td class="${rankClass(E.map((x) => (S[x.boat] || {})[k]), i, lb)}">${f(s[k])}</td>`).join("");
+    const wall = (C[e.boat] || e.boat) === 1 ? `<td class="muted">--</td>` : `<td>${pc(s.wall)}<small class="muted">${s.wall_n ? `（${s.wall_n}走）` : ""}</small></td>`;
+    return `<tr class="${C[e.boat] && C[e.boat] !== e.boat ? "moved" : ""}"><td>${C[e.boat] ? courseTag(C[e.boat], e.boat, ex) : "--"}</td><td>${boat(e.boat, "sm")}</td>
+      <td class="name">${esc(e.name)}</td><td class="num">${s.n_c ?? 0}</td>${cells}${wall}</tr>`;
+  }).join("");
+  return `<div class="panel sheet"><table>
+    <thead><tr><th>進入</th><th>艇</th><th>選手</th><th>出走</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}<th>壁率</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
 function boardHtml(race) {
   const P = race.prediction;
   const E = Object.fromEntries(race.entries.map((e) => [e.boat, e]));
@@ -584,6 +606,8 @@ async function renderRace(r, refresh = false) {
     <section class="section">
       <div class="section-head"><div><h2 class="section-title">出走表データ<small>出走表・直前情報（● はレース内1位）。${exEntry(race) ? "展示の進入コース順" : "枠なり想定のコース順"}</small></h2></div></div>
       ${sheetHtml(race)}
+      ${abilityHtml(race) ? `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">実力（進入コースでの成績）<small>この進入コースに入ったときの成績（前日まで・全場、%）</small></h2></div></div>${abilityHtml(race)}
+      <p class="small muted" style="margin:10px 2px 0;line-height:1.7">出走＝そのコースでの出走数。平均ST順位＝そのコースでの本番のスタート順位の平均（小さいほど早い。スタート隊形トゥエルブの元の数字）。トップST率＝本番でスタート1番だった割合（全コース）。壁率＝その選手がこのコースのとき①が1着だった割合（高いほど①が逃げやすい）。</p>` : ""}
       ${prevNext}
     </section>
   </div>`;

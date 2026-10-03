@@ -154,6 +154,7 @@ class MLPredictor:
                 "start_order": float(df[order].iloc[i]),
                 "motor_kp": _num_or_none(df["motor_kp_raw"].iloc[i]),
                 "n_c": int(df["n_c"].iloc[i]),
+                "stats": _stats(df.iloc[i]),
             }
             if q is not None:
                 out[int(boat)]["q"] = (float(q[i, 0]), float(q[i, 1]))  # ちょうど2着・ちょうど3着
@@ -162,12 +163,22 @@ class MLPredictor:
                 "wind": "wind_tail" in feats}  # 風をモデルが使っていれば、場の風の表では補正しない
 
 
-def _num_or_none(v) -> Optional[float]:
+def _stats(row) -> dict:
+    """画面の「実力」欄：進入コースでの1着・2連対・3連対率、平均スタート順位、トップスタート率、壁率（前日まで・全場）。"""
+    def g(k, d=3):
+        v = row.get(k) if hasattr(row, "get") else None
+        return _num_or_none(v, d)
+    return {"n_c": int(row.get("n_c", 0) or 0), "win_c": g("disp_win_c"), "top2_c": g("disp_top2_c"), "top3_c": g("disp_top3_c"),
+            "sr_c": g("disp_sr_c", 2), "top_st": g("disp_top_st"), "wall": g("disp_wall"),
+            "wall_n": int(row.get("disp_wall_n") or 0) if _num_or_none(row.get("disp_wall_n")) is not None else None}
+
+
+def _num_or_none(v, digits: int = 2) -> Optional[float]:
     try:
         v = float(v)
     except (TypeError, ValueError):
         return None
-    return None if np.isnan(v) else round(v, 2)
+    return None if np.isnan(v) else round(v, digits)
 
 
 _cached: Optional[MLPredictor] = None

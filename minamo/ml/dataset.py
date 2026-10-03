@@ -439,6 +439,13 @@ def apply_stats(rows: pd.DataFrame, pc: pd.DataFrame, pa: pd.DataFrame, priors: 
     ]
     if f_recent is not None:
         rows["f_recent"] = f_recent.values
+    # 画面に出す用（平滑化しない生の率。学習には使わない）：そのコースの1着・2連対・3連対率、平均スタート順位、トップスタート率
+    ratio = lambda a, b: rows[a] / rows[b].where(rows[b] > 0) if a in rows and b in rows else np.nan
+    rows["disp_win_c"] = ratio("p_win", "p_one")
+    rows["disp_top2_c"] = ratio("p_top2", "p_one")
+    rows["disp_top3_c"] = ratio("p_top3", "p_one")
+    rows["disp_sr_c"] = ratio("p_sr_sum", "p_sr_ok")
+    rows["disp_top_st"] = ratio("a_r1", "a_sr_ok")
     drop = [c for c in rows.columns if c.startswith(("p_", "a_"))]
     return rows.drop(columns=drop)
 
@@ -601,6 +608,9 @@ def apply_new(rows: pd.DataFrame, tables: dict[str, pd.DataFrame], priors: dict)
     p0 = float((priors.get("win") or {}).get(1, 0.55))
     wall = (z("w_c1") + WALL_SMOOTH * p0) / (z("w_n") + WALL_SMOOTH)
     rows["wall_self"] = wall.where(rows["course_i"] >= 2) if "w_n" in rows else np.nan
+    # 画面に出す用：その選手がそのコースのとき①が1着だった生の率と回数
+    rows["disp_wall"] = (z("w_c1") / z("w_n").where(z("w_n") > 0)).where(rows["course_i"] >= 2) if "w_n" in rows else np.nan
+    rows["disp_wall_n"] = z("w_n").where(rows["course_i"] >= 2) if "w_n" in rows else np.nan
     drop = [c for c in ("fh_n", "fh_sum", "nm_n", "nm_sum", "w_n", "w_c1") if c in rows]
     return rows.drop(columns=drop)
 
