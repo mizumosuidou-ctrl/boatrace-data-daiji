@@ -904,3 +904,39 @@ def test_racetime_eval_by_race_rank_and_series_band():
     assert ev["rank"]["1"]["top3"] > ev["rank"]["6"]["top3"] and "1-0" in ev["cell"]
     assert ds.rt_band(0.05) == 0 and ds.rt_band(0.2) == 1 and ds.rt_band(1.0) == 3 and ds.rt_band(None) is None
     assert ds.racetime_eval(rows.head(10)) == {}
+
+
+def test_discover_finds_clear_patterns_only():
+    """自動発見：はっきりした偏り（両方の半分で同じ向き）だけを拾い、ふつうの選手は拾わない。"""
+    import numpy as np
+
+    from minamo.ml import discover as dc
+
+    rng = np.random.default_rng(1)
+    start = pd.Timestamp("2025-10-01")
+    rows = []
+    for i in range(6000):
+        date = start + pd.Timedelta(days=int(i * 360 / 6000))
+        tob = [str(x) for x in rng.choice(np.arange(1000, 1300), 6, replace=False)]
+        if i % 50 == 0:
+            tob[3] = "9999"  # 4コースでいつも3着以内（120走）
+        if i % 60 == 0:
+            tob[0] = "8888"  # 1コースのとき、6コース艇がいつも3着以内（100レース）
+        order = list(rng.permutation(6))
+        if "9999" in tob:
+            order.remove(3)
+            order.insert(int(rng.integers(0, 3)), 3)
+        if "8888" in tob:
+            order.remove(5)
+            order.insert(int(rng.integers(0, 3)), 5)
+        for pos, c in enumerate(order):
+            rows.append({"toban": tob[c], "date": date, "course": c + 1, "lane": c + 1, "finish": pos + 1,
+                         "start_rank": float(rng.integers(1, 7)), "race_id": f"r{i}"})
+    facts = pd.DataFrame(rows)
+    out = dc.discover(facts, pd.DataFrame(columns=["toban", "date", "f_hold"]), pd.Series(0, index=facts.index),
+                      start + pd.Timedelta(days=361))
+    names = {(r.toban, r.name) for r in out.itertuples()}
+    assert ("9999", "4コース3連対上手") in names and ("8888", "①のとき⑥残り") in names
+    # ふつうの選手（ランダムな着順）はほとんど拾わない
+    assert len(set(out["toban"]) - {"9999", "8888"}) <= 3
+    assert list(out.columns) == dc.COLUMNS
