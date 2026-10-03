@@ -165,6 +165,11 @@ def build_race(
             "rt_best": r[0] / 1000 if r else None,  # 節間ベスト（秒）
             "rt_series_rank": r[2] if r else None,  # 節の出場選手の中での順位
             "rt_series_n": r[3] if r else None,  # 順位の付いた人数
+            "rt_all_rank": r[4] if r and len(r) > 8 else None,  # 節の全部の走りの中での、ベストの順位
+            "rt_all_n": r[5] if r and len(r) > 8 else None,
+            "rt_last": r[6] / 1000 if r and len(r) > 8 else None,  # 前走のタイム（秒）
+            "rt_last_rank": r[7] if r and len(r) > 8 else None,  # 前走のタイムの、各選手の前走の中での順位
+            "rt_last_n": r[8] if r and len(r) > 8 else None,
             "exhibition_time": b.exhibition_time if b else None,
             "tilt": b.tilt if b else None,
             "ex_course": b.course if b else None,

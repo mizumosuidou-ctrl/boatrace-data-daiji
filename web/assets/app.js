@@ -422,7 +422,8 @@ function sheetHtml(race, ins = null) {
   const cols = [
     ["全国勝率", "nat_win", false, 2], ["全国2連", "nat_2", false, 1], ["当地勝率", "loc_win", false, 2],
     ["モーター2連", "motor_2", false, 1], ...(E.some((e) => e.motor_kp != null) ? [["貢献P", "motor_kp", false, 2]] : []), ["ボート2連", "boat_2", false, 1], ["平均ST", "avg_st", true, 2],
-    ...(E.some((e) => e.rt_best != null) ? [["ﾀｲﾑ6艇内", "rt_race_rank", true, 0], ["ﾀｲﾑ節内", "rt_series_rank", true, 0], ["節ﾍﾞｽﾄ", "rt_best", true, 1],
+    ...(E.some((e) => e.rt_best != null) ? [["ﾀｲﾑ6艇内", "rt_race_rank", true, 0], ["選手別順位", "rt_series_rank", true, 0],
+      ...(E.some((e) => e.rt_all_rank != null) ? [["全走順位", "rt_all_rank", true, 0], ["前走順位", "rt_last_rank", true, 0]] : []), ["節ﾍﾞｽﾄ", "rt_best", true, 1],
       ...(E.some((e) => e.rt_eval != null) ? [["ﾀｲﾑ評価", "rt_eval", false, 1]] : [])] : []),
     ["展示T", "exhibition_time", true, 2], ["展示ST", "ex_st", true, 2],
     // オリジナル展示（場の公式サイト）。区間が場ごとに違うので、色付けはレース内の順位だけ
@@ -440,6 +441,8 @@ function sheetHtml(race, ins = null) {
       if (k === "ex_st" && v != null && v < 0) return `<td class="f">F${Math.abs(v).toFixed(2).slice(1)}</td>`;
       if (k === "rt_race_rank" && v != null) return `<td class="${cls}">${v}位</td>`;
       if (k === "rt_series_rank" && v != null) return `<td class="${cls}">${v}<small class="muted">/${e.rt_series_n ?? "?"}</small></td>`;
+      if (k === "rt_all_rank" && v != null) return `<td class="${cls}">${v}<small class="muted">/${e.rt_all_n}</small></td>`;
+      if (k === "rt_last_rank" && v != null) return `<td class="${cls}" title="前走 ${Math.floor(e.rt_last / 60)}'${String(Math.floor(e.rt_last % 60)).padStart(2, "0")}&quot;${Math.round((e.rt_last * 10) % 10)}">${v}<small class="muted">/${e.rt_last_n}</small></td>`;
       if (k === "rt_eval" && v != null) {
         const x = RT[e.boat].ev;
         return `<td class="${cls} ${v > 0 ? "pos" : v < 0 ? "neg" : ""}" title="この順位の選手の過去の3連対率 ${(x.top3 * 100).toFixed(1)}%（同じコースの平均との差 ${v > 0 ? "+" : ""}${v}ポイント・${x.n.toLocaleString("ja-JP")}走）">${v > 0 ? "+" : ""}${v.toFixed(1)}</td>`;
@@ -657,7 +660,7 @@ async function renderRace(r, refresh = false) {
     <section class="section">
       <div class="section-head"><div><h2 class="section-title">出走表データ<small>出走表・直前情報（● はレース内1位）。${exEntry(race) ? "展示の進入コース順" : "枠なり想定のコース順"}</small></h2></div></div>
       ${sheetHtml(race, ins)}
-      ${race.entries.some((e) => e.rt_best != null) ? `<p class="small muted" style="margin:10px 2px 0;line-height:1.7">ﾀｲﾑ6艇内＝節間ベストのレースタイムの、このレースの6艇の中での順位。ﾀｲﾑ節内＝その節に出ている選手の中での順位（順位/人数）。ﾀｲﾑ評価＝この「6艇内の順位」と「節内の順位（上位10%・10〜30%・30〜60%・それより下）」だった選手の過去の3連対率が、同じコースの平均より何ポイント高いか${ins && ins.racetime && ins.racetime.n ? `（${ins.racetime.n.toLocaleString("ja-JP")}走から）` : ""}。</p>` : ""}
+      ${race.entries.some((e) => e.rt_best != null) ? `<p class="small muted" style="margin:10px 2px 0;line-height:1.7">ﾀｲﾑ6艇内＝節間ベストのレースタイムの、このレースの6艇の中での順位。選手別順位＝節間ベストの、その節に出ている選手の中での順位（順位/人数）。全走順位＝節間ベストの、その節の全部の走り（1走ずつ数える）の中での順位。前走順位＝いちばん新しい走りのタイムの、各選手のいちばん新しい走りの中での順位（数字に触れると前走のタイム）。ﾀｲﾑ評価＝この「6艇内の順位」と「節内の順位（上位10%・10〜30%・30〜60%・それより下）」だった選手の過去の3連対率が、同じコースの平均より何ポイント高いか${ins && ins.racetime && ins.racetime.n ? `（${ins.racetime.n.toLocaleString("ja-JP")}走から）` : ""}。</p>` : ""}
       ${abilityHtml(race) ? `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">実力（進入コースでの成績）<small>この進入コースに入ったときの成績（前日まで・全場、%）。F持ちの選手は、F持ちだったときの成績</small></h2></div></div><div id="ability">${abilityHtml(race)}</div>
       <p class="small muted" style="margin:10px 2px 0;line-height:1.7">出走＝そのコースでの出走数。平均ST順位＝そのコースでの本番のスタート順位の平均（小さいほど早い。スタート隊形トゥエルブの元の数字）。トップST率＝そのコースで本番のスタートが1番だった割合。トップ時1着・2連＝そのトップスタートのときの1着率・2連対率。「F持ち時」＝今F持ちの選手は、F持ちだったときの成績（期間で区切らず、ためていく）。壁率＝その選手がこのコースのとき①が1着だった割合（高いほど①が逃げやすい）。</p>` : ""}
       ${prevNext}

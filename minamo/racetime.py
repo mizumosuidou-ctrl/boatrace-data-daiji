@@ -105,14 +105,23 @@ class RaceTimes:
         return days
 
     def table(self, date: str, jcd: str, label: str) -> dict:
-        """{"day": 何日目, "racers": {登番: [ベスト(ms), 走数, 節内順位, 順位の付いた人数]}}"""
+        """{"day": 何日目, "racers": {登番: [ベスト(ms), 走数, 選手別順位, 人数, 全走順位, 全走数, 前走(ms), 前走順位, 人数]}}
+        選手別順位＝ベストを選手ごとに並べた順位。全走順位＝ベストを、節の全部の走り（1走ずつ）の中で並べた順位。
+        前走順位＝いちばん新しい走りのタイムを、各選手のいちばん新しい走りの中で並べた順位。"""
         days = self.prior_days(date, jcd, label)
         best: dict[str, int] = {}
         runs: dict[str, int] = {}
-        for d in days:
+        last: dict[str, int] = {}
+        all_ms: list[int] = []
+        for d in reversed(days):  # 古い日から。同じ日はレース順なので、最後に上書きしたものが前走
             for toban, ms in self.day_times(d, jcd):
                 best[toban] = min(ms, best.get(toban, ms))
                 runs[toban] = runs.get(toban, 0) + 1
+                last[toban] = ms
+                all_ms.append(ms)
         ordered = sorted(best.values())
-        racers = {t: [ms, runs[t], ordered.index(ms) + 1, len(ordered)] for t, ms in best.items()}
+        lasts = sorted(last.values())
+        rank = lambda xs, v: 1 + sum(x < v for x in xs)  # noqa: E731 — 同タイムは同順位
+        racers = {t: [ms, runs[t], rank(ordered, ms), len(ordered), rank(all_ms, ms), len(all_ms),
+                      last[t], rank(lasts, last[t]), len(lasts)] for t, ms in best.items()}
         return {"day": len(days) + 1, "racers": racers}

@@ -420,7 +420,10 @@ def test_racetime_table_uses_prior_days_of_the_series(tmp_path):
 
     rt = racetime.RaceTimes(F(), tmp_path, lambda d, n: None)
     t = rt.table("20261003", "12", "3日目")
-    assert t["day"] == 3 and t["racers"]["3960"] == [108900, 2, 1, len(t["racers"])]
+    n_r = len(t["racers"])
+    assert t["day"] == 3 and t["racers"]["3960"][:4] == [108900, 2, 1, n_r]
+    # 全走順位（2日分の全部の走りの中）と、前走（いちばん新しい走り）の順位
+    assert t["racers"]["3960"][4:] == [1, 2 * n_r, 108900, 1, n_r]
     assert {d for d, _ in F.calls} == {"20261002", "20261001"}  # 当日は使わない
     n = len(F.calls)
     rt.table("20261003", "12", "3日目")
