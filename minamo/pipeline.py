@@ -101,7 +101,8 @@ class Pipeline:
             st["ai"] = ai
             st["ai_stage"] = "card"
             self._save(date, f"{jcd}-{rno:02d}", st)
-        payload = store.build_race(card, before, odds, pred, ai, result, vday)
+        ev = (st.get("ev_pick") or {}).get("combos")
+        payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev)
         payload["odds2"] = st.get("odds2") or {}
         payload["formation"] = self._formation(card, pred, vday)
         store.write_json(store.race_path(date, jcd, rno), payload)
@@ -217,6 +218,11 @@ class Pipeline:
             o = (st.get("orig") or {}).get(str(b.boat)) or {}
             b.lap_time, b.turn_time, b.straight_time = o.get("lap_time"), o.get("turn_time"), o.get("straight_time")
         st["before"] = asdict(before)
+        # 試験中：オッズで絞った買い目。締切前のオッズで決めた組だけを残す（締切後は上書きしない）
+        if odds and card.deadline:
+            hh, mm = map(int, card.deadline.split(":"))
+            if now < datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST):
+                st["ev_pick"] = {"combos": store.ev_picks(predict(card, before, odds).trifecta, odds), "at": now.isoformat()}
         st["odds"] = odds or st.get("odds")
         st["odds2"] = odds2 or st.get("odds2")
         st["before_at"] = now.isoformat()

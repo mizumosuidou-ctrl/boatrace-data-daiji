@@ -150,6 +150,14 @@ def test_race_brief_is_json_serializable():
     json.dumps(analyst.race_brief(card, before, pred, None), ensure_ascii=False)
 
 
+def test_ev_picks_keep_value_combos_by_probability():
+    tri = [("1-2-3", 0.20), ("1-3-2", 0.10), ("2-1-3", 0.004), ("1-2-4", 0.05)]
+    odds = {"1-2-3": 4.0, "1-3-2": 15.0, "2-1-3": 900.0, "1-2-4": 30.0}
+    # 1-2-3 は期待値0.8で外す、2-1-3 は確率が低すぎるので外す
+    assert store.ev_picks(tri, odds) == ["1-3-2", "1-2-4"]
+    assert store.ev_picks(tri, {}) == []
+
+
 def test_settle_hit_and_miss():
     res = RaceResult(rows=[ResultRow(place=i + 1, boat=b) for i, b in enumerate([1, 2, 3, 4, 5, 6])], trifecta="1-2-3", trifecta_payout=1230)
     hit = store.settle({"honmei": 1, "picks": [{"combo": "1-2-3"}, {"combo": "1-3-2"}]}, res)
@@ -289,8 +297,11 @@ def test_pipeline_full_day(sandbox):
     assert pipe.tick(date, deadline + timedelta(minutes=10)) == 1
     race = json.loads(race_file.read_text())
     assert race["result"]["trifecta"] == "4-1-2" and race["settle"] is not None
+    # 試験中のオッズで絞った買い目：締切前に決めた組（見送りなら空）を照合して数える
+    assert isinstance(race["ev_pick"], list) and "ev_hit" in race["settle"]
+    assert race["settle"]["ev_stake"] == 100 * len(race["ev_pick"])
     day = json.loads((sandbox / "data" / date / "day.json").read_text())
-    assert day["totals"]["settled"] == 1
+    assert day["totals"]["settled"] == 1 and day["totals"]["ev_races"] == 1
     record = json.loads((sandbox / "data" / "record.json").read_text())
     assert record["days"][-1]["date"] == date
     # オッズ履歴：直前情報を取るたびに1行、確定後に「final」を1行

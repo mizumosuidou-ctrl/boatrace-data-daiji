@@ -7,6 +7,7 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pct = (p, d = 0) => (p == null ? "--" : (p * 100).toFixed(d));
 const yen = (n) => (n == null ? "--" : "¥" + Number(n).toLocaleString("ja-JP"));
+const signedYen = (n) => (n == null ? "--" : (n < 0 ? "−" : "+") + "¥" + Math.abs(Number(n)).toLocaleString("ja-JP"));
 const boat = (b, size = "") => `<span class="boat ${size}" data-b="${b}" aria-label="${b}号艇">${b}</span>`;
 const combo = (c, size = "sm") => c ? `<span class="combo" aria-label="3連単 ${esc(c)}">${c.split("-").map((b) => boat(b, size)).join("<i></i>")}</span>` : "";
 const arrow = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 8h11M9 4l4 4-4 4"/></svg>`;
@@ -286,6 +287,7 @@ function kpisHtml(t) {
     <div class="kpi hit"><b>${f(hitRate)}<small style="font-size:.5em">%</small></b><span>3連単的中</span></div>
     <div class="kpi"><b>${f(honmei)}<small style="font-size:.5em">%</small></b><span>本命 1着</span></div>
     <div class="kpi"><b>${f(roi)}<small style="font-size:.5em">%</small></b><span>回収率</span></div>
+    <div class="kpi"><b style="font-size:.7em">${t.stake ? signedYen((t.return - t.stake) * 10) : "--"}</b><span>収支（1点1,000円）</span></div>
   </div>`;
 }
 
@@ -659,6 +661,19 @@ async function renderRecord() {
           <line class="axis" x1="${pad}" x2="${W - pad}" y1="${H - pad}" y2="${H - pad}"/>
         </svg>
       </div>
+      <div class="section-head" style="margin-top:40px"><div><h2 class="section-title">1点1,000円で買った場合<small>推奨買い目を各1,000円で買ったときの金額（払戻は100円あたりの配当×10）。回収率は100円のときと同じです</small></h2></div></div>
+      <div class="calib">
+        <div class="panel rv"><h4>投資</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${yen(T.stake * 10)}</div><div class="small">${T.settled}レース</div></div>
+        <div class="panel rv" style="--i:1"><h4>払戻</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${yen(T.return * 10)}</div><div class="small">的中 ${T.hits}レース</div></div>
+        <div class="panel rv" style="--i:2"><h4>収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.return >= T.stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.return - T.stake) * 10)}</div><div class="small">払戻 − 投資</div></div>
+        <div class="panel rv" style="--i:3"><h4>回収率</h4><div class="big">${roi.toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">払戻 ÷ 投資</div></div>
+      </div>
+      ${T.ev_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：オッズで絞った買い目<small>締切前のオッズで「MINAMOの確率×オッズ」が1.2以上の組だけを最大6点（無ければ見送り）。実際の推奨買い目は変えず、成績だけを数えています</small></h2></div></div>
+      <div class="calib">
+        <div class="panel rv"><h4>回収率</h4><div class="big" style="color:var(--accent)">${T.ev_stake ? ((T.ev_return / T.ev_stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.ev_hits}/${T.ev_bought}R</div></div>
+        <div class="panel rv" style="--i:1"><h4>買ったレース</h4><div class="big">${T.ev_bought}<small style="font-size:.45em">R</small></div><div class="small">見送り ${T.ev_races - T.ev_bought}R · 平均 ${T.ev_bought ? (T.ev_stake / 100 / T.ev_bought).toFixed(1) : "--"}点</div></div>
+        <div class="panel rv" style="--i:2"><h4>1点1,000円の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.ev_return >= T.ev_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.ev_return - T.ev_stake) * 10)}</div><div class="small">投資 ${yen(T.ev_stake * 10)} · 払戻 ${yen(T.ev_return * 10)}</div></div>
+      </div>` : ""}
       ${T.ml_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">予想エンジンの比較<small>同じレースで、それぞれの本命（1着確率1位）が1着になった割合</small></h2></div></div>
       <div class="calib">
         <div class="panel rv"><h4>機械学習</h4><div class="big" style="color:var(--accent)">${((T.ml_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
