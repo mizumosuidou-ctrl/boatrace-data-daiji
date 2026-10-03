@@ -51,6 +51,11 @@
   47. 風（3m未満・3m以上）ごとに、展示タイム1位・一周1位の艇の1着率と3着以内率
   48. 最終日とそれ以外で、⑤が④より平均スタート順位で0.5以上早いときの、⑤の1着率・2連対率
   49. その選手のそのコースの1着率（全場・直近1年）が35%以上の艇の、実際の1着率（②〜⑥）
+  50. 隣どうしの平均スタート順位の差が0.7以上（外が早い・内が早い）ときの、外の艇・内の艇の1着率
+  51. ③④が攻めたときに、⑤の直線・回り足が2位以内なら⑤が3着に来るか／⑤の展示・周回1位×④の攻め
+  52. 展示タイム1位と2位の差（0.02以内・0.03〜0.05・0.06以上）、一周1位と2位の差（0.10秒）ごとの、1位の艇の1着率
+  53. 福岡のスコア項目（①の展示＋回り足1位、①の直線5〜6位、①がA2以下で②の方が早い、②・④・⑥の足の条件）
+  54. トップスタート率（本番のスタート順位が1位だった率・選手・直近1年）30%以上の艇の、②〜④の1着率
 """
 from __future__ import annotations
 
@@ -131,6 +136,7 @@ def build(raw: Path, venue: str) -> str:
     wall1 = _wall_rates(allf)  # ②〜⑥の選手がそのコースに入ったときの①の逃げ率（全場・直近1年）
     odds = _odds_12_13(raw, venue)
     pers = _course_top3(allf)  # 選手のコース別成績（全場・直近1年）
+    topst = _top_st(allf)  # 選手のトップスタート率（全場・直近1年）
     lines = [f"{name}：{df['date'].min().date()}〜{df['date'].max().date()}  {df['race_id'].nunique():,}レース"
              "（女子＝全員女子のレース）", "数字は1〜6コースの1着率（%）"]
 
@@ -315,6 +321,7 @@ def build(raw: Path, venue: str) -> str:
         lines.extend(_shimonoseki(part, wall1, top3, pers, weather, exr))
         lines.extend(_wakamatsu(part, wall1, exr, orig, odds))
         lines.extend(_ashiya(part, pers, weather, exr, orig, piv if len(ok) else None))
+        lines.extend(_fukuoka(part, exr, orig, cls, topst, piv if len(ok) else None))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -877,6 +884,165 @@ def _ashiya(part: pd.DataFrame, pers: pd.DataFrame, weather: pd.DataFrame, exr: 
             cells.append(f"{c}C {100 * (hi['finish'] == 1).mean():.0f}%({len(hi)}) ／ {100 * (lo['finish'] == 1).mean():.0f}%")
     if cells:
         out.append("49. そのコースの1着率35%以上（選手・全場・直近1年・10走以上）の艇 → 実際の1着率（走数） ／ 35%未満の艇")
+        out.append("  " + "  ".join(cells))
+    return out
+
+
+def _top_st(allf: pd.DataFrame) -> pd.DataFrame:
+    """（登番, 日付）ごとに、その日より前の直近1年で本番のスタート順位が1位だった率（全場・全コース）。"""
+    ok = allf[allf["start_rank"].between(1, 6)].copy()
+    ok["top"] = (ok["start_rank"] == 1).astype(float)
+    daily = ok.groupby(["toban", "date"], as_index=False)["top"].agg(s="sum", n="count")
+    daily = daily.sort_values(["toban", "date"]).set_index("date")
+    roll = daily.groupby("toban")[["s", "n"]].rolling(ft.WINDOW, closed="left").sum().reset_index()
+    roll["top_rate"] = roll["s"] / roll["n"]
+    return roll.rename(columns={"n": "top_n"})[["toban", "date", "top_rate", "top_n"]]
+
+
+def _fukuoka(part: pd.DataFrame, exr: pd.DataFrame, orig: pd.DataFrame, cls: pd.DataFrame,
+             topst: pd.DataFrame, piv) -> list[str]:
+    """50〜54：隣の差0.7、⑤の3着浮上、タイム差、福岡のスコア項目、トップスタート率。"""
+    out = []
+    fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
+    pct = lambda s, k=1: f"{100 * (s <= k).mean():.1f}" if len(s) else "-"
+    # 50
+    if piv is not None:
+        rows = []
+        for a in range(1, 6):
+            b = a + 1
+            if a not in piv or b not in piv or b not in fin:
+                continue
+            r = piv[[a, b]].dropna()
+            r = r[r.index.isin(fin.index)]
+            if len(r) < 50:
+                continue
+            f = fin.loc[r.index]
+            d = r[a] - r[b]
+            cells = []
+            for tag, m in (("外が早い", d >= 0.7), ("内が早い", d <= -0.7), ("差0.7未満", d.abs() < 0.7)):
+                if m.sum() >= 20:
+                    cells.append(f"{tag} 外{pct(f.loc[m, b])} 内{pct(f.loc[m, a])}({int(m.sum())})")
+            if cells:
+                rows.append(f"  {a}と{b}  " + "  ".join(cells))
+        if rows:
+            out.append("50. 隣どうしの平均スタート順位の差0.7以上 → 外の艇の1着 ／ 内の艇の1着（%）（レース数）")
+            out.extend(rows)
+    br = _boat_ranks(part, exr, orig)
+    rk = {k: br.pivot_table(index="race_id", columns="course", values=k, aggfunc="first") for k in ("ex", "lap", "turn", "straight")}
+    # 51
+    if piv is not None and all(c in piv for c in (1, 2, 3, 4)) and 5 in rk["straight"] and 5 in rk["turn"]:
+        r = piv.dropna(subset=[1, 2, 3, 4])
+        att = r[[2, 3, 4]].idxmin(axis=1)
+        attack = (r[[2, 3, 4]].min(axis=1) < r[1]) & att.isin([3, 4])
+        ids = [x for x in r.index if x in rk["straight"].index and x in fin.index]
+        if len(ids) >= 50 and 5 in fin:
+            a = attack.loc[ids]
+            legs = (rk["straight"].loc[ids, 5] <= 2) & (rk["turn"].loc[ids, 5] <= 2)
+            f5 = fin.loc[ids, 5]
+            out.append("51. ③④が攻めた（②③④で一番早く①より早い）× ⑤の直線・回り足がどちらも2位以内 → ⑤ちょうど3着 ／ 3着以内（%）（レース数）")
+            cells = []
+            for tag, m in (("攻め＋⑤足あり", a & legs), ("攻め＋⑤足なし", a & ~legs), ("攻めなし＋⑤足あり", ~a & legs)):
+                if m.sum() >= 10:
+                    cells.append(f"{tag} {100 * (f5[m] == 3).mean():.1f}/{pct(f5[m], 3)}({int(m.sum())})")
+            out.append("  " + "  ".join(cells))
+            a4 = (r[[2, 3, 4]].min(axis=1) < r[1]) & (att == 4)
+            a4 = a4.loc[ids]
+            top5 = (rk["ex"].reindex(index=ids).get(5) == 1) | (rk["lap"].loc[ids, 5] == 1) if 5 in rk["lap"] else None
+            if top5 is not None:
+                cells = []
+                for tag, m in (("④攻め＋⑤展示か周回1位", a4 & top5), ("それ以外で⑤展示か周回1位", ~a4 & top5)):
+                    if m.sum() >= 10:
+                        cells.append(f"{tag} ⑤1着 {pct(f5[m])} 2連 {pct(f5[m], 2)}({int(m.sum())})")
+                if cells:
+                    out.append("  " + "  ".join(cells))
+    # 52
+    rows = []
+    if "ex_gap" in exr:
+        x = br.merge(exr[["race_id", "lane", "ex_gap"]], on=["race_id", "lane"], how="left")
+        top = x[x["ex"] == 1]
+        g = top["ex_gap"].fillna(0)
+        cells = []
+        for tag, m in (("0.02以内", g <= 0.02 + 1e-9), ("0.03〜0.05", (g > 0.02 + 1e-9) & (g < 0.06 - 1e-9)), ("0.06以上", g >= 0.06 - 1e-9)):
+            if m.sum() >= 20:
+                cells.append(f"{tag} {pct(top.loc[m, 'finish'])}%({int(m.sum())})")
+        if cells:
+            rows.append("  展示タイム  " + "  ".join(cells))
+    if len(orig):
+        o = orig[orig["race_id"].isin(set(br["race_id"]))][["race_id", "lane", "lap_time"]].copy()
+        o["lap_time"] = pd.to_numeric(o["lap_time"], errors="coerce")
+        o = o.dropna()
+        o = o[o.groupby("race_id")["lap_time"].transform("count") >= 5]
+        if len(o):
+            nth = o.groupby("race_id")["lap_time"].rank(method="first")
+            first = o[nth == 1].set_index("race_id")
+            second = o[nth == 2].drop_duplicates("race_id").set_index("race_id")["lap_time"]
+            first["gap"] = second.reindex(first.index) - first["lap_time"]
+            first = first.reset_index().merge(br[["race_id", "lane", "finish"]], on=["race_id", "lane"], how="inner")
+            cells = []
+            for tag, m in (("0.10秒未満", first["gap"] < 0.10 - 1e-9), ("0.10秒以上", first["gap"] >= 0.10 - 1e-9)):
+                if m.sum() >= 20:
+                    cells.append(f"{tag} {pct(first.loc[m, 'finish'])}%({int(m.sum())})")
+            if cells:
+                rows.append("  一周        " + "  ".join(cells))
+    if rows:
+        out.append("52. 1位と2位のタイム差 → 1位の艇の1着率（走数）")
+        out.extend(rows)
+    # 53
+    b = br.merge(cls, on=["race_id", "lane"], how="left")
+    by = {c: b[b["course"] == c].drop_duplicates("race_id").set_index("race_id") for c in range(1, 7)}
+    rows = []
+    one = by[1]
+    if len(one) >= 50:
+        m = (one["ex"] == 1) & (one["turn"] == 1)
+        base = one["turn"].notna()
+        if m.sum() >= 10:
+            rows.append(f"  ①展示1位＋回り足1位 ①1着 {pct(one.loc[m, 'finish'])}%({int(m.sum())})  オリ展ありのふだん {pct(one.loc[base, 'finish'])}%")
+        m = one["straight"] >= 5
+        if m.sum() >= 10 and len(by[2]):
+            two = by[2]["finish"].reindex(one.index)
+            rows.append(f"  ①直線5〜6位 ①1着 {pct(one.loc[m, 'finish'])}% ②1着 {pct(two[m].dropna())}%({int(m.sum())})"
+                        f"  直線4位以内 ①{pct(one.loc[one['straight'] <= 4, 'finish'])}% ②{pct(two[one['straight'] <= 4].dropna())}%")
+        if piv is not None and all(c in piv for c in (1, 2)):
+            gap = (piv[1] - piv[2]).reindex(one.index)
+            low = one["klass"].isin(["A2", "B1", "B2"])
+            m1, m2 = low & (gap >= 0.5), low & (gap < 0.5)
+            if m1.sum() >= 10:
+                rows.append(f"  ①A2以下＋②の方が0.5以上早い ①1着 {pct(one.loc[m1, 'finish'])}%({int(m1.sum())})"
+                            f"  ①A2以下のふだん {pct(one.loc[m2, 'finish'])}%")
+    two = by[2]
+    if len(two) >= 50:
+        m = ((two["turn"] == 1) | (two["lap"] == 1)) & (two["ex"] <= 2)
+        if m.sum() >= 10:
+            rows.append(f"  ②回り足か周回1位＋展示2位以内 ②1着 {pct(two.loc[m, 'finish'])}%({int(m.sum())})"
+                        f"  オリ展ありのふだん {pct(two.loc[two['turn'].notna(), 'finish'])}%")
+    four = by[4]
+    if len(four) >= 50 and piv is not None and 4 in piv:
+        sr4 = piv[4].reindex(four.index)
+        m = ((four["ex"] == 1) | (four["straight"] == 1)) & (sr4 <= 2.5)
+        if m.sum() >= 10:
+            rows.append(f"  ④展示か直線1位＋平均ST順位2.5以内 ④1着 {pct(four.loc[m, 'finish'])}%({int(m.sum())})"
+                        f"  ④ふだん {pct(four['finish'])}%")
+    six = by[6]
+    if len(six) >= 50 and piv is not None and all(c in piv for c in (4, 5)):
+        five_fast = ((piv[4] - piv[5]) >= 0.5).reindex(six.index).fillna(False).astype(bool)
+        m = ((six["ex"] == 1) | (six["straight"] == 1)) & five_fast
+        if m.sum() >= 10:
+            rows.append(f"  ⑥展示か直線1位＋⑤が④より0.5以上早い ⑥2連 {pct(six.loc[m, 'finish'], 2)}% 3着以内 {pct(six.loc[m, 'finish'], 3)}%({int(m.sum())})"
+                        f"  ⑥ふだん {pct(six['finish'], 2)}%/{pct(six['finish'], 3)}%")
+    if rows:
+        out.append("53. 福岡のスコア項目 → 1着率など（%）（走数）")
+        out.extend(rows)
+    # 54
+    t = part[part["course"].between(2, 4) & part["finish"].notna()].merge(topst, on=["toban", "date"], how="inner")
+    t = t[t["top_n"] >= 20]
+    cells = []
+    for c in (2, 3, 4):
+        g = t[t["course"] == c]
+        hi, lo = g[g["top_rate"] >= 0.3], g[g["top_rate"] < 0.3]
+        if len(hi) >= 10:
+            cells.append(f"{c}C {pct(hi['finish'])}%({len(hi)}) ／ {pct(lo['finish'])}%")
+    if cells:
+        out.append("54. トップスタート率30%以上（選手・全場・直近1年・20走以上）の艇 → 1着率（走数） ／ 30%未満の艇")
         out.append("  " + "  ".join(cells))
     return out
 
