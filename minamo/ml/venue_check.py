@@ -391,8 +391,8 @@ def _amagasaki(part: pd.DataFrame, pers: pd.DataFrame, exr: pd.DataFrame) -> lis
     out = []
     p = part[part["finish"].notna()].merge(pers[["toban", "course", "date", "win_rate", "t3_n"]], on=["toban", "course", "date"], how="left")
     p.loc[p["t3_n"] < 10, "win_rate"] = np.nan
-    one = p[p["course"] == 1].set_index("race_id")
-    two = p[p["course"] == 2].set_index("race_id")
+    one = p[p["course"] == 1].drop_duplicates("race_id").set_index("race_id")
+    two = p[p["course"] == 2].drop_duplicates("race_id").set_index("race_id")
     # 22
     g = one.dropna(subset=["avg_sr", "win_rate"])
     if len(g) >= 50:
@@ -416,7 +416,7 @@ def _amagasaki(part: pd.DataFrame, pers: pd.DataFrame, exr: pd.DataFrame) -> lis
         out.append("  " + "  ".join(cells))
     # 24
     fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
-    sr2 = part[part["course"] == 2].set_index("race_id")["avg_sr"].dropna()
+    sr2 = part[part["course"] == 2].drop_duplicates("race_id").set_index("race_id")["avg_sr"].dropna()
     ids = [r for r in sr2.index if r in fin.index]
     if len(ids) >= 50 and all(c in fin for c in (3, 4)):
         f, s2 = fin.loc[ids], sr2.loc[ids]
@@ -565,7 +565,7 @@ def _three_five(part: pd.DataFrame, pers: pd.DataFrame) -> list[str]:
     """34：③が攻撃型（3コース1着率が高い）なら⑤が2着に来るか。"""
     three = part[part["course"] == 3][["race_id", "toban", "course", "date"]].merge(
         pers[["toban", "course", "date", "win_rate", "t3_n"]], on=["toban", "course", "date"], how="inner")
-    three = three[three["t3_n"] >= 10].set_index("race_id")["win_rate"]
+    three = three[three["t3_n"] >= 10].drop_duplicates("race_id").set_index("race_id")["win_rate"]
     fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
     ids = [r for r in three.index if r in fin.index]
     if len(ids) < 50 or not all(c in fin for c in (3, 5)):
@@ -587,8 +587,8 @@ def _tokuyama(part: pd.DataFrame, pers: pd.DataFrame, piv) -> list[str]:
     p = part.merge(pers[["toban", "course", "date", "win_rate", "t3_n"]], on=["toban", "course", "date"], how="left")
     p["strong"] = (p["win_rate"] >= 0.2) & (p["t3_n"] >= 10)
     cnt = p[p["course"].between(2, 6)].groupby("race_id")["strong"].sum()
-    sr1 = part[part["course"] == 1].set_index("race_id")["avg_sr"]
-    ids = [r for r in cnt.index if r in fin.index and r in sr1.index and sr1[r] == sr1[r]]
+    sr1 = part[part["course"] == 1].drop_duplicates("race_id").set_index("race_id")["avg_sr"].dropna()
+    ids = [r for r in cnt.index if r in fin.index and r in sr1.index]
     if len(ids) >= 50 and all(c in fin for c in (1, 2)):
         c, s1, f = cnt.loc[ids], sr1.loc[ids], fin.loc[ids]
         out.append("35. ①の平均スタート順位 × 他艇にそのコースの1着率20%以上が何艇 → ①1着 ／ ②1着（%）（レース数）")
