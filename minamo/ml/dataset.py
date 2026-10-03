@@ -16,6 +16,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from . import series as series_mod
+
 GRADE_ORD = {"A1": 4, "A2": 3, "B1": 2, "B2": 1}
 SMOOTH = 6.0  # 出走数が少ない選手を全体平均へ寄せる強さ
 F_WINDOW_DAYS = 180
@@ -71,11 +73,13 @@ WALL_FEATURES = ["wall_self", "wall_c2", "wall_min"]
 WIND_FEATURES = ["wind_tail", "wind_cross", "wave_cm"]
 # レース番号（若松などで前半のレースほど①が弱い。ナイター・モーニングの時間帯もここに出る）
 RACE_FEATURES = ["race_no"]
+# 節の初日・最終日（開催一覧の「初日」「最終日」。分からなければ空）。最終日は多くの場で①が強かった
+DAY_FEATURES = ["day_first", "day_last"]
 WALL_SMOOTH = 10.0
 
 # 画面の「要因」表示用のまとまり
 FACTOR_GROUPS = {
-    "course": ["course", "venue_i", "course_winrate_prior", "race_no"],
+    "course": ["course", "venue_i", "course_winrate_prior", "race_no", "day_first", "day_last"],
     "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order", "sr_90", "sr_c_f", "pred_start_order_f"],
     "tenkai": ["sr_gap_inner", "sr_gap_c1", "sr_gap_outer", "sr_inner_slowest_gap", "n_inner_slower",
                ],
@@ -774,6 +778,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank", "motor_no"]].copy()
     del facts
     gc.collect()
+    rows = add_day_flags(rows, raw_dir)
     rows = rows.merge(load_exhibition(raw_dir / "exhibition.csv"), on=["race_id", "lane"], how="left")
     rows = rows.merge(motors.drop(columns=["motor_no_m"]), on=["race_id", "lane"], how="left")
     rows = rows.merge(load_original(raw_dir / "original.csv"), on=["race_id", "lane"], how="left")
@@ -798,7 +803,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows["top3"] = (rows["finish"] <= 3).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
     rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
-    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":
@@ -807,6 +812,26 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     live_tables = {k: t[t["date"] == nxt].drop(columns=["date"]) for k, t in extra.items()}
     priors["motor_swaps"] = swaps
     return rows, priors, pc_tot, pa_tot, live_tables
+
+
+def day_flags(label) -> tuple[float, float]:
+    """開催一覧の日の表示（初日・2日目・最終日など）→（初日か, 最終日か）。分からなければ NaN。"""
+    if not isinstance(label, str) or not label.strip():
+        return np.nan, np.nan
+    return float("初日" in label or label.strip() == "1日目"), float("最終日" in label)
+
+
+def add_day_flags(rows: pd.DataFrame, raw_dir: Path) -> pd.DataFrame:
+    """rows に day_first・day_last を足す（開催一覧 series.csv から）。"""
+    ser = series_mod.load(raw_dir)
+    lab = dict(zip(ser["race_date"].astype(str).str.replace("-", "", regex=False).str[:8] + ser["venue"].astype(str),
+                   ser["day_label"]))
+    key = rows["race_date"].astype(str) + rows["venue"].astype(str)
+    flags = {k: day_flags(v) for k, v in lab.items()}
+    pair = key.map(flags)
+    rows["day_first"] = pair.map(lambda t: t[0] if isinstance(t, tuple) else np.nan).astype("float32")
+    rows["day_last"] = pair.map(lambda t: t[1] if isinstance(t, tuple) else np.nan).astype("float32")
+    return rows
 
 
 def totals(facts: pd.DataFrame, pc: pd.DataFrame | None = None, pa: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:

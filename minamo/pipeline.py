@@ -90,6 +90,7 @@ class Pipeline:
         if not st:
             return None
         card = _card_from(st["card"])
+        card.day_label = vday.day_label if vday else ""  # 予想の材料（節の初日・最終日）
         before = _before_from(st.get("before"))
         odds = st.get("odds") or None
         result = _result_from(st.get("result"))
@@ -209,6 +210,7 @@ class Pipeline:
         odds = parsers.parse_odds3t(self.fetcher.odds3t(date, vd.jcd, rno))
         odds2 = self._odds2(date, vd.jcd, rno)
         card = _card_from(st["card"])
+        card.day_label = vd.day_label
         self._log_odds(date, vd.jcd, rno, card.deadline, now, "pre", odds, odds2)
         new_orig = before.complete and self._original(date, vd.jcd, rno, st, card, now)
         for b in before.entries:
