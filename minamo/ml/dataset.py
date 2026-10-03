@@ -69,11 +69,13 @@ FHOLD_FEATURES = ["f_hold", "sr_fgap", "sr_c_f", "pred_start_order_f"]
 WALL_FEATURES = ["wall_self", "wall_c2", "wall_min"]
 # 風（展示後だけ）：追い風の強さ（向かい風はマイナス）・右横風の強さ（左横風はマイナス）・波
 WIND_FEATURES = ["wind_tail", "wind_cross", "wave_cm"]
+# レース番号（若松などで前半のレースほど①が弱い。ナイター・モーニングの時間帯もここに出る）
+RACE_FEATURES = ["race_no"]
 WALL_SMOOTH = 10.0
 
 # 画面の「要因」表示用のまとまり
 FACTOR_GROUPS = {
-    "course": ["course", "venue_i", "course_winrate_prior"],
+    "course": ["course", "venue_i", "course_winrate_prior", "race_no"],
     "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order", "sr_90", "sr_c_f", "pred_start_order_f"],
     "tenkai": ["sr_gap_inner", "sr_gap_c1", "sr_gap_outer", "sr_inner_slowest_gap", "n_inner_slower",
                ],
@@ -796,7 +798,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows["top3"] = (rows["finish"] <= 3).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
     rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
-    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":

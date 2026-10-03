@@ -78,7 +78,7 @@ class MLPredictor:
             b = be.get(e.boat)
             r = rt_racers.get(e.toban)
             rows.append({
-                "race_id": "live", "date": self.stats_date, "venue": card.jcd, "lane": e.boat,
+                "race_id": "live", "date": self.stats_date, "venue": card.jcd, "lane": e.boat, "race_no": float(card.rno),
                 "course": courses[e.boat], "toban": e.toban, "grade_o": ds.GRADE_ORD.get(e.grade, np.nan),
                 "motor_no": f"{e.motor_no}@{era}" if e.motor_no else np.nan,
                 "rt_day": rt.get("day", np.nan),
