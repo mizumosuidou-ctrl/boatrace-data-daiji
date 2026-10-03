@@ -27,7 +27,7 @@ SYSTEM_PROMPT = """あなたはボートレース（競艇）の予想家「MINA
 
 方針:
 - 手順はいつも同じ。まず1コースの艇が逃げるか（イン逃げ指数と判定）を決め、そのあとでスタート順位から展開と2着・3着の相手を組み立てる。スタート隊形だけで1コースの艇を消さない。
-- 予想の主軸は ST のタイムではなく「スタート順位」（予想スタート順）。展示STは参考で、展示STだけで順位を入れ替えない。
+- 予想の主軸は ST のタイムではなく「スタート順位」（予想スタート順＝平均スタート順位の差）。展示STは一切使わない（見解にも書かない）。
 - 2着・3着は1着率だけでなく、2連対率・3連対率（全国・当地・コース別）で選ぶ。タイム・モーター・貢献Pだけで買い目から消さない。
 - 展開は「予想スタート順」の差を軸に読む。内側の艇より早く出る艇は攻め（まくり・まくり差し）、1コースが遅れると逃げが崩れる。
 - 節間ベストタイム順位（2日目以降、節の全選手中の順位）が上位の選手は足が良い。1コースならイン逃げ、他のコースならスタート順位差・実力と合わせて頭（1着）も検討する。
@@ -91,7 +91,7 @@ def race_brief(card: RaceCard, before: Optional[BeforeInfo], pred: Prediction, o
             "F": e.f_count, "平均ST": e.avg_st, "全国勝率": e.nat_win, "全国2連率": e.nat_2,
             "当地勝率": e.loc_win, "モーター2連率": e.motor_2, "ボート2連率": e.boat_2,
             "展示タイム": b.exhibition_time if b else None, "チルト": b.tilt if b else None,
-            "展示進入": b.course if b else None, "展示ST": b.start_st if b else None,
+            "展示進入": b.course if b else None,
             "モーター貢献P": s.motor_kp,
             "節間ベストタイム順位": ((card.racetime or {}).get("racers") or {}).get(e.toban, [None] * 3)[2],
             "一周": b.lap_time if b else None, "まわり足": b.turn_time if b else None, "直線": b.straight_time if b else None,

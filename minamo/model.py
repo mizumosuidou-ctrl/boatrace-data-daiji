@@ -26,7 +26,6 @@ W_MOTOR = 0.022  # モーター2連率 1%
 W_BOAT = 0.006  # ボート2連率 1%
 W_AVG_ST = -9.0  # 平均ST 1.00秒（0.01速いと +0.09）
 W_EXH_TIME = -3.2  # 展示タイム 1.00秒（0.05速いと +0.16）
-W_EXH_ST = -2.5  # 展示ST
 W_F = -0.14  # F持ち1本あたり（スタートを張り込めない）
 PL_DECAY = 0.82  # 2着・3着の決まりやすさの平坦化
 
@@ -46,7 +45,6 @@ FACTOR_LABELS = {
     "start": "スタート力",
     "tenkai": "展開(ST順差)",
     "exhibition": "展示タイム",
-    "exh_st": "展示ST",
     "original": "オリジナル展示",
     "form": "最近の調子",
     "racetime": "レースタイム",
@@ -151,7 +149,6 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
     ref_boat = _avg([e.boat_2 for e in entries])
     ref_st = _avg([e.avg_st for e in entries])
     ref_exh = _avg([be_map[e.boat].exhibition_time for e in entries if e.boat in be_map])
-    ref_exst = _avg([abs(be_map[e.boat].start_st) for e in entries if e.boat in be_map and be_map[e.boat].start_st is not None])
     wind = before.wind_speed if before and before.wind_speed is not None else 0.0
 
     scores: list[BoatScore] = []
@@ -170,9 +167,7 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
         be = be_map.get(e.boat)
         if be and be.exhibition_time and ref_exh:
             f["exhibition"] = W_EXH_TIME * max(-0.25, min(0.25, be.exhibition_time - ref_exh))
-        if be and be.start_st is not None and ref_exst is not None:
-            penalty = 0.08 if be.start_st < 0 else 0.0
-            f["exh_st"] = W_EXH_ST * max(-0.15, min(0.15, abs(be.start_st) - ref_exst)) - penalty
+        # 展示STは使わない（スタートは平均スタート順位で見る）
         if wind >= 5 and not wind_mod.has_table(card.jcd):  # 場の風の表がある場は、あとで表で補正する
             # 強風はイン有利が崩れやすい
             f["wind"] = -0.07 * (wind - 4) if c == 1 else 0.03 * (wind - 4)

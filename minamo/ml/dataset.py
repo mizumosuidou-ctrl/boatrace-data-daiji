@@ -54,11 +54,9 @@ FORM_DAYS = 90
 MOTOR_DAYS = None  # モーターは交換日で区切るので、今のモーターの全期間を使う（ボートレース日和と同じ）
 ABILITY_DAYS = 365  # 貢献Pの「選手の実力」＝そのモーターに乗る前、直近1年の勝率
 WIN_POINTS = {1: 10.0, 2: 8.0, 3: 6.0, 4: 4.0, 5: 2.0, 6: 1.0}  # 勝率の点数（失格などは0点）
-EX_FEATURES = [
-    "ex_time_rel", "ex_time_rank", "ex_st", "ex_st_rank", "tilt",
-    "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap",
-    "combo_start_order",
-]
+# 展示STは予想に使わない（ユーザーの方針：スタートはすべて平均スタート順位で見る。
+# 展示STの順位は本番のスタート順位とほとんど関係がなかった）。列は作るが、学習・予想の材料には入れない。
+EX_FEATURES = ["ex_time_rel", "ex_time_rank", "tilt"]
 # オリジナル展示（一周・まわり足・直線）。場ごとに区間が違うので、レース内の差と順位だけ
 ORIG_FEATURES = [
     "lap_rel", "lap_rank", "turn_rel", "turn_rank", "straight_rel", "straight_rank",
@@ -78,14 +76,13 @@ FACTOR_GROUPS = {
     "course": ["course", "venue_i", "course_winrate_prior"],
     "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order", "sr_90", "sr_c_f", "pred_start_order_f"],
     "tenkai": ["sr_gap_inner", "sr_gap_c1", "sr_gap_outer", "sr_inner_slowest_gap", "n_inner_slower",
-               "exst_gap_inner", "exst_gap_c1", "exst_gap_outer", "exst_inner_slowest_gap", "combo_start_order"],
+               ],
     "skill": ["grade_o", "win_c", "top2_c", "top3_c", "n_all", "win_all", "top2_all"],
     "motor": ["motor_2", "motor_2_rel", "n_m", "motor_res", "motor_kp"],
     "local": ["n_v", "win_v", "top2_v"],
     "form": ["n_90", "win_90", "top2_90"],
     "racetime": RT_FEATURES,
     "exhibition": ["ex_time_rel", "ex_time_rank", "tilt"],
-    "exh_st": ["ex_st", "ex_st_rank"],
     "original": ORIG_FEATURES,
     "flying": ["f_recent", "f_hold", "sr_fgap"],
     "wall": WALL_FEATURES,
