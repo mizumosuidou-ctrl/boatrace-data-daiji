@@ -58,6 +58,12 @@ class MLPredictor:
         if path.exists():
             for r in pd.read_csv(path, dtype={"toban": str}).to_dict("records"):
                 self.profile.setdefault((r["toban"], int(r["course"])), {})[r["scope"]] = ds.profile_row(r)
+        # 選手別アビリティの自動発見（学習のたびに直近1年から）
+        self.found = {}
+        path = self.dir / "stats_found.csv.gz"
+        if path.exists():
+            for r in pd.read_csv(path, dtype={"toban": str}).to_dict("records"):
+                self.found.setdefault(r["toban"], []).append(r)
         # 2着・3着の専用モデル（採用されたときだけ）
         self.place = {}
         for name, info in (self.meta.get("place") or {}).items():
@@ -138,6 +144,7 @@ class MLPredictor:
                 "motor_2": _num_or_none(r.get("motor_2"), 2),
                 "rt_series_rank": _num_or_none(r.get("rt_series_rank"), 0),
                 "lap_time": _num_or_none(r.get("lap_time"), 2) if use_post else None,
+                "found": [a for a in self.found.get(toban, []) if int(a["course"]) in (0, course)],
             })
         try:
             return abilities_mod.evaluate(boats, prelim=not (before is not None and before.complete))

@@ -872,6 +872,8 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     extra["fhold"], priors["fgap"] = fhold_stats(facts, fstate, next_date=nxt)
     extra["wall"] = wall_stats(facts, next_date=nxt)
     profile = profile_stats(facts, fstate, f_recent, nxt)
+    from .discover import discover
+    found = discover(facts, fstate, f_recent, nxt)  # 選手別アビリティの自動発見（表示だけ）
     rt = racetime_stats(facts)
 
     rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank", "motor_no"]].copy()
@@ -910,6 +912,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     gc.collect()
     live_tables = {k: t[t["date"] == nxt].drop(columns=["date"]) for k, t in extra.items()}
     live_tables["profile"] = profile  # 画面のデータ欄用（期間別・F持ちのとき）
+    live_tables["found"] = found  # 選手別アビリティの自動発見
     priors["motor_swaps"] = swaps
     return rows, priors, pc_tot, pa_tot, live_tables
 

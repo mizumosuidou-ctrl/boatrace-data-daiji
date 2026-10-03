@@ -505,7 +505,7 @@ function skillsHtml(race) {
     <div class="who">${C[e.boat] ? courseTag(C[e.boat], e.boat, ex) : ""}${boat(e.boat, "sm")}<b>${esc(e.name)}</b></div>
     <div class="skills">${S[e.boat].map((a) => `<div class="skill ${a.bet ? "bet" : ""}">
       <div class="skill-h"><span class="rank r-${esc(a.rank)}">${esc(a.rank || "-")}</span><b>${esc(a.name)}</b>
-        <span class="chip">${a.kind === "report" ? "報告登録" : "自動検出"}</span>${a.bet ? `<span class="chip src-claude">買い目反映あり</span>` : ""}${a.prelim ? `<span class="chip">仮（展示前）</span>` : ""}</div>
+        <span class="chip">${a.kind === "report" ? "報告登録" : a.kind === "discover" ? "自動発見" : "自動検出"}</span>${a.bet ? `<span class="chip src-claude">買い目反映あり</span>` : ""}${a.prelim ? `<span class="chip">仮（展示前）</span>` : ""}</div>
       ${a.detail ? `<div class="small">${esc(a.detail)}</div>` : ""}
       ${a.strengthen ? `<div class="small muted">強化条件：${esc(a.strengthen)}</div>` : ""}
       ${a.example ? `<div class="small muted">実例：${esc(a.example)}</div>` : ""}

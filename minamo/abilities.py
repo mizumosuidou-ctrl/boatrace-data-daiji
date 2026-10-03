@@ -3,6 +3,7 @@
 - 発動コースは展示後の実際の進入コース（進入変更があれば変更後のコース）。展示前は枠なり想定で「仮」。
 - 報告登録：サーバーの var/state/abilities.json（公開しない。ユーザーの予想の材料なので GitHub には置かない）。
 - 自動検出：保存している公式成績（直近1年・前日まで、選手×コース）が走数と数値条件を満たしたとき。
+- 自動発見：学習のたびに、ふつうよりはっきり違う選手×コースを探して足す（ml/discover.py。表示だけ）。
 - 原則は検証材料の表示だけ。予想・買い目に効かせるのは「買い目反映あり」と書いたものだけ：
     ・5コース1着評価の共通ルール（5コース1着率20%以上＋追加条件1つ以上で、1着の強さを段階的に上げる）
     ・報告登録で bet を持つもの（例：1コースのとき、相手上位2艇を2着・6コース艇を3着にした2点を買い目内に残す）
@@ -100,6 +101,12 @@ def evaluate(boats: list[dict], prelim: bool = False) -> tuple[dict[int, list[di
     """各艇のアビリティ一覧・1着の強さの倍率（買い目反映ありだけ）・買い目に残す組の指示を返す。
     boats = [{boat, toban, course, prof, wall, wall_n, motor_2, rt_series_rank, lap_time}]。"""
     found: dict[int, list[dict]] = {b["boat"]: auto(b) for b in boats}
+    for b in boats:  # 自動発見（学習のたびに直近1年の成績から。表示だけ）
+        names = {a["name"] for a in found[b["boat"]]}
+        for a in b.get("found") or []:
+            if a["name"] not in names:
+                found[b["boat"]].append({"name": a["name"], "rank": a.get("rank", ""), "kind": "discover",
+                                         "detail": a.get("detail", "")})
     mult: dict[int, float] = {}
     keep: list[dict] = []
     five = five_course(boats)
