@@ -200,6 +200,17 @@ def test_settle_records_old_style_picks_for_comparison():
     pred = {"boats": [], "trifecta": [{"combo": c, "p": 0.1} for c in ["1-2-3", "1-3-2", "2-1-3", "1-2-4", "1-4-2", "1-3-4", "2-3-1"]]}
     st = store.settle({"honmei": 1, "picks": [{"combo": "1-2-3"}]}, res, pred)
     assert not st["trifecta_hit"] and st["alt_hit"] and st["alt_stake"] == 600 and st["alt_return"] == 2400
+    # 予想手順の6点が予想に入っていれば、それも別に数える
+    st = store.settle({"honmei": 1, "picks": [{"combo": "2-1-3"}]}, res, {**pred, "method_picks": ["1-2-3", "1-3-2"]})
+    assert st["trifecta_hit"] and not st["m6_hit"] and st["m6_stake"] == 200 and st["m6_return"] == 0
+
+
+def test_picks_are_top6_by_probability():
+    card = parsers.parse_racelist(RACELIST_HTML, "20261001", "12", 12)
+    pred = predict(card)
+    main = [p["combo"] for p in pred.picks if p["kind"] == "本線"]
+    assert main == [c for c, _ in pred.trifecta[:6]]
+    assert len(pred.method_picks) == 6 and pred.to_dict()["method_picks"] == pred.method_picks
 
 
 def test_fallback_follows_method_order():

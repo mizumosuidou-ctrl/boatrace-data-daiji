@@ -90,6 +90,12 @@ def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Option
         out["alt_hit"] = result.trifecta in alt
         out["alt_stake"] = 100 * len(alt)
         out["alt_return"] = payout if result.trifecta in alt else 0
+    # 比べ用：予想手順（逃げ判定ごとの形）の6点。10/3からは公開の買い目が確率上位6点なので、こちらで数える
+    if pred and pred.get("method_picks"):
+        mp = list(pred["method_picks"])
+        out["m6_hit"] = result.trifecta in mp
+        out["m6_stake"] = 100 * len(mp)
+        out["m6_return"] = payout if result.trifecta in mp else 0
     # 試験中：オッズで絞った買い目（締切前に決めた組。None＝記録なし、空＝見送り）
     if ev is not None:
         out["ev_bought"] = bool(ev)
@@ -243,9 +249,14 @@ def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
                     totals["alt_hits"] += int(st["alt_hit"])
                     totals["alt_stake"] += st["alt_stake"]
                     totals["alt_return"] += st["alt_return"]
-                    totals["method_hits"] += int(st["trifecta_hit"])  # 同じレースでの予想手順の成績
-                    totals["method_stake"] += st["stake"]
-                    totals["method_return"] += st["return"]
+                    if "m6_hit" in st:  # 予想手順の6点（公開の買い目が上位6点になってから）
+                        totals["method_hits"] += int(st["m6_hit"])
+                        totals["method_stake"] += st["m6_stake"]
+                        totals["method_return"] += st["m6_return"]
+                    else:  # それまでは公開の買い目が予想手順だった
+                        totals["method_hits"] += int(st["trifecta_hit"])
+                        totals["method_stake"] += st["stake"]
+                        totals["method_return"] += st["return"]
                 if "ev_hit" in st:
                     totals["ev_races"] += 1
                     totals["ev_bought"] += int(st["ev_bought"])

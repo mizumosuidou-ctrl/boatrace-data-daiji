@@ -101,7 +101,9 @@ def load_minamo(data_dir: Path, escape: Optional[dict] = None) -> tuple[dict[str
         tri = _combos(res.get("trifecta"))
         if tri and not res.get("cancelled") and res.get("payout"):
             results[rid] = (tri[0], int(res["payout"]))
-        picks = _combos(" ".join(x.get("combo", "") for x in (race.get("ai") or {}).get("picks", [])))
+        # 方式＝予想手順の6点。10/3からは公開の買い目が上位6点なので、予想に残した method_picks を使う
+        method = (race.get("prediction") or {}).get("method_picks")
+        picks = _combos(" ".join(method) if method else " ".join(x.get("combo", "") for x in (race.get("ai") or {}).get("picks", [])))
         if picks:
             out["MINAMO 方式"][rid] = picks
         top = _combos(" ".join(x.get("combo", "") for x in ((race.get("prediction") or {}).get("trifecta") or [])[:6]))

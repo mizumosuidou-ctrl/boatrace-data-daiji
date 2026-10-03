@@ -261,6 +261,9 @@ def analyze(card: RaceCard, before: Optional[BeforeInfo], pred: Prediction, odds
     if not _valid(ai, {e.boat for e in card.entries if not e.absent}):
         return fallback
     ai["confidence"] = max(0, min(100, int(ai["confidence"])))
+    # 買い目はMINAMOの確率上位6点にそろえる（Claudeの選んだ組は比べ用に残す）
+    ai["claude_picks"] = ai["picks"]
+    ai["picks"] = fallback["picks"]
     ai["source"] = "claude"
     ai["model"] = response.model
     return ai
