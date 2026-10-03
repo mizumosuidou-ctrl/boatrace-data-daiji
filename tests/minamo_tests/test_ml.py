@@ -670,6 +670,7 @@ def test_venue_check_more_sections(tmp_path):
     assert "46. 開催の種類" in text and "47. 風の強さ" in text
     assert "50. 隣どうし" in text and "52. 1位と2位" in text and "53. 福岡" in text
     assert "55. 隣どうしの平均スタート順位の差の帯" in text and "56. 風" in text
+    assert "57. 大村" in text
 
 
 def test_venue_check_class_ranks_and_conditions():

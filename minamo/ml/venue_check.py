@@ -58,6 +58,9 @@
   54. トップスタート率（本番のスタート順位が1位だった率・選手・直近1年）30%以上の艇の、②〜④の1着率
   55. ②と③、③と④の平均スタート順位の差の帯ごとの、②〜⑤の1着率（③が攻めやすい差・④まくりの差）
   56. 風ごとの、①が4着以下になる率（234-1）と負けたとき2・3着に残る率／②の展示タイム順位ごとの①の1着率
+  57. 大村の展示×風の項目（向かい風5m以上で①展示4位以下、①のST順位最下位＋展示4位以下、無風で①の展示・周回上位、
+      追い風4m以上で②展示1位、①B1で展示最下位、③展示上位＋ST順位1位、⑤回り足か周回1位＋直線最下位）
+  58. 初日に①が②③④の一番早い艇より平均スタート順位で1.0〜1.5・1.5以上遅く、展示も4位以下のときの①の1着率
 """
 from __future__ import annotations
 
@@ -325,6 +328,7 @@ def build(raw: Path, venue: str) -> str:
         lines.extend(_ashiya(part, pers, weather, exr, orig, piv if len(ok) else None))
         lines.extend(_fukuoka(part, exr, orig, cls, topst, piv if len(ok) else None))
         lines.extend(_karatsu(part, exr, weather, piv if len(ok) else None))
+        lines.extend(_omura(part, exr, orig, cls, weather, piv if len(ok) else None))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -1096,6 +1100,73 @@ def _karatsu(part: pd.DataFrame, exr: pd.DataFrame, weather: pd.DataFrame, piv) 
             cells = [f"{tag} {pct(f[m])}%({int(m.sum())})" for tag, m in
                      (("②展示1〜2位", e <= 2), ("②展示3〜4位", e.between(3, 4)), ("②展示5〜6位", e >= 5)) if m.sum()]
             out.append("  ②の展示タイム順位 → ①1着率  " + "  ".join(cells))
+    return out
+
+
+def _omura(part: pd.DataFrame, exr: pd.DataFrame, orig: pd.DataFrame, cls: pd.DataFrame,
+           weather: pd.DataFrame, piv) -> list[str]:
+    """57・58：展示×風の項目、初日の①の遅れ×展示。"""
+    out = []
+    pct = lambda s, k=1: f"{100 * (s <= k).mean():.1f}" if len(s) else "-"
+    b = _boat_ranks(part, exr, orig).merge(cls, on=["race_id", "lane"], how="left").merge(
+        weather[["race_id", "category", "speed"]], on="race_id", how="left")
+    sr = part.dropna(subset=["avg_sr"]).drop_duplicates(["race_id", "course"])
+    sr = sr[sr.groupby("race_id")["course"].transform("count") == 6]
+    sr = sr.assign(st_rk=sr.groupby("race_id")["avg_sr"].rank(method="max"))
+    b = b.merge(sr[["race_id", "course", "st_rk"]], on=["race_id", "course"], how="left")
+    by = {c: b[b["course"] == c].drop_duplicates("race_id").set_index("race_id") for c in range(1, 7)}
+    one, two, three, five = by[1], by[2], by[3], by[5]
+    rows = []
+
+    def line(tag, g, m, base_tag, base, k=1, who="①1着"):
+        if m.sum() >= 10:
+            rows.append(f"  {tag} {who} {pct(g.loc[m, 'finish'], k)}%({int(m.sum())})  {base_tag} {pct(g.loc[base, 'finish'], k)}%")
+
+    if len(one) >= 50:
+        head = (one["category"] == "向かい風") & (one["speed"] >= 5)
+        line("向かい風5m以上で①展示4位以下", one, head & (one["ex"] >= 4), "向かい風5m以上で①展示3位以内", head & (one["ex"] <= 3))
+        low = (one["st_rk"] == 6) & (one["ex"] >= 4)
+        line("①ST順位最下位＋展示4位以下", one, low, "①ふだん", one["finish"].notna())
+        left = (one["category"] == "左横風") & (one["speed"] >= 4)
+        line("左横風4m以上で①ST順位最下位＋展示4位以下", one, left & low, "左横風4m以上の①", left)
+        calm = one["speed"].fillna(0) <= 2
+        good = (one["ex"] <= 2) | (one["lap"] <= 2)
+        line("2mまでで①展示か周回2位以内", one, calm & good, "2mまでのそれ以外", calm & ~good)
+        b1 = one["klass"] == "B1"
+        line("①B1で展示6位", one, b1 & (one["ex"] == 6), "①B1のふだん", b1)
+    if len(two) >= 50:
+        tail = (two["category"] == "追い風") & (two["speed"] >= 4)
+        line("追い風4m以上で②展示1位", two, tail & (two["ex"] == 1), "②展示1位のふだん", ~tail & (two["ex"] == 1), who="②1着")
+        if len(one):
+            f1 = one["finish"].reindex(two.index)
+            m = two["ex"] == 1
+            if m.sum() >= 10:
+                rows.append(f"  ②展示1位 → 2-1 {100 * ((two.loc[m, 'finish'] == 1) & (f1[m] == 2)).mean():.1f}%"
+                            f"  1-2 {100 * ((two.loc[m, 'finish'] == 2) & (f1[m] == 1)).mean():.1f}%({int(m.sum())})"
+                            f"  ②展示2位以下 2-1 {100 * ((two.loc[~m, 'finish'] == 1) & (f1[~m] == 2)).mean():.1f}%")
+    if len(three) >= 50:
+        line("③展示2位以内＋ST順位1位", three, (three["ex"] <= 2) & (three["st_rk"] == 1), "③ふだん", three["finish"].notna(), who="③1着")
+    if len(five) >= 50:
+        m = ((five["turn"] == 1) | (five["lap"] == 1)) & (five["straight"] == 6)
+        line("⑤回り足か周回1位＋直線最下位", five, m, "⑤オリ展ありのふだん", five["straight"].notna(), k=3, who="⑤3着以内")
+    if rows:
+        out.append("57. 大村の展示×風の項目 → 1着率など（%）（走数）")
+        out.extend(rows)
+    # 58
+    if piv is not None and all(c in piv for c in (1, 2, 3, 4)) and len(one):
+        r = piv.dropna(subset=[1, 2, 3, 4])
+        late = (r[1] - r[[2, 3, 4]].min(axis=1)).reindex(one.index)
+        first = part.drop_duplicates("race_id").set_index("race_id")["first_day"].reindex(one.index).fillna(False).astype(bool)
+        weak = one["ex"] >= 4
+        cells = []
+        for dtag, dm in (("初日", first), ("それ以外", ~first)):
+            for tag, m in (("1.0〜1.5遅い", late.between(1.0, 1.5, inclusive="left")), ("1.5以上遅い", late >= 1.5)):
+                mm = dm & m & weak
+                if mm.sum() >= 10:
+                    cells.append(f"{dtag}{tag}＋展示4位以下 {pct(one.loc[mm, 'finish'])}%({int(mm.sum())})")
+        if cells:
+            out.append("58. ①が②③④の一番早い艇より平均スタート順位で遅い × 展示4位以下 × 初日 → ①1着率（%）（レース数）")
+            out.append("  " + "  ".join(cells))
     return out
 
 
