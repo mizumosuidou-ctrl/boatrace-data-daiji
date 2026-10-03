@@ -22,7 +22,7 @@
   18. 展示の組み合わせ（展示1位＋一周1位など）ごとの、コース別1着率・3着以内率
   19. 展示STの順位ごとの、本番のスタート順位と3着以内率
   20. ④が展示タイムも平均スタート順位も③より上のときの、④と⑤の成績
-  21. 壁：②の選手の1コース1着率（全場・直近1年）ごとの、①の1着率
+  21. 壁：②の選手が2コースに入ったレースの①の逃げ率（全場・直近1年）ごとの、①の1着率
 """
 from __future__ import annotations
 
@@ -98,8 +98,7 @@ def build(raw: Path, venue: str) -> str:
     exr = _ex_ranks(raw)
     waves = ds.load_weather(raw / "weather.csv")[["race_id", "wave_cm"]].dropna()
     rain = _rain(raw)
-    wall1 = _course_top3(allf[allf["course"] == 1])  # 全場の1コース成績（壁を見る）
-    wall1 = wall1[["toban", "date", "win_rate", "t3_n"]].rename(columns={"win_rate": "c1_win", "t3_n": "c1_n"})
+    wall1 = _wall_rates(allf)  # ②の選手が2コースに入ったときの①の逃げ率（全場・直近1年）
     lines = [f"{name}：{df['date'].min().date()}〜{df['date'].max().date()}  {df['race_id'].nunique():,}レース"
              "（女子＝全員女子のレース）", "数字は1〜6コースの1着率（%）"]
 
@@ -330,19 +329,33 @@ def _four_vs_three(part: pd.DataFrame, exr: pd.DataFrame, piv) -> list[str]:
     return out
 
 
+def _wall_rates(allf: pd.DataFrame) -> pd.DataFrame:
+    """（登番, 日付）ごとに、その選手が2コースに入ったレース（その日より前の直近1年・全場）で①が1着だった率。"""
+    c1 = allf[allf["course"] == 1].drop_duplicates("race_id").set_index("race_id")["finish"]
+    c2 = allf[allf["course"] == 2][["race_id", "toban", "date"]].copy()
+    c2["w"] = c2["race_id"].map(c1 == 1)
+    c2 = c2[c2["race_id"].map(c1).notna()]
+    c2["w"] = c2["w"].astype(float)
+    daily = c2.groupby(["toban", "date"], as_index=False)["w"].agg(s="sum", n="count")
+    daily = daily.sort_values(["toban", "date"]).set_index("date")
+    roll = daily.groupby("toban")[["s", "n"]].rolling(ft.WINDOW, closed="left").sum().reset_index()
+    roll["c1_win"] = roll["s"] / roll["n"]
+    return roll.rename(columns={"n": "c1_n"})[["toban", "date", "c1_win", "c1_n"]]
+
+
 def _wall(part: pd.DataFrame, c1: pd.DataFrame) -> list[str]:
-    """②の選手の1コース1着率（全場・直近1年・10走以上）→ ①の1着率。"""
+    """②の選手が2コースのときの①の逃げ率（全場・直近1年・10走以上）→ このレースの①の1着率。"""
     two = part[part["course"] == 2][["race_id", "toban", "date"]].merge(c1, on=["toban", "date"], how="inner")
     two = two[two["c1_n"] >= 10]
     one = part[part["course"] == 1][["race_id", "finish"]]
     d = two.merge(one, on="race_id", how="inner")
     if len(d) < 50:
         return []
-    out = ["21. 壁：②の選手の1コース1着率（全場・直近1年・10走以上）→ ①の1着率（レース数）"]
-    for lo, hi, tag in ((0, 0.3, "30%未満"), (0.3, 0.4, "30〜40%"), (0.4, 0.5, "40〜50%"), (0.5, 1.01, "50%以上")):
+    out = ["21. 壁：②の選手が2コースに入ったときの①の逃げ率（全場・直近1年・10走以上）→ このレースの①1着率（レース数）"]
+    for lo, hi, tag in ((0, 0.3, "30%未満"), (0.3, 0.4, "30〜40%"), (0.4, 0.5, "40〜50%"), (0.5, 0.6, "50〜60%"), (0.6, 1.01, "60%以上")):
         g = d[(d["c1_win"] >= lo) & (d["c1_win"] < hi)]
         if len(g):
-            out.append(f"  ②が{wind_table._pad(tag, 10)}①1着 {100 * (g['finish'] == 1).mean():5.1f}%  ({len(g)}R)")
+            out.append(f"  壁が{wind_table._pad(tag, 10)}①1着 {100 * (g['finish'] == 1).mean():5.1f}%  ({len(g)}R)")
     return out
 
 
