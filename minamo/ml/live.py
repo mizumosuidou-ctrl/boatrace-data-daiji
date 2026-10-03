@@ -145,7 +145,7 @@ class MLPredictor:
                 idx = [feats.index(c) for c in cols if c in feats]
                 if idx:
                     groups[g] = float(contrib[i, idx].sum())
-            order = "combo_start_order" if use_post else "pred_start_order"
+            order = "pred_start_order"  # 展示STは使わず、平均スタート順位だけで並べる
             out[int(boat)] = {
                 "p": float(p[i]),
                 "factors": groups,
