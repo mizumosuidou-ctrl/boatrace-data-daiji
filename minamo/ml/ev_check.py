@@ -86,9 +86,10 @@ def strategies() -> dict:
     def top(k):
         return lambda r: sorted(r["probs"], key=r["probs"].get, reverse=True)[:k]
 
-    def ev_over(th, k=6):
+    def ev_over(th, k=6, upper=None):
         def f(r):
-            cand = [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True) if r["probs"][c] >= MIN_P and _ev(r, c) >= th]
+            cand = [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True)
+                    if r["probs"][c] >= MIN_P and _ev(r, c) >= th and (upper is None or _ev(r, c) < upper)]
             return cand[:k]
         return f
 
@@ -105,6 +106,10 @@ def strategies() -> dict:
         "期待値1.0以上・最大6点": ev_over(1.0),
         "期待値1.2以上・最大6点": ev_over(1.2),
         "期待値1.5以上・最大6点": ev_over(1.5),
+        # 期待値2.0以上はMINAMOの確率が高すぎる（実際はその1/3ほど）ので、上を切る
+        "期待値1.2〜2.0・最大6点": ev_over(1.2, upper=2.0),
+        "期待値1.5〜2.0・最大6点": ev_over(1.5, upper=2.0),
+        "期待値1.2〜2.0・最大4点": ev_over(1.2, k=4, upper=2.0),
         "上位3点＋期待値上位3点": mix,
         "期待値上位6点（確率1%以上）": ev_top,
     }
