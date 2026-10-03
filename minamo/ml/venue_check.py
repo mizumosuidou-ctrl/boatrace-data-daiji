@@ -30,6 +30,7 @@
   26. 20%理論：②〜⑥でそのコースの1着率（選手・全場・直近1年）が20%以上の艇の数ごとの、①の1着率
   27. 攻めた艇（③・④）ごとの、⑤・⑥の2連対率と3着以内率
   28. ①の展示タイムが3位以下でも、一周・回り足・直線のどれかが2位以内のときの、①の1着率
+  29. 初日とそれ以外の日で、展示タイム・一周・回り足・直線が1位の艇の1着率・3着以内率
 """
 from __future__ import annotations
 
@@ -284,6 +285,7 @@ def build(raw: Path, venue: str) -> str:
         lines.extend(_wall(part, wall1))
         lines.extend(_amagasaki(part, pers, exr))
         lines.extend(_naruto(part, pers, exr, orig, piv if len(ok) else None))
+        lines.extend(_first_day_ex(part, exr, orig))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -470,6 +472,23 @@ def _naruto(part: pd.DataFrame, pers: pd.DataFrame, exr: pd.DataFrame, orig: pd.
             g = one[m]
             if len(g):
                 out.append(f"  {wind_table._pad(tag, 30)}{100 * (g['finish'] == 1).mean():5.1f}%  ({len(g)})")
+    return out
+
+
+def _first_day_ex(part: pd.DataFrame, exr: pd.DataFrame, orig: pd.DataFrame) -> list[str]:
+    """29：初日とそれ以外で、展示系1位の当たり方を比べる。"""
+    br = _boat_ranks(part, exr, orig).merge(part[["race_id", "lane", "first_day"]], on=["race_id", "lane"], how="left")
+    out = []
+    for key, tag in RANK_COLS:
+        cells = []
+        for dtag, m in (("初日", br["first_day"] == True), ("それ以外", br["first_day"] != True)):  # noqa: E712
+            g = br[m & (br[key] == 1)]
+            if len(g) >= 20:
+                cells.append(f"{dtag} {100 * (g['finish'] == 1).mean():.0f}/{100 * (g['finish'] <= 3).mean():.0f}({len(g)})")
+        if len(cells) == 2:
+            if not out:
+                out.append("29. 初日とそれ以外 → 1位の艇の1着率 / 3着以内率（%）（走数）")
+            out.append(f"  {wind_table._pad(tag, 8)}" + "  ".join(cells))
     return out
 
 
