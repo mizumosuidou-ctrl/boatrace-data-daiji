@@ -56,6 +56,8 @@
   52. 展示タイム1位と2位の差（0.02以内・0.03〜0.05・0.06以上）、一周1位と2位の差（0.10秒）ごとの、1位の艇の1着率
   53. 福岡のスコア項目（①の展示＋回り足1位、①の直線5〜6位、①がA2以下で②の方が早い、②・④・⑥の足の条件）
   54. トップスタート率（本番のスタート順位が1位だった率・選手・直近1年）30%以上の艇の、②〜④の1着率
+  55. ②と③、③と④の平均スタート順位の差の帯ごとの、②〜⑤の1着率（③が攻めやすい差・④まくりの差）
+  56. 風ごとの、①が4着以下になる率（234-1）と負けたとき2・3着に残る率／②の展示タイム順位ごとの①の1着率
 """
 from __future__ import annotations
 
@@ -322,6 +324,7 @@ def build(raw: Path, venue: str) -> str:
         lines.extend(_wakamatsu(part, wall1, exr, orig, odds))
         lines.extend(_ashiya(part, pers, weather, exr, orig, piv if len(ok) else None))
         lines.extend(_fukuoka(part, exr, orig, cls, topst, piv if len(ok) else None))
+        lines.extend(_karatsu(part, exr, weather, piv if len(ok) else None))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -1047,6 +1050,55 @@ def _fukuoka(part: pd.DataFrame, exr: pd.DataFrame, orig: pd.DataFrame, cls: pd.
     return out
 
 
+def _karatsu(part: pd.DataFrame, exr: pd.DataFrame, weather: pd.DataFrame, piv) -> list[str]:
+    """55・56：②③・③④の平均スタート順位の差の帯、風と①の着外・残り、②の展示と①。"""
+    out = []
+    fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
+    pct = lambda s, k=1: f"{100 * (s <= k).mean():.1f}" if len(s) else "-"
+    # 55
+    if piv is not None and all(c in piv for c in (2, 3, 4)) and all(c in fin for c in (2, 3, 4, 5)):
+        r = piv[[2, 3, 4]].dropna()
+        r = r[r.index.isin(fin.index)]
+        f = fin.loc[r.index]
+        rows = []
+        for a, b, cols in ((2, 3, (2, 3, 5)), (3, 4, (3, 4, 5))):
+            d = r[a] - r[b]  # プラス＝外の艇が早い
+            cells = []
+            for tag, m in (("内が早い", d < 0), ("外が0〜0.2早い", d.between(0, 0.2, inclusive="left")),
+                           ("外が0.2〜0.3", d.between(0.2, 0.3, inclusive="left")), ("外が0.3〜0.4", d.between(0.3, 0.4)),
+                           ("外が0.4〜0.7", (d > 0.4) & (d < 0.7)), ("外が0.7以上", d >= 0.7)):
+                if m.sum() >= 20:
+                    cells.append(f"{tag} " + "/".join(pct(f.loc[m, c]) for c in cols) + f"({int(m.sum())})")
+            rows.append(f"  {a}と{b}（{'・'.join(str(c) for c in cols)}コースの1着率）  " + "  ".join(cells))
+        out.append("55. 隣どうしの平均スタート順位の差の帯 → 1着率（%）（レース数）")
+        out.extend(rows)
+    # 56
+    one = part[part["course"] == 1].drop_duplicates("race_id")[["race_id", "finish"]].merge(
+        weather[["race_id", "category", "speed"]], on="race_id", how="left")
+    one = one[one["finish"].notna()]
+    if len(one) >= 50:
+        out.append("56. 風 → ①が4着以下（234-1）の率 ／ ①が負けたとき2・3着に残る率（%）（レース数）")
+        cells = []
+        for tag, m in (("3mまで", one["speed"] <= 3), ("追い風4m以上", (one["category"] == "追い風") & (one["speed"] >= 4)),
+                       ("向かい風4m以上", (one["category"] == "向かい風") & (one["speed"] >= 4)),
+                       ("横風4m以上", one["category"].isin(["左横風", "右横風"]) & (one["speed"] >= 4))):
+            g = one.loc[m, "finish"]
+            if len(g) >= 20:
+                lost = g[g != 1]
+                cells.append(f"{tag} 着外 {100 * (g >= 4).mean():.1f} 残り {100 * lost.between(2, 3).mean():.1f}({len(g)})")
+        out.append("  " + "  ".join(cells))
+        x = part[part["course"] == 2].merge(exr[["race_id", "lane", "ex_rank"]], on=["race_id", "lane"], how="inner")
+        x = x.drop_duplicates("race_id").set_index("race_id")["ex_rank"]
+        f1 = one.set_index("race_id")["finish"]
+        ids = [r for r in x.index if r in f1.index]
+        if len(ids) >= 50:
+            e, f = x.loc[ids], f1.loc[ids]
+            cells = [f"{tag} {pct(f[m])}%({int(m.sum())})" for tag, m in
+                     (("②展示1〜2位", e <= 2), ("②展示3〜4位", e.between(3, 4)), ("②展示5〜6位", e >= 5)) if m.sum()]
+            out.append("  ②の展示タイム順位 → ①1着率  " + "  ".join(cells))
+    return out
+
+
 def _rain(raw: Path) -> set:
     """雨・雪のレース（weather.csv の天気）。"""
     path = Path(raw) / "weather.csv"
@@ -1078,9 +1130,11 @@ def _conditions(part: pd.DataFrame, weather: pd.DataFrame, waves: pd.DataFrame, 
     p = p.merge(waves, on="race_id", how="left")
     conds = (("ふだん", p["race_id"].notna()),
              ("追い風2m以上", (p["category"] == "追い風") & (p["speed"] >= 2)),
+             ("追い風4m以上", (p["category"] == "追い風") & (p["speed"] >= 4)),
              ("追い風6m以上", (p["category"] == "追い風") & (p["speed"] >= 6)),
              ("向かい風6m以上", (p["category"] == "向かい風") & (p["speed"] >= 6)),
              ("右横風3m以上", (p["category"] == "右横風") & (p["speed"] >= 3)),
+             ("右横風4m以上", (p["category"] == "右横風") & (p["speed"] >= 4)),
              ("左横風3m以上", (p["category"] == "左横風") & (p["speed"] >= 3)),
              ("波6cm以上", p["wave_cm"] >= 6),
              ("雨・雪", p["race_id"].isin(rain)))
