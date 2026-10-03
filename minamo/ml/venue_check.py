@@ -27,6 +27,9 @@
   23. ②の選手の2コース1着率（全場・直近1年）ごとの、①の1着率
   24. ②の平均スタート順位が遅いときの、③の1着率と④の3着以内率
   25. ②の展示タイム順位ごとの、②の2・3着率と3着以内率
+  26. 20%理論：②〜⑥でそのコースの1着率（選手・全場・直近1年）が20%以上の艇の数ごとの、①の1着率
+  27. 攻めた艇（③・④）ごとの、⑤・⑥の2連対率と3着以内率
+  28. ①の展示タイムが3位以下でも、一周・回り足・直線のどれかが2位以内のときの、①の1着率
 """
 from __future__ import annotations
 
@@ -103,7 +106,7 @@ def build(raw: Path, venue: str) -> str:
     waves = ds.load_weather(raw / "weather.csv")[["race_id", "wave_cm"]].dropna()
     rain = _rain(raw)
     wall1 = _wall_rates(allf)  # ②の選手が2コースに入ったときの①の逃げ率（全場・直近1年）
-    pers = _course_top3(allf[allf["course"].isin([1, 2])])  # 選手のコース別成績（全場・直近1年）
+    pers = _course_top3(allf)  # 選手のコース別成績（全場・直近1年）
     lines = [f"{name}：{df['date'].min().date()}〜{df['date'].max().date()}  {df['race_id'].nunique():,}レース"
              "（女子＝全員女子のレース）", "数字は1〜6コースの1着率（%）"]
 
@@ -280,6 +283,7 @@ def build(raw: Path, venue: str) -> str:
         lines.extend(_four_vs_three(part, exr, piv if len(ok) else None))
         lines.extend(_wall(part, wall1))
         lines.extend(_amagasaki(part, pers, exr))
+        lines.extend(_naruto(part, pers, exr, orig, piv if len(ok) else None))
         # 11. コースごとの展示順位
         lines.extend(_course_ranks(part, exr, orig))
         # 17・18. 級別の展示順位、展示の組み合わせ
@@ -416,6 +420,56 @@ def _amagasaki(part: pd.DataFrame, pers: pd.DataFrame, exr: pd.DataFrame) -> lis
             g = x[x["ex_rank"].between(lo, hi)]
             if len(g):
                 out.append(f"  展示{wind_table._pad(tag, 8)}2・3着 {100 * g['finish'].between(2, 3).mean():5.1f}%  3着以内 {100 * (g['finish'] <= 3).mean():5.1f}%  ({len(g)})")
+    return out
+
+
+def _naruto(part: pd.DataFrame, pers: pd.DataFrame, exr: pd.DataFrame, orig: pd.DataFrame, piv) -> list[str]:
+    """26〜28：20%理論、攻めた艇と⑤⑥、①の一芸逃げ。"""
+    out = []
+    fin = part.pivot_table(index="race_id", columns="course", values="finish", aggfunc="first")
+    # 26
+    p = part.merge(pers[["toban", "course", "date", "win_rate", "t3_n"]], on=["toban", "course", "date"], how="left")
+    p["strong"] = (p["win_rate"] >= 0.2) & (p["t3_n"] >= 10)
+    cnt = p[p["course"].between(2, 6)].groupby("race_id")["strong"].sum()
+    ids = [r for r in cnt.index if r in fin.index and 1 in fin]
+    if len(ids) >= 50:
+        c, f1 = cnt.loc[ids], fin.loc[ids, 1]
+        out.append("26. 20%理論：②〜⑥でそのコースの1着率（選手・全場・直近1年・10走以上）が20%以上の艇の数 → ①1着率（レース数）")
+        cells = []
+        for n, tag in ((0, "0人"), (1, "1人"), (2, "2人"), (3, "3人以上")):
+            m = c >= n if n == 3 else c == n
+            if m.sum():
+                cells.append(f"{tag} {100 * (f1[m] == 1).mean():.1f}%({int(m.sum())})")
+        out.append("  " + "  ".join(cells))
+    # 27
+    if piv is not None and all(c in piv for c in (1, 2, 3, 4)):
+        ok = [r for r in piv.index if r in fin.index and piv.loc[r, [1, 2, 3, 4]].notna().all()]
+        if len(ok) >= 50:
+            r, f = piv.loc[ok], fin.loc[ok]
+            att = r[[2, 3, 4]].idxmin(axis=1)
+            attack = r[[2, 3, 4]].min(axis=1) < r[1]
+            out.append("27. 攻めた艇（②③④で一番早く、①より早い）→ ⑤・⑥の2連対率 ／ 3着以内率（ふだんと比べる）")
+            for a in (3, 4):
+                m = attack & (att == a)
+                if m.sum() < 20:
+                    continue
+                cells = []
+                for c in (5, 6):
+                    if c in f:
+                        cells.append(f"{c}C {100 * (f.loc[m, c] <= 2).mean():.1f}/{100 * (f.loc[m, c] <= 3).mean():.1f}"
+                                     f"（ふだん {100 * (f.loc[~m, c] <= 2).mean():.1f}/{100 * (f.loc[~m, c] <= 3).mean():.1f}）")
+                out.append(f"  {a}が攻め  " + "  ".join(cells) + f"  ({int(m.sum())}R)")
+    # 28
+    br = _boat_ranks(part, exr, orig)
+    one = br[(br["course"] == 1) & br["ex"].notna() & br[["lap", "turn", "straight"]].notna().any(axis=1)]
+    if len(one) >= 50:
+        good = (one[["lap", "turn", "straight"]] <= 2).any(axis=1)
+        out.append("28. ①の展示タイム順位と、一周・回り足・直線のどれかが2位以内か → ①1着率（走数）")
+        for tag, m in (("展示1〜2位", one["ex"] <= 2), ("展示3位以下＋オリ展2位以内あり", (one["ex"] >= 3) & good),
+                       ("展示3位以下＋オリ展も3位以下", (one["ex"] >= 3) & ~good)):
+            g = one[m]
+            if len(g):
+                out.append(f"  {wind_table._pad(tag, 30)}{100 * (g['finish'] == 1).mean():5.1f}%  ({len(g)})")
     return out
 
 
