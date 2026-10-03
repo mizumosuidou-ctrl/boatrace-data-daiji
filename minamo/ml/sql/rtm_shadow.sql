@@ -1,4 +1,5 @@
 -- レースタイムモニターの裏の予想（shadow_prediction_runs）の本線5点・12点と、その結果（shadow_prediction_outcomes）。読むだけ。
+-- 全期間だと重いので、直近14日分だけ
 COPY (
   WITH o AS (
     SELECT payload->>'prediction_id' AS pid, payload->>'trifecta' AS trifecta, payload->>'trifecta_payout' AS payout
@@ -22,5 +23,7 @@ COPY (
     SELECT CASE WHEN left(r.payload->>'prediction_json', 1) = '{' THEN (r.payload->>'prediction_json')::jsonb END AS p
   ) AS x
   LEFT JOIN o ON o.pid = r.payload->>'id'
-  WHERE r.source_table = 'shadow_prediction_runs' AND r.payload->>'status' = 'READY' AND p IS NOT NULL
+  WHERE r.source_table = 'shadow_prediction_runs' AND r.payload->>'status' = 'READY'
+    AND replace(r.payload->>'race_date', '-', '') >= to_char(current_date - 14, 'YYYYMMDD')
+    AND p IS NOT NULL
 ) TO STDOUT WITH CSV HEADER;
