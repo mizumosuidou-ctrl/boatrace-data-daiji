@@ -259,7 +259,69 @@ def race_summary(race: dict) -> dict:
         "honmei_win": st.get("honmei_win"),
         "escape": (pred.get("escape") or {}).get("index"),
         "formation": (race.get("formation") or {}).get("key"),
+        "ev_bought": st.get("ev_bought"),
+        "ev_hit": st.get("ev_hit"),
+        "ev_stake": st.get("ev_stake"),
     }
+
+
+STREAK_BUCKETS = ((0, 0, "0"), (1, 1, "1"), (2, 2, "2"), (3, 3, "3"), (4, 5, "4〜5"), (6, 9, "6〜9"),
+                  (10, 14, "10〜14"), (15, 19, "15〜19"), (20, 29, "20〜29"), (30, 10**9, "30以上"))
+
+
+def losing_streaks(rows: list[dict]) -> dict:
+    """締切順のレース（hit・stake・label）から連敗の記録。stake は1点100円で数えた投資。
+    倍賭け：はずれるたびに次のレースの賭け金を2倍、当たったら元に戻す。その間に投じた合計（1点1,000円）。"""
+    runs, cur, cur_from, cur_cost, mult = [], 0, None, 0, 1
+    for r in rows:
+        cost = 10 * (r.get("stake") or 0) * mult
+        if r["hit"]:
+            runs.append({"len": cur, "from": cur_from, "end": r["label"], "payout": r.get("payout"),
+                         "martingale": cur_cost + cost})
+            cur, cur_from, cur_cost, mult = 0, None, 0, 1
+        else:
+            cur_from = cur_from or r["label"]
+            cur += 1
+            cur_cost += cost
+            mult *= 2
+    longest = max(runs + ([{"len": cur, "from": cur_from, "end": None, "martingale": cur_cost}] if cur else []),
+                  key=lambda x: x["len"], default=None)
+    lens = [x["len"] for x in runs] + ([cur] if cur else [])
+    return {
+        "races": len(rows),
+        "hits": len(runs),
+        "current": cur,
+        "current_from": cur_from,
+        "current_cost": cur_cost,
+        "max": longest["len"] if longest else 0,
+        "max_from": longest["from"] if longest else None,
+        "max_to": longest["end"] if longest else None,
+        "max_martingale": max([x["martingale"] for x in runs] + [cur_cost], default=0),
+        # 当たるまでに何連敗したか（今続いている連敗も入れる）
+        "buckets": [{"label": t, "count": sum(lo <= n <= hi for n in lens)} for lo, hi, t in STREAK_BUCKETS],
+        "recent": runs[-12:][::-1],
+    }
+
+
+def streak_rows(days: list[dict], ev: bool = False) -> list[dict]:
+    """day.json の一覧を締切順に並べ、結果の出たレースだけ（ev=True なら試験中の買い目を買ったレースだけ）。"""
+    rows = []
+    for d in days:
+        for v in d.get("venues", []):
+            for r in v.get("races", []):
+                if not r.get("result") or r.get("cancelled"):
+                    continue
+                if ev and not r.get("ev_bought"):
+                    continue
+                if not ev and r.get("hit") is None:
+                    continue
+                rows.append({"key": (d["date"], r.get("deadline") or "99:99", v.get("jcd", ""), r["rno"]),
+                             "label": f"{d['date']} {v.get('name', '')}{r['rno']}R",
+                             "hit": bool(r.get("ev_hit") if ev else r.get("hit")),
+                             "stake": r.get("ev_stake") if ev else r.get("stake"),
+                             "payout": r.get("payout")})
+    rows.sort(key=lambda x: x["key"])
+    return rows
 
 
 def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
@@ -323,7 +385,10 @@ def update_record(date: str, totals: dict, demo: bool) -> None:
     days = days[-120:]
     agg = {k: sum(d.get(k, 0) for d in days) for k in ("races", "settled", "hits", "honmei_hits", "stake", "return", "ml_races", "ml_fav_hits", "shadow_fav_hits", "alt_races", "alt_hits", "alt_stake", "alt_return", "method_hits", "method_stake", "method_return",
                                                     "ev_races", "ev_bought", "ev_hits", "ev_stake", "ev_return")}
-    write_json(path, {"days": days, "totals": agg, "demo": demo, "updated_at": now_jst().isoformat(timespec="seconds")})
+    day_files = [read_json(DATA_DIR / d["date"] / "day.json") for d in days]
+    day_files = [x for x in day_files if x]
+    streaks = {"picks": losing_streaks(streak_rows(day_files)), "ev": losing_streaks(streak_rows(day_files, ev=True))}
+    write_json(path, {"days": days, "totals": agg, "streaks": streaks, "demo": demo, "updated_at": now_jst().isoformat(timespec="seconds")})
     latest = read_json(DATA_DIR / "latest.json") or {}
     dates = sorted(set((latest.get("dates") or []) + [date]))[-30:]
     write_json(DATA_DIR / "latest.json", {"date": max(dates), "dates": dates, "demo": demo, "generated_at": now_jst().isoformat(timespec="seconds")})

@@ -168,6 +168,31 @@ def test_ev_calib_file(tmp_path, monkeypatch):
     assert store.ev_calib() == (0.5, 0.7)
 
 
+def test_losing_streaks_in_deadline_order():
+    """締切順に並べて、当たるまでの連敗を数える。倍賭けの合計（1点1,000円）も出す。"""
+    def race(rno, deadline, hit, stake=600):
+        return {"rno": rno, "deadline": deadline, "result": "1-2-3", "hit": hit, "stake": stake, "payout": 1500,
+                "ev_bought": hit is not None, "ev_hit": hit, "ev_stake": 200}
+    days = [
+        {"date": "20261001", "venues": [
+            {"jcd": "24", "name": "大村", "races": [race(1, "10:30", False), race(2, "11:00", True)]},
+            {"jcd": "01", "name": "桐生", "races": [race(1, "10:45", False), race(2, "15:00", False)]},
+        ]},
+        {"date": "20261002", "venues": [{"jcd": "24", "name": "大村", "races": [
+            race(1, "10:30", False), race(2, "11:00", True), race(3, "11:30", False), race(4, "12:00", None)]}]},
+    ]
+    rows = store.streak_rows(days)
+    # 締切順：大村1R → 桐生1R → 大村2R（的中）→ 桐生2R → 翌日の大村1R → 大村2R（的中）→ 大村3R
+    assert [r["label"] for r in rows][:3] == ["20261001 大村1R", "20261001 桐生1R", "20261001 大村2R"]
+    st = store.losing_streaks(rows)
+    assert st["races"] == 7 and st["hits"] == 2 and st["current"] == 1 and st["max"] == 2
+    assert st["max_from"] == "20261001 大村1R" and st["max_to"] == "20261001 大村2R"
+    # 倍賭け：600円分×10 を 1倍・2倍・4倍 → 6,000 + 12,000 + 24,000
+    assert st["recent"][-1]["martingale"] == 42000 and st["max_martingale"] == 42000
+    assert {b["label"]: b["count"] for b in st["buckets"]}["2"] == 2 and st["recent"][0]["end"] == "20261002 大村2R"
+    assert store.losing_streaks([])["max"] == 0
+
+
 def test_settle_hit_and_miss():
     res = RaceResult(rows=[ResultRow(place=i + 1, boat=b) for i, b in enumerate([1, 2, 3, 4, 5, 6])], trifecta="1-2-3", trifecta_payout=1230)
     hit = store.settle({"honmei": 1, "picks": [{"combo": "1-2-3"}, {"combo": "1-3-2"}]}, res)
@@ -325,6 +350,9 @@ def test_pipeline_full_day(sandbox):
     assert day["totals"]["settled"] == 1 and day["totals"]["ev_races"] == 1
     record = json.loads((sandbox / "data" / "record.json").read_text())
     assert record["days"][-1]["date"] == date
+    # 連敗の記録（締切順）：1レース確定したので、推奨買い目は1レース分
+    sp = record["streaks"]["picks"]
+    assert sp["races"] == 1 and sp["current"] + sp["hits"] == 1 and record["streaks"]["ev"]["races"] <= 1
     # オッズ履歴：直前情報を取るたびに1行、確定後に「final」を1行
     hist = [json.loads(x) for x in (sandbox / "state" / "odds" / f"{date}.jsonl").read_text().splitlines()]
     assert [h["kind"] for h in hist] == ["pre", "pre", "final"] and [h["min"] for h in hist[:2]] == [20.0, 10.0]

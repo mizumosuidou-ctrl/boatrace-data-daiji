@@ -692,6 +692,7 @@ async function renderRecord() {
         <div class="panel rv" style="--i:2"><h4>収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.return >= T.stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.return - T.stake) * 10)}</div><div class="small">払戻 − 投資</div></div>
         <div class="panel rv" style="--i:3"><h4>回収率</h4><div class="big">${roi.toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">払戻 ÷ 投資</div></div>
       </div>
+      ${streakHtml(rec.streaks)}
       ${T.ev_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：オッズで絞った買い目<small>締切前のオッズで「MINAMOの確率×オッズ」が1.2以上の組だけを最大6点（無ければ見送り）。実際の推奨買い目は変えず、成績だけを数えています</small></h2></div></div>
       <div class="calib">
         <div class="panel rv"><h4>的中率</h4><div class="big">${T.ev_bought ? ((T.ev_hits / T.ev_bought) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.ev_hits}/${T.ev_bought}R（買ったレースのうち）</div></div>
@@ -717,6 +718,33 @@ async function renderRecord() {
     </section>
   </div>`;
   bindLedger(days);
+}
+
+/* ------------------------------------------------------------ 連敗の記録（締切順） */
+const raceLabel = (l) => (l ? `${l.slice(4, 6)}/${l.slice(6, 8)} ${esc(l.slice(9))}` : "--");
+function streakBlock(name, S) {
+  if (!S || !S.races) return "";
+  const runs = S.buckets.reduce((a, b) => a + b.count, 0);
+  const buckets = S.buckets.map((b) => `<tr><td>${b.label === "0" ? "0（続けて的中）" : b.label + "連敗"}</td><td>${b.count}回</td><td>${rate(b.count, runs)}</td></tr>`).join("");
+  const recent = (S.recent || []).map((x) => `<tr><td>${x.len}連敗</td><td>${raceLabel(x.end)}</td><td>${yen(x.payout)}</td><td>${yen(x.martingale)}</td></tr>`).join("");
+  return `<h3 class="streak-name">${name}<small class="muted"> ${S.races}レース・的中 ${S.hits}</small></h3>
+    <div class="calib">
+      <div class="panel rv"><h4>今の連敗</h4><div class="big" style="color:${S.current ? "var(--accent)" : "var(--hit)"}">${S.current}<small style="font-size:.45em">連敗</small></div><div class="small">${S.current ? `${raceLabel(S.current_from)} から` : "直前のレースは的中"}</div></div>
+      <div class="panel rv" style="--i:1"><h4>最大連敗</h4><div class="big">${S.max}<small style="font-size:.45em">連敗</small></div><div class="small">${raceLabel(S.max_from)} 〜 ${S.max_to ? raceLabel(S.max_to) + " で的中" : "継続中"}</div></div>
+      <div class="panel rv" style="--i:2"><h4>倍賭けの必要資金</h4><div class="big" style="white-space:nowrap;font-size:clamp(20px,2.6vw,32px)">${yen(S.max_martingale)}</div><div class="small">はずれたら次は2倍、当たったら元に戻す（1点1,000円から）。一番長い連敗の間に投じた合計</div></div>
+    </div>
+    <div class="streak-grid">
+      <div class="panel ledger rv"><div class="ledger-scroll"><table class="streak-t">
+        <thead><tr><th>当たるまで</th><th>回数</th><th>割合</th></tr></thead><tbody>${buckets}</tbody></table></div></div>
+      ${recent ? `<div class="panel ledger rv"><div class="ledger-scroll"><table class="streak-t">
+        <thead><tr><th>連敗</th><th>止めたレース</th><th>配当</th><th>倍賭けの合計</th></tr></thead><tbody>${recent}</tbody></table></div></div>` : ""}
+    </div>`;
+}
+function streakHtml(st) {
+  if (!st || !(st.picks && st.picks.races)) return "";
+  return `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">連敗の記録（締切順）<small>全場のレースを締切の早い順に並べ、当たるまでに何レース続けてはずれたか。中止・見送りのレースは数えません</small></h2></div></div>
+    ${streakBlock("推奨買い目", st.picks)}
+    ${streakBlock("試験中：オッズで絞った買い目（買ったレースだけ）", st.ev)}`;
 }
 
 /* ------------------------------------------------------------ ledger（日別・場別の収支） */
