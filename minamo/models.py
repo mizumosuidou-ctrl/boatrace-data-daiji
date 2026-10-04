@@ -100,6 +100,7 @@ class RaceResult:
     trifecta_popularity: Optional[int] = None
     exacta: str = ""
     exacta_payout: Optional[int] = None
+    exacta_popularity: Optional[int] = None
     kimarite: str = ""
     cancelled: bool = False
 

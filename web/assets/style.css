@@ -802,3 +802,19 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .my-sum h4 { font-size: 14px; }
 .my-sum .big { font-size: 30px; }
 @media (max-width: 720px) { .my-sum { grid-template-columns: repeat(2, minmax(0, 1fr)); } .my-b { padding: 5px 6px; } .my-panel { padding: 14px 12px; } }
+
+/* レース結果：3連単・2連単の出目・配当・人気と着順 */
+.result-band { grid-template-columns: 1fr auto; }
+.res-cols { display: flex; flex-wrap: wrap; gap: 18px 34px; align-items: flex-start; }
+.res-pay { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+.res-money b { font-family: var(--f-display); font-weight: 800; font-size: clamp(26px, 3.4vw, 40px); line-height: 1; }
+.res-money span { margin-left: 8px; font-size: 13px; color: var(--text-2); }
+.res-kima { font-weight: 800; font-size: 22px; margin-top: 10px; }
+.res-table { margin-top: 12px; padding: 6px 16px; }
+.res-table td.pl { font-weight: 800; }
+.res-table td.name { font-family: var(--f-sans); font-weight: 700; }
+@media (max-width: 720px) { .result-band { grid-template-columns: 1fr; } }
+.res-t th:nth-child(-n+3), .res-t td:nth-child(-n+3) { text-align: left; }
+.result-band > div:last-child { justify-self: end; }
+.result-band .hit-stamp, .result-band .miss-stamp { display: inline-block; }
+@media (max-width: 720px) { .result-band > div:last-child { justify-self: start; } .result-band .hit-stamp { font-size: 32px; } }

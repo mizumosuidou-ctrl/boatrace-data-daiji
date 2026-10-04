@@ -590,11 +590,22 @@ function resultHtml(race) {
   if (!r) return "";
   if (r.cancelled) return `<div class="result-band"><div><div class="lbl">結果</div><b>レース中止</b></div></div>`;
   const s = race.settle || {};
+  const E = Object.fromEntries(race.entries.map((e) => [e.boat, e]));
+  const pay = (combo, yenv, pop) => `<div class="res-pay"><div class="result-order">${combo}</div>
+      <div class="res-money"><b>${yenv != null ? yen(yenv) : "--"}</b>${pop ? `<span>${pop}番人気</span>` : ""}</div></div>`;
+  const rows = (r.rows || []).slice().sort((a, b) => (a.place ?? 9) - (b.place ?? 9)).map((x) => `<tr>
+      <td class="pl">${x.place ? `${x.place}着` : esc(x.status || "－")}</td><td>${boat(x.boat, "sm")}</td>
+      <td class="name">${esc(x.name || E[x.boat]?.name || "")}</td><td>${x.course ? `${x.course}コース` : "--"}</td>
+      <td>${x.st != null ? (x.st < 0 ? `F${Math.abs(x.st).toFixed(2).slice(1)}` : x.st.toFixed(2).replace(/^0/, "")) : "--"}</td><td>${esc(x.time || "--")}</td></tr>`).join("");
   return `<div class="result-band ${s.trifecta_hit ? "hit" : ""} rv">
-    <div><div class="lbl">結果 · ${esc(r.kimarite || "")}</div><div class="result-order">${combo(r.trifecta, "")}</div></div>
-    <div><div class="lbl">3連単払戻${r.popularity ? ` · ${r.popularity}番人気` : ""}</div><div class="result-pay">${yen(r.payout)}</div></div>
+    <div class="res-cols">
+      <div><div class="lbl">3連単</div>${pay(combo(r.trifecta, ""), r.payout, r.popularity)}</div>
+      ${r.exacta ? `<div><div class="lbl">2連単</div>${pay(combo(r.exacta, ""), r.exacta_payout, r.exacta_popularity)}</div>` : ""}
+      ${r.kimarite ? `<div><div class="lbl">決まり手</div><div class="res-kima">${esc(r.kimarite)}</div></div>` : ""}
+    </div>
     <div>${s.trifecta_hit ? `<div class="hit-stamp">的中</div>` : `<div class="miss-stamp">${s.honmei_win ? "本命1着" : "はずれ"}</div>`}</div>
-  </div>`;
+  </div>
+  ${rows ? `<div class="panel res-table"><div class="ledger-scroll"><table class="streak-t res-t"><thead><tr><th>着順</th><th>艇</th><th>選手</th><th>進入</th><th>ST</th><th>レースタイム</th></tr></thead><tbody>${rows}</tbody></table></div></div>` : ""}`;
 }
 
 // あなたの予想：1着・2着・3着に入れる艇を選ぶと、組み合わせ（フォーメーション）を作り、MINAMOの確率・オッズと並べる。
