@@ -419,3 +419,12 @@ ev-check の「4.」で補正を試す。検証期間（8/24〜9/10、2,469R）�
 - `minamo/notify.py`：締切8分前（`MINAMO_NOTIFY_MIN`）からの見直しで、試験中の買い目（2連単・3連単、オッズ付き、レース画面のリンク）を Discord に1回送る。
   - 組が変わったら「【変更】」を1回だけ送る。見送りは送らない。
   - Webhook の URL はサーバーの `deploy/.env` の `MINAMO_DISCORD_WEBHOOK` にだけ置く（鍵と同じ。GitHub・チャットには出さない）。
+
+## バックアップ（PR #95）
+
+- `deploy/backup.sh`：作り直せない記録を `/opt/minamo/backup/minamo-YYYYMMDD.tar.gz` に固める。直近4つを残し、最新は `minamo-latest.tar.gz`。
+  - 入れるもの：web/data、var/state（MINAMOが記録したオッズ・アビリティなど）、deploy/.env（鍵入り。権限600）、公式サイトから足した実績・展示・風、original.csv、ev_calib.json。
+- install_cron.sh が、月曜2時40分に登録する（記録は var/cron_backup.log）。
+- Macに持ってくるとき（-t を付けない。中身が壊れるため）：
+  `ssh -i <鍵> ubuntu@<サーバー> 'sudo cat /opt/minamo/backup/minamo-latest.tar.gz' > ~/Downloads/minamo-backup.tar.gz`
+- Discord の Webhook URL は、10/4 にチャットの表示に出た。ユーザーは今のURLのままにした（作り直すときは .env の MINAMO_DISCORD_WEBHOOK を差し替える）。
