@@ -639,6 +639,52 @@ def composite_report(races: list[dict], n: int = 1000, seed: int = 0) -> list[st
         lines.append(f"  {_pad(name, 30)}{len(rows):>5}R（{100 * len(rows) / len(cal):3.0f}%） 平均{np.mean([x[1] for x in rows]):4.1f}点"
                      f" 合成{np.median([x[3] for x in rows]):4.1f}倍 的中{100 * hit.mean():5.1f}% 回収率{100 * ret.mean():6.1f}%"
                      f"  幅 {np.percentile(boot, 5):5.1f}〜{np.percentile(boot, 95):5.1f}%  トリガミ {tg}本")
+    lines += ev_dutch_report(cal, n, seed)
+    return lines
+
+
+def ev_dutch(rows: list) -> list[tuple[float, int, float, float]]:
+    """期待値で選んだ組（_trial_rows の3連単）を合成オッズ配分で買う。レースごとに（払戻÷投資、点数、合成オッズ、平掛けの払戻÷投資）。"""
+    from .. import store
+
+    out = []
+    for r in rows:
+        if not r:
+            continue
+        comp = store.composite([o for _, o, _, _ in r])
+        ret = sum((comp / o) * of for _, o, hit, of in r if hit)  # 金額の割合は (1/o)/Σ(1/o) ＝ 合成オッズ/o
+        flat = sum(of for _, _, hit, of in r if hit) / len(r)
+        out.append((ret, len(r), comp, flat))
+    return out
+
+
+def ev_dutch_report(cal: list[dict], n: int = 1000, seed: int = 0) -> list[str]:
+    """12-2. 期待値で選んだ組（今の3連単の試し買い）を、平掛けと合成オッズ配分（どれが当たっても払戻が同じ）で買う。"""
+    rows = ev_dutch(_trial_rows(cal)[0])
+    if not rows:
+        return []
+    lines = [" 12-2. 期待値で選んだ組（今の3連単：期待値1.2以上・最大9点）を、合成オッズ配分で買う。レースごとの投資は同じ。"
+             "合成で絞ると、合成オッズがその線未満のレースは見送り"]
+    rng = np.random.default_rng(seed)
+    cases = [("平掛け（今の買い方）", None, True), ("合成オッズ配分", None, False), ("合成オッズ配分・合成1.5倍以上", 1.5, False),
+             ("合成オッズ配分・合成2倍以上", 2.0, False), ("合成オッズ配分・合成3倍以上", 3.0, False),
+             ("合成オッズ配分・合成5倍以上", 5.0, False)]
+    for name, th, flat in cases:
+        g = [x for x in rows if th is None or x[2] >= th]
+        if not g:
+            continue
+        if flat:  # 平掛けは点数分の投資。レースごとの払戻÷投資を点数で重みづけ
+            st = np.array([x[1] for x in g], dtype=float)
+            rt = np.array([x[3] * x[1] for x in g])
+        else:
+            st, rt = np.ones(len(g)), np.array([x[0] for x in g])
+        idx = rng.integers(0, len(g), size=(n, len(g)))
+        boot = 100 * rt[idx].sum(axis=1) / st[idx].sum(axis=1)
+        hit = rt > 0
+        tg = int((hit & (rt < st)).sum())
+        lines.append(f"  {_pad(name, 30)}{len(g):>5}R（{100 * len(g) / len(rows):3.0f}%） 平均{np.mean([x[1] for x in g]):4.1f}点"
+                     f" 合成{np.median([x[2] for x in g]):5.1f}倍 的中{100 * hit.mean():5.1f}% 回収率{100 * rt.sum() / st.sum():6.1f}%"
+                     f"  幅 {np.percentile(boot, 5):5.1f}〜{np.percentile(boot, 95):5.1f}%  トリガミ {tg}本")
     return lines
 
 
