@@ -354,6 +354,74 @@ def _ex_rows(races: list[dict], pick) -> tuple[np.ndarray, np.ndarray]:
     return np.array(st, dtype=float), np.array(rt, dtype=float)
 
 
+def exacta_detail(races: list[dict]) -> list[str]:
+    """8. 2連単の買い方を細かく（補正Bは全期間で決めた値。前半・後半の両方で良いものを選ぶ）。"""
+    rs = sorted([r for r in races if r.get("x5") and r.get("xfinal")], key=lambda r: r["race"])
+    if len(rs) < 200:
+        return []
+    cal = apply_calibration(rs, *fit_calibration(rs))
+    half = len(cal) // 2
+    parts = (("前半", cal[:half]), ("後半", cal[half:]))
+    pre = {id(r): exacta_probs(r["probs"]) for r in cal}
+
+    def pick(th, k, minp=EX_MIN_P, hi=None):
+        def f(r, xp):
+            return [c for c in sorted(xp, key=xp.get, reverse=True)
+                    if xp[c] >= minp and r["x5"].get(c) and xp[c] * r["x5"][c] >= th and (hi is None or xp[c] * r["x5"][c] < hi)][:k]
+        return f
+
+    def roi(group, f):
+        st = rt = 0.0
+        n = 0
+        for r in group:
+            xp = pre[id(r)]
+            b = f(r, xp)
+            if not b:
+                continue
+            n += 1
+            hit = r["hit"].rsplit("-", 1)[0]
+            st += 100 * len(b)
+            rt += 100 * r["xfinal"].get(hit, 0) if hit in b else 0
+        return (100 * rt / st if st else float("nan")), n
+    lines = [f"\n8. 2連単の買い方を細かく（2連単のオッズがある {len(cal):,}R。補正Bは全期間で決めた値。"
+             "前半／後半の回収率。両方で高いものが本物に近い）"]
+    lines.append(" 8-1. 期待値の基準 × 最大点数（前半／後半の回収率%）")
+    lines.append("  " + _pad("", 14) + "".join(_pad(f"最大{k}点", 16) for k in range(1, 6)))
+    for th in (1.0, 1.1, 1.2, 1.3, 1.5):
+        cells = []
+        for k in range(1, 6):
+            a, _ = roi(parts[0][1], pick(th, k))
+            b, _ = roi(parts[1][1], pick(th, k))
+            cells.append(_pad(f"{a:5.1f}/{b:5.1f}", 16))
+        lines.append("  " + _pad(f"期待値{th:.1f}以上", 14) + "".join(cells))
+    lines.append(" 8-2. 期待値の帯（その帯の組だけを、最大3点）前半／後半の回収率%・買ったレース")
+    for lo, hi in ((1.0, 1.2), (1.2, 1.5), (1.5, 2.0), (2.0, 99)):
+        (a, na), (b, nb) = roi(parts[0][1], pick(lo, 3, hi=hi)), roi(parts[1][1], pick(lo, 3, hi=hi))
+        lines.append(f"  期待値 {_pad(f'{lo:.1f}〜{hi:.1f}' if hi < 99 else f'{lo:.1f}以上', 10)}{a:6.1f}% / {b:6.1f}%  ({na}R / {nb}R)")
+    lines.append(" 8-3. 確率がこれより低い組は買わない（期待値1.2以上・最大3点）前半／後半の回収率%")
+    for minp in (0.0, 0.01, 0.02, 0.03, 0.05, 0.08):
+        (a, na), (b, nb) = roi(parts[0][1], pick(1.2, 3, minp)), roi(parts[1][1], pick(1.2, 3, minp))
+        lines.append(f"  確率{minp * 100:4.1f}%以上  {a:6.1f}% / {b:6.1f}%  ({na}R / {nb}R)")
+    lines.append(" 8-4. 期待値1.2以上の組を、2連単の5分前オッズの帯ごとに（1点ずつ）前半／後半の回収率%・組数")
+    for lo, hi in ((0, 5), (5, 10), (10, 20), (20, 50), (50, 1e9)):
+        out = []
+        for _, group in parts:
+            n = hits = ret = 0
+            for r in group:
+                xp = pre[id(r)]
+                hit = r["hit"].rsplit("-", 1)[0]
+                for c in xp:
+                    o = r["x5"].get(c)
+                    if o and lo <= o < hi and xp[c] >= EX_MIN_P and xp[c] * o >= 1.2:
+                        n += 1
+                        if c == hit:
+                            hits += 1
+                            ret += r["xfinal"].get(hit, 0)
+            out.append((100 * ret / n if n else float("nan"), n))
+        lines.append(f"  {_pad(f'{lo}〜{hi}倍' if hi < 1e9 else f'{lo}倍以上', 10)}{out[0][0]:6.1f}% / {out[1][0]:6.1f}%  ({out[0][1]}組 / {out[1][1]}組)")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -464,4 +532,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += flat_report(races)
     lines += exacta_report(races)
     lines += points_report(races)
+    lines += exacta_detail(races)
     return "\n".join(lines)
