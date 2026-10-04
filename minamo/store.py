@@ -312,6 +312,7 @@ def race_summary(race: dict) -> dict:
         "ev_pick": race.get("ev_pick"),  # 試験中の買い目（None＝まだ決めていない、空＝見送り）
         "ev_items": race.get("ev_items"),
         "ev_at": race.get("ev_at"),
+        "pick_fixed": race.get("pick_fixed"),
         "ex_bought": st.get("ex_bought"),
         "ex_hit": st.get("ex_hit"),
         "ex_stake": st.get("ex_stake"),

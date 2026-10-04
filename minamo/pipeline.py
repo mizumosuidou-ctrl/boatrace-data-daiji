@@ -29,6 +29,8 @@ STATE_DIR = Path(os.environ.get("MINAMO_STATE_DIR", Path(__file__).resolve().par
 PRE_WINDOW = timedelta(minutes=int(os.environ.get("MINAMO_PRE_WINDOW_MIN", "30")))
 MORE_ODDS_MIN = float(os.environ.get("MINAMO_MORE_ODDS_MIN", "12"))  # ほかの券種のオッズを取り始める、締切の何分前か
 BEFORE_REFRESH = timedelta(minutes=int(os.environ.get("MINAMO_BEFORE_REFRESH_MIN", "4")))
+# 試験中の買い目を決めて固定する、締切の何分前か（人が買えるのは5〜3分前まで。10/4 の検証：5分前のオッズで決めると3連単124%・2連単120%）
+PICK_FIX_MIN = float(os.environ.get("MINAMO_PICK_FIX_MIN", "5.5"))
 RESULT_DELAY = timedelta(minutes=int(os.environ.get("MINAMO_RESULT_DELAY_MIN", "6")))
 # 結果の取り込み：最初の20回は毎分、そのあとは5分おきに、締切から12時間まで取り直す（あきらめない）
 RESULT_FAST_TRIES = 20
@@ -108,6 +110,7 @@ class Pipeline:
                                    ex=ex_pick.get("combos") if "ex_pick" in st else None)
         payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
         payload["ev_at"] = ev_pick.get("at")
+        payload["pick_fixed"] = st.get("pick_fixed")  # 試験中の買い目を固定した時刻（それまでは仮）
         payload["ex_items"] = ex_pick.get("items")  # 試験中の2連単
         payload["ex_at"] = ex_pick.get("at")
         payload["odds2"] = st.get("odds2") or {}
@@ -204,7 +207,8 @@ class Pipeline:
                             changed += 1
                     elif deadline - PRE_WINDOW <= now < deadline + timedelta(minutes=1):
                         last = st.get("before_at")
-                        if not last or now - datetime.fromisoformat(last) >= BEFORE_REFRESH:
+                        fix_now = not st.get("pick_fixed") and deadline - now <= timedelta(minutes=PICK_FIX_MIN)
+                        if not last or now - datetime.fromisoformat(last) >= BEFORE_REFRESH or fix_now:
                             self._refresh(date, vd, rno, st, now)
                             changed += 1
                 except requests.RequestException as exc:
@@ -227,8 +231,9 @@ class Pipeline:
             o = (st.get("orig") or {}).get(str(b.boat)) or {}
             b.lap_time, b.turn_time, b.straight_time = o.get("lap_time"), o.get("turn_time"), o.get("straight_time")
         st["before"] = asdict(before)
-        # 試験中：オッズで絞った買い目。締切前のオッズで決めた組だけを残す（締切後は上書きしない）
-        if odds and card.deadline:
+        # 試験中：オッズで絞った買い目。締切の PICK_FIX_MIN 分前を過ぎた最初の見直しで決めて固定し、Discord に知らせる。
+        # それより前は仮（画面には出すが、成績には固定した組だけを数える）。固定したあとは上書きしない
+        if odds and card.deadline and not st.get("pick_fixed"):
             hh, mm = map(int, card.deadline.split(":"))
             if now < datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST):
                 cal = store.ev_calib()
@@ -241,8 +246,11 @@ class Pipeline:
                 if odds2:  # 試験中：2連単（補正した3連単の確率を足して2連単に。2連単のオッズで期待値1.2以上・最大3点）
                     xc, xi = store.ex_picks(tri, odds, odds2, cal)
                     st["ex_pick"] = {"combos": xc, "items": xi, "at": now.isoformat()}
-                # 締切の数分前に、試験中の買い目を Discord に知らせる（設定があるときだけ）
-                notify.maybe_notify(st, date, vd.jcd, rno, card.deadline, self._mins_left(date, card.deadline, now))
+                mins_left = self._mins_left(date, card.deadline, now)
+                if mins_left <= PICK_FIX_MIN:
+                    st["pick_fixed"] = now.isoformat()
+                    # 決めた買い目を Discord に知らせる（設定があるときだけ）
+                    notify.maybe_notify(st, date, vd.jcd, rno, card.deadline, mins_left)
         st["odds"] = odds or st.get("odds")
         st["odds2"] = odds2 or st.get("odds2")
         st["before_at"] = now.isoformat()

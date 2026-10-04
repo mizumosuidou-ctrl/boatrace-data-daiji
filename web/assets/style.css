@@ -836,3 +836,4 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .stake-form p { flex-basis: 100%; margin: 0; line-height: 1.6; }
 .calib > .panel { min-width: 0; }
 @media (max-width: 720px) { .calib .big { font-size: clamp(24px, 8.5vw, 42px); } }
+.pick-h .chip.fix { margin-left: 0; }

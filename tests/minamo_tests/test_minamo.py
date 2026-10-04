@@ -386,6 +386,18 @@ def test_pipeline_full_day(sandbox):
 
     assert pipe.tick(date, deadline - timedelta(minutes=10)) == 1
     assert len(pl._ORIG_CALLS) == 1
+    race = json.loads(race_file.read_text())
+    assert not race["pick_fixed"]  # 10分前はまだ仮
+    # 締切5.5分前を過ぎたら、前の取得から4分たっていなくても取り直して、試験中の買い目を固定する
+    assert pipe.tick(date, deadline - timedelta(minutes=7)) == 0
+    assert pipe.tick(date, deadline - timedelta(minutes=5)) == 1
+    race = json.loads(race_file.read_text())
+    fixed_at = race["ev_at"]
+    assert race["pick_fixed"] == fixed_at and fixed_at.startswith("2026-10-01T20:40")
+    # 固定したあとは、取り直しても買い目を変えない
+    assert pipe.tick(date, deadline - timedelta(minutes=1)) == 1
+    race = json.loads(race_file.read_text())
+    assert race["ev_at"] == fixed_at and race["pick_fixed"] == fixed_at
     # 締切後：結果を照合
     assert pipe.tick(date, deadline + timedelta(minutes=10)) == 1
     race = json.loads(race_file.read_text())
@@ -413,7 +425,7 @@ def test_pipeline_full_day(sandbox):
     assert sp["races"] == 1 and sp["current"] + sp["hits"] == 1 and record["streaks"]["ev"]["races"] <= 1
     # オッズ履歴：直前情報を取るたびに1行、確定後に「final」を1行
     hist = [json.loads(x) for x in (sandbox / "state" / "odds" / f"{date}.jsonl").read_text().splitlines()]
-    assert [h["kind"] for h in hist] == ["pre", "pre", "final"] and [h["min"] for h in hist[:2]] == [20.0, 10.0]
+    assert [h["kind"] for h in hist] == ["pre"] * 4 + ["final"] and [h["min"] for h in hist[:4]] == [20.0, 10.0, 5.0, 1.0]
     # ほかの券種のオッズは締切12分前から（20分前は取らない、10分前は取る）
     assert "more" not in hist[0] and {"win", "place", "wide", "trio"} <= set(hist[1]["more"])
     assert hist[0]["t2"]["1-2"] == pytest.approx(1.5) and len(hist[0]["t2"]) == 30 and len(hist[0]["t3"]) == 120
@@ -723,33 +735,27 @@ def test_abilities_registered_and_keep_combos(tmp_path, monkeypatch):
     assert next(p for p in out if p["combo"] == "2-1-5")["ability"] == "①逃げ⑥残し" and out[-1]["kind"] == "妙味"
 
 
-def test_discord_notify_once_then_change(monkeypatch):
-    """締切8分前から1回送り、組が変わったら1回だけ送り直す。設定が無ければ送らない。見送りは送らない。"""
+def test_discord_notify_once(monkeypatch):
+    """固定した買い目を1回だけ送る（締切後・設定なし・見送りは送らない）。"""
     from minamo import notify
 
     sent = []
     monkeypatch.setattr(notify, "send", lambda text: sent.append(text) or True)
     st = {"ev_pick": {"combos": ["1-3-5"], "items": [{"combo": "1-3-5", "odds": 45.2}]}, "ex_pick": {"combos": ["1-3"], "items": []}}
     monkeypatch.delenv("MINAMO_DISCORD_WEBHOOK", raising=False)
-    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 6)
+    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 5)
     assert sent == [] and "notified" not in st
     monkeypatch.setenv("MINAMO_DISCORD_WEBHOOK", "https://example.invalid/hook")
-    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 12)  # まだ早い
+    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 0)  # 締切を過ぎたら送らない
     assert sent == []
-    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 6)
-    assert len(sent) == 1 and "戸田 9R" in sent[0] and "1-3-5（45.2倍）" in sent[0] and "2連単 1点：1-3" in sent[0]
-    assert "#/race/20261004/02/9" in sent[0]
-    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 3)  # 変わっていなければ送らない
+    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 5.2)
+    assert len(sent) == 1 and "戸田 9R" in sent[0] and "あと5分" in sent[0] and "1-3-5（45.2倍）" in sent[0]
+    assert "2連単 1点：1-3" in sent[0] and "#/race/20261004/02/9" in sent[0]
+    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 3)  # 2回目は送らない
     assert len(sent) == 1
-    st["ev_pick"] = {"combos": ["1-3-5", "3-1-5"]}
-    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 2)
-    assert len(sent) == 2 and sent[1].startswith("【変更】")
-    st["ev_pick"] = {"combos": []}
-    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 1)  # 変更は1回だけ
-    assert len(sent) == 2
     st2 = {"ev_pick": {"combos": []}, "ex_pick": {"combos": []}}
-    notify.maybe_notify(st2, "20261004", "02", 10, "15:30", 6)  # 見送りは送らない
-    assert len(sent) == 2 and notify.pick_message("20261004", "02", 10, "15:30", 6, {}, {}) is None
+    notify.maybe_notify(st2, "20261004", "02", 10, "15:30", 5)  # 見送りは送らない
+    assert len(sent) == 1 and notify.pick_message("20261004", "02", 10, "15:30", 5, {}, {}) is None
 
 
 def test_live_check(tmp_path):
@@ -784,7 +790,7 @@ def test_live_check(tmp_path):
     assert sims[0] == [] and sims[2][0] == (0.1, 15.0, True, 18.0) and sims[2][1][2] is False
     text = live_check.build(tmp_path)
     assert "3連単" in text and "2連単" in text and "回収率 360.0%" in text
-    assert "最大6点" in text and "最大9点" in text and "一番長い 2連敗" in text
+    assert "最大6点" in text and "最大9点・5分前に固定" in text and "一番長い 2連敗" in text
     # 資金10万円・平掛け1点100円：確率とオッズの残る4R×200円の投資、当たり2本×1,800円
     assert "確定 ÷ 決めたとき＝平均 1.20倍" in text and "残っている 4R" in text and "最後の資金    102,800円" in text
     assert "10/05    2R 的中  1R" in text
