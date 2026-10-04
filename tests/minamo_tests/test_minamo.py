@@ -346,6 +346,11 @@ def test_pipeline_full_day(sandbox):
     # 試験中のオッズで絞った買い目：締切前に決めた組（見送りなら空）を照合して数える
     assert isinstance(race["ev_pick"], list) and "ev_hit" in race["settle"]
     assert race["settle"]["ev_stake"] == 100 * len(race["ev_pick"])
+    # 「今買う候補」ページ用：決めたときの確率・オッズ・期待値と、一覧への写し
+    assert [x["combo"] for x in race["ev_items"]] == race["ev_pick"] and race["ev_at"]
+    assert all(x["ev"] >= store.EV_MIN for x in race["ev_items"])
+    summ = json.loads((sandbox / "data" / date / "day.json").read_text())["venues"][0]["races"]
+    assert any(r.get("ev_pick") == race["ev_pick"] and "ev_return" in r for r in summ)
     day = json.loads((sandbox / "data" / date / "day.json").read_text())
     assert day["totals"]["settled"] == 1 and day["totals"]["ev_races"] == 1
     record = json.loads((sandbox / "data" / "record.json").read_text())
