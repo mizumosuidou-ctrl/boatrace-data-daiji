@@ -798,7 +798,8 @@ def test_ev_check_report(tmp_path):
         order = [2, 1, 3] if upset else [1, 2, 3]
         for lane in range(1, 7):
             fin = order.index(lane) + 1 if lane in order else lane
-            rows.append({"race_id": rid, "lane": lane, "finish": fin, "p_pre": p[lane - 1], "p_post": None})
+            rows.append({"race_id": rid, "lane": lane, "finish": fin, "p_pre": p[lane - 1], "p_post": None,
+                         "course_i": lane, "sr_c": [2.0, 3.5, 3.0, 2.5, 4.0, 4.5][lane - 1]})
         # 市場は①を強く見る（①頭は安く、②頭は高い）
         odds = " ".join(f"{a}-{b}-{c}:{(4 if a == 1 else 60) + b + c}" for a, b, c in permutations(range(1, 7), 3))
         d, v, r = rid.split("-")
@@ -858,6 +859,10 @@ def test_ev_check_report(tmp_path):
     assert abs(ret - 7.5) < 1e-9 and pts == 2 and abs(comp - 7.5) < 1e-9 and abs(flat - 5.0) < 1e-9
     # 13. 当てに行く買い方：見送りの分析とマーチンゲール
     assert "レースの種類" in text and "SG・G1・マスターズ・ルーキーズを見送り" in text and "13-3." in text
+    # 14. スタート隊形・順位差の場所：③は②より0.5速い（②と③の間に差）。①〉④③②
+    assert "14-1. スタート隊形トゥエルブ" in text and "①〉④③②" in text and "②と③の間（③が速い）" in text
+    sh = ev_check.start_shape(races[0])
+    assert sh["shape"] == "①〉④③②" and abs(sh["gap"] - 0.5) < 1e-9 and 0 < sh["c1_market"] < 1
     assert "13. 当てに行く買い方" in text and "13-1. 見送るレースの分析" in text and "13-2. マーチンゲール" in text
     miss, win2 = {"hit": False, "ret": 0.0}, {"hit": True, "ret": 2.0}
     m = ev_check.martingale([miss, miss, win2])  # 1万・2万・4万 → 4万×2＝8万が戻り、＋1万

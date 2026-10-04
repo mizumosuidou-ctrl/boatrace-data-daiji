@@ -82,9 +82,15 @@ def load(ml_dir: Path, raw: Path) -> list[dict]:
         probs = {_key(c): v for c, v in trifecta_probs(dict(zip(g["lane"].astype(int), g["p"])), decay)}
         t5, final, t1, t10, t15 = odds[race]
         x5, xfinal, x1, x10, x15 = ex_odds.get(race, (None,) * 5)
-        out.append({"race": race, "probs": probs, "t5": t5, "final": final, "t1": t1, "t10": t10, "t15": t15, "hit": hit,
-                    "x5": x5, "xfinal": xfinal, "x1": x1, "x10": x10, "x15": x15,
-                    "p1": float(g.loc[g["lane"] == 1, "p"].iloc[0]), "post": bool(g["post"].any())})
+        row = {"race": race, "probs": probs, "t5": t5, "final": final, "t1": t1, "t10": t10, "t15": t15, "hit": hit,
+               "x5": x5, "xfinal": xfinal, "x1": x1, "x10": x10, "x15": x15,
+               "p1": float(g.loc[g["lane"] == 1, "p"].iloc[0]), "post": bool(g["post"].any())}
+        if "course_i" in g and "sr_c" in g and g["course_i"].notna().all():
+            # 進入コース（艇番→コース）・コースごとの平均スタート順位・1着の艇のコース・艇ごとのMINAMOの1着確率
+            row["course_of"] = {int(l): int(c) for l, c in zip(g["lane"], g["course_i"])}
+            row["sr"] = {int(c): float(v) for c, v in zip(g["course_i"], g["sr_c"]) if v == v}
+            row["p_lane"] = {int(l): float(v) for l, v in zip(g["lane"], g["p"])}
+        out.append(row)
     return out
 
 
@@ -859,6 +865,73 @@ def trial_by_category(races: list[dict], cats: dict | None) -> list[str]:
     return lines
 
 
+GAP_MIN = 0.5  # 隣のコースとのスタート順位の差が、これ以上あれば「差がある」
+
+
+def start_shape(r: dict) -> dict | None:
+    """進入コース順のスタート隊形（トゥエルブ）と、どこにスタート順位の差があるか。
+    差＝内のコースの平均スタート順位 − 外のコースの平均スタート順位（正なら外の艇の方がスタートが速い）。"""
+    from .. import formation
+
+    sr = r.get("sr")
+    if not sr or len(sr) < 6:
+        return None
+    f = formation.formation(sr)
+    gaps = {k: sr[k] - sr[k + 1] for k in range(1, 6)}
+    k = max(gaps, key=gaps.get)
+    where = f"{formation.CIRCLED[k - 1]}と{formation.CIRCLED[k]}の間（{formation.CIRCLED[k]}が速い）" if gaps[k] >= GAP_MIN else "差なし（どこも0.5未満）"
+    lane1 = next((l for l, c in r["course_of"].items() if c == 1), None)
+    win_lane = int(r["hit"].split("-")[0])
+    inv = {c: 1 / o for c, o in r["t5"].items() if o}
+    tot = sum(inv.values())
+    return {"shape": formation.label_of(f["key"]) if f else "不明", "where": where, "gap": gaps[k],
+            "c1_win": r["course_of"].get(win_lane) == 1,
+            "c1_minamo": r["p_lane"].get(lane1, float("nan")),
+            "c1_market": sum(v for c, v in inv.items() if lane1 and c.startswith(f"{lane1}-")) / tot if tot else float("nan")}
+
+
+def start_report(races: list[dict]) -> list[str]:
+    """14. スタート隊形と、スタート順位の差の場所ごとに：1コースの1着（実際・MINAMO・市場）と、買い方の回収率（補正B・後半）。"""
+    cal = _test_cal(races)
+    if not cal or not any(r.get("sr") for r in cal):
+        return ["\n14. スタート隊形・順位差の場所ごと：材料（進入コースと平均スタート順位）がまだありません。次の学習（ml-train）のあとに出ます"]
+    hit = {x["race"]: x["ret"] for x in hit_rows(races)}
+    tri, ex = _trial_rows(cal)
+    ex_i = iter(ex)
+    rows = []
+    for r, t in zip(cal, tri):
+        e = next(ex_i) if r.get("x5") and r.get("xfinal") else []
+        sh = start_shape(r)
+        if sh:
+            rows.append({**sh, "hit_ret": hit.get(r["race"]), "tp": len(t), "tr": sum(of for _, _, h, of in t if h),
+                         "xp": len(e), "xr": sum(of for _, _, h, of in e if h)})
+    lines = [f"\n14. スタート隊形と、スタート順位の差の場所ごと（補正B・後半 {len(rows):,}R。進入コース順・そのコースでの平均スタート順位）",
+             "  1コース1着：実際／MINAMOの見立て／市場（5分前オッズ）の見立て。当てに行く＝合成2倍以上の買い方、"
+             "3連単・2連単＝今の期待値の試し買い（平掛け）の回収率"]
+
+    def line(name, g):
+        h = [x["hit_ret"] for x in g if x["hit_ret"] is not None]
+        tp, tr, xp, xr = (sum(x[k] for x in g) for k in ("tp", "tr", "xp", "xr"))
+        pct = lambda a, b: f"{100 * a / b:6.1f}%" if b else "   -- "
+        return (f"    {_pad(name, 30)}{len(g):>5}R  1コース1着 {100 * np.mean([x['c1_win'] for x in g]):5.1f}%"
+                f"／{100 * np.nanmean([x['c1_minamo'] for x in g]):5.1f}%／{100 * np.nanmean([x['c1_market'] for x in g]):5.1f}%"
+                f"  当てに行く{pct(sum(h), len(h))}  3連単{pct(tr, tp)}  2連単{pct(xr, xp)}")
+
+    for title, key in ((" 14-1. スタート隊形トゥエルブ（①〜④の平均スタート順位の並び）", "shape"),
+                       (" 14-2. 一番大きなスタート順位の差の場所（隣のコースより外が0.5以上速い所）", "where")):
+        lines.append(title)
+        for name in sorted({x[key] for x in rows}, key=lambda n: -sum(x[key] == n for x in rows)):
+            g = [x for x in rows if x[key] == name]
+            if len(g) >= 20:
+                lines.append(line(name, g))
+    lines.append(" 14-3. 差の大きさ（一番大きな差）")
+    for lo, hi, name in ((-9, 0.3, "0.3未満"), (0.3, 0.5, "0.3〜0.5"), (0.5, 0.8, "0.5〜0.8"), (0.8, 1.2, "0.8〜1.2"), (1.2, 9, "1.2以上")):
+        g = [x for x in rows if lo <= x["gap"] < hi]
+        if g:
+            lines.append(line(name, g))
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -975,4 +1048,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += timing_report(races)
     lines += composite_report(races)
     lines += hit_report(races, race_categories(raw))
+    lines += start_report(races)
     return "\n".join(lines)
