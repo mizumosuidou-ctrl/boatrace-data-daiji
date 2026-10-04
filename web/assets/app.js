@@ -793,7 +793,7 @@ async function renderRace(r, refresh = false) {
 /* ------------------------------------------------------------ 今買う候補（試験中：オッズで絞った買い目） */
 const hhmm = (iso) => (iso ? iso.slice(11, 16) : "--:--");
 const PICK_KIND = {
-  ev: { label: "3連単", rule: "MINAMOの確率を市場（オッズ）と合わせて補正し、期待値（確率×オッズ）が1.2以上の3連単を最大6点", check: "過去の検証（学習に使っていない約3,000レース）で回収率118%" },
+  ev: { label: "3連単", rule: "MINAMOの確率を市場（オッズ）と合わせて補正し、期待値（確率×オッズ）が1.2以上の3連単を最大9点", check: "過去の検証（学習に使っていない約3,000レース）で回収率124%（幅101〜146%）" },
   ex: { label: "2連単", rule: "補正した確率を2連単にまとめ、2連単のオッズで期待値1.2以上の組を最大3点", check: "過去の検証（学習に使っていない約3,000レース）で回収率120%（幅109〜131%）" },
 };
 const pickRes = (r, k) => (k === "ev" ? r.result : r.result_ex);
@@ -919,7 +919,7 @@ async function renderRecord() {
       </div>
       ${myRecordHtml(days)}
       ${streakHtml(rec.streaks)}
-      ${T.ev_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：オッズで絞った買い目<small>締切前のオッズで「MINAMOの確率×オッズ」が1.2以上の組だけを最大6点（無ければ見送り）。実際の推奨買い目は変えず、成績だけを数えています</small></h2></div></div>
+      ${T.ev_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：オッズで絞った買い目<small>締切前のオッズで「MINAMOの確率（市場と合わせて補正）×オッズ」が1.2以上の組だけを最大9点（無ければ見送り。10/4までは最大6点）。実際の推奨買い目は変えず、成績だけを数えています</small></h2></div></div>
       <div class="calib">
         <div class="panel rv"><h4>的中率</h4><div class="big">${T.ev_bought ? ((T.ev_hits / T.ev_bought) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.ev_hits}/${T.ev_bought}R（買ったレースのうち）</div></div>
         <div class="panel rv" style="--i:1"><h4>回収率</h4><div class="big" style="color:var(--accent)">${T.ev_stake ? ((T.ev_return / T.ev_stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">払戻 ÷ 投資</div></div>
