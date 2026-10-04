@@ -177,19 +177,36 @@ def run(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = Non
     return n_days
 
 
-def fill_kimarite(raw: Path, fetcher: Optional[Fetcher] = None) -> int:
-    """公式サイトから足した日のうち、決まり手がまだ無い日だけ、結果ページで決まり手を足す（1日およそ240回）。取り終えた日数を返す。"""
+KIMARITE_DAYS = "kimarite_days.txt"
+
+
+def fill_kimarite(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = None,
+                  fetcher: Optional[Fetcher] = None) -> int:
+    """決まり手を公式サイトの結果一覧（1場1日で1ページ）から足す。date_from を省くと facts.csv の最初の日から、date_to を省くと昨日まで。
+    取り終えた日は kimarite_days.txt に残して、とばす（止めても続きから）。取り終えた日数を返す。"""
     raw = Path(raw)
-    days_path = raw / DAYS_NAME
-    done = sorted(set(days_path.read_text(encoding="utf-8").split())) if days_path.exists() else []
-    have = set()
-    if (raw / KIMARITE_NAME).exists():
-        have = set(pd.read_csv(raw / KIMARITE_NAME, dtype=str, usecols=["race_date"])["race_date"])
-    todo = [d for d in done if d not in have]
-    log.info("kimarite fill: %d 日", len(todo))
+    if not date_from:
+        first = None
+        for chunk in pd.read_csv(raw / "facts.csv", dtype=str, usecols=["race_date"], chunksize=500_000):
+            m = chunk["race_date"].dropna().str.replace("-", "", regex=False).str[:8].min()
+            if isinstance(m, str) and (first is None or m < first):
+                first = m
+        date_from = first
+    if not date_to:
+        date_to = (datetime.now(ZoneInfo("Asia/Tokyo")) - timedelta(days=1)).strftime("%Y%m%d")
+    days_path = raw / KIMARITE_DAYS
+    done = set(days_path.read_text(encoding="utf-8").split()) if days_path.exists() else set()
+    todo = []
+    d = datetime.strptime(date_from, "%Y%m%d")
+    while d.strftime("%Y%m%d") <= date_to:
+        if d.strftime("%Y%m%d") not in done:
+            todo.append(d.strftime("%Y%m%d"))
+        d += timedelta(days=1)
+    log.info("kimarite fill: %s〜%s のうち %d 日", date_from, date_to, len(todo))
     fetcher = fetcher or Fetcher()
     fh, w = _writer(raw / KIMARITE_NAME, KIMARITE_COLS)
     n = 0
+    t0 = time.monotonic()
     try:
         for i, date in enumerate(todo):
             try:
@@ -197,22 +214,25 @@ def fill_kimarite(raw: Path, fetcher: Optional[Fetcher] = None) -> int:
             except requests.RequestException as exc:
                 log.warning("%s 一覧: %s", date, exc)
                 continue
-            rows = []
+            rows, ok = [], True
             for vd in vdays:
-                for rno in range(1, 13):
-                    try:
-                        res = parsers.parse_result(fetcher.result(date, vd.jcd, rno))
-                    except requests.RequestException as exc:
-                        log.warning("%s %s %dR: %s", date, vd.jcd, rno, exc)
-                        time.sleep(5)
-                        continue
-                    if res.kimarite and not res.cancelled:
-                        rows.append({"race_date": date, "venue": vd.jcd, "race_no": rno, "winning_method": res.kimarite, "updated_at": STAMP})
-            if rows:
+                try:
+                    km = parsers.parse_resultlist_kimarite(fetcher.resultlist(date, vd.jcd))
+                except requests.RequestException as exc:
+                    log.warning("%s %s: %s", date, vd.jcd, exc)
+                    ok = False
+                    time.sleep(5)
+                    continue
+                rows += [{"race_date": date, "venue": vd.jcd, "race_no": r, "winning_method": k, "updated_at": STAMP} for r, k in km.items()]
+            if ok:  # 1日分まとめて書く（取れない場があった日は、次に回すと取り直す）
                 w.writerows(rows)
                 fh.flush()
+                with days_path.open("a", encoding="utf-8") as f:
+                    f.write(date + "\n")
                 n += 1
-            log.info("kimarite fill %s：%dR（%d/%d日）", date, len(rows), i + 1, len(todo))
+            rate = (i + 1) / max(1e-6, time.monotonic() - t0)
+            log.info("kimarite fill %s：%d場 %dR（%d/%d日、残り約%.1f時間）", date, len(vdays), len(rows), i + 1, len(todo),
+                     (len(todo) - i - 1) / max(rate, 1e-6) / 3600)
     finally:
         fh.close()
     return n

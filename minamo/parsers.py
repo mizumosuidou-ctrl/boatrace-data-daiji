@@ -467,3 +467,21 @@ def venue_code_from_name(name: str) -> Optional[str]:
 def iter_racer_links(html: str) -> Iterable[str]:
     for m in re.finditer(r"toban=(\d{4})", html):
         yield m.group(1)
+
+
+_RESULTLIST_ROW = re.compile(r"raceresult\?rno=(\d+)[^>]*>\s*\d+R\s*</a>\s*</td>(.*?)</tr>", re.S)
+_PLAIN_CELL = re.compile(r"<td rowspan=\"2\">(.*?)</td>", re.S)
+
+
+def parse_resultlist_kimarite(html: str) -> dict[int, str]:
+    """結果一覧ページ → {レース番号: 決まり手}（決まり手の無いレース＝中止・不成立などは入れない）。"""
+    out = {}
+    for m in _RESULTLIST_ROW.finditer(html or ""):
+        cells = _PLAIN_CELL.findall(m.group(2))
+        if not cells:
+            continue
+        text = re.sub(r"<[^>]+>|&nbsp;", " ", cells[0])
+        text = unicodedata.normalize("NFKC", text).strip()
+        if text:
+            out[int(m.group(1))] = text
+    return out
