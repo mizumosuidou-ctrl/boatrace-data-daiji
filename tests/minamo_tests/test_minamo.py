@@ -799,3 +799,17 @@ def test_live_check(tmp_path):
     assert live_check.mins_before("20261003", None, None) is None
     assert "買い目を決めた時刻：締切の平均" in text
     assert "まだ結果の出たレースがありません" in live_check.build(tmp_path / "none")
+
+
+def test_composite_odds_picks():
+    """合成オッズ買い：確率の高い順に足し、合成オッズが線を下回る手前まで。金額はオッズの逆数で配分（どれが当たっても払戻が同じ）。"""
+    tri = [("1-2-3", 0.3), ("1-3-2", 0.2), ("2-1-3", 0.1), ("1-2-4", 0.05)]
+    odds = {"1-2-3": 4.0, "1-3-2": 6.0, "2-1-3": 10.0, "1-2-4": 30.0}
+    assert store.composite([4.0, 6.0]) == pytest.approx(2.4)
+    two = store.co_picks(tri, odds, 2.0)  # 3点目を足すと 1.94倍で2倍を割る
+    assert [x["combo"] for x in two] == ["1-2-3", "1-3-2"] and [x["w"] for x in two] == [0.6, 0.4]
+    assert all(x["w"] * x["odds"] == pytest.approx(2.4) for x in two)  # どれが当たっても投資の2.4倍
+    assert len(store.co_picks(tri, odds, 1.5)) == 4
+    assert store.co_picks(tri, {"1-2-3": 1.4}, 1.5) == [] and store.co_picks(tri, None) == []
+    # オッズの無い組はとばす
+    assert [x["combo"] for x in store.co_picks(tri, {"1-3-2": 6.0, "2-1-3": 10.0}, 2.0)] == ["1-3-2", "2-1-3"]
