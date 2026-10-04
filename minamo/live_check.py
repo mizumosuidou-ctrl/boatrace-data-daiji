@@ -17,11 +17,12 @@ import numpy as np
 from . import store
 from .ml.wind_table import _pad
 
-# 過去の検証（補正B・後半3,014R）：回収率・幅
-BACKTEST = {"ev": (124.2, 101.5, 145.5), "ex": (120.0, 109.4, 131.0)}
-# 選び方を変えた日（この日から新しい選び方）
-RULES = {"ev": [("", "最大6点"), ("20261005", "最大9点")], "ex": [("", "最大3点")]}
-LABEL = {"ev": "3連単（期待値1.2以上）", "ex": "2連単（期待値1.2以上・最大3点）"}
+# 選び方を変えた日（この日から新しい選び方）と、その選び方の過去の検証（回収率・幅。幅が無ければ None）
+#   補正なし・最大6点：8/24〜9/10 の2,469R。補正B：後半3,014R（10/3 夜から。10/4 から1日通して）。最大9点は10/4 夕方から（10/5 から1日通して）
+RULES = {"ev": [("", "補正なし・最大6点", (94.9, None, None)), ("20261004", "補正B・最大6点", (118.1, 98.8, 137.5)),
+                ("20261005", "補正B・最大9点", (124.2, 101.5, 145.5))],
+         "ex": [("", "補正B・最大3点", (120.0, 109.4, 131.0))]}
+LABEL = {"ev": "3連単（期待値1.2以上）", "ex": "2連単（期待値1.2以上）"}
 # ev-check「10.」の目安：資金10万円・平掛けの1点・ケリー1/4の1点の上限
 PLANS = {"ev": (100, 1_000), "ex": (300, 3_000)}
 Z90 = 1.645
@@ -97,27 +98,29 @@ def section(rs: list[dict], k: str) -> list[str]:
     st, rt = np.array([r["stake"] for r in rs]), np.array([r["ret"] for r in rs])
     roi, lo, hi, over = boot(st, rt)
     hits = sum(r["hit"] for r in rs)
-    b_roi, b_lo, b_hi = BACKTEST[k]
     lines.append(f"  {rs[0]['date']}〜{rs[-1]['date']}  {len(rs):,}R  平均{st.sum() / 100 / len(rs):.1f}点  的中 {hits}R（{100 * hits / len(rs):.1f}%）"
                  f"  投資 {st.sum() * 10:,.0f}円 → 払戻 {rt.sum() * 10:,.0f}円（1点1,000円）")
-    lines.append(f"  回収率 {roi:.1f}%  幅 {lo:.1f}〜{hi:.1f}%  100%超え {over:.1f}%  ｜ 過去の検証 {b_roi:.1f}%（幅 {b_lo:.1f}〜{b_hi:.1f}%）")
-    if lo <= b_roi <= hi:
-        lines.append("  → 実戦の幅の中に、過去の検証の数字が入っている（今のところ検証どおりと言える範囲）")
-    else:
-        lines.append("  → 実戦の幅の外に、過去の検証の数字がある（検証より" + ("悪い" if hi < b_roi else "良い") + "。数が増えても続くなら見直す）")
-    need = races_needed(st, rt, b_roi)
-    if need == need:
-        lines.append(f"  回収率が検証どおり{b_roi:.0f}%なら、100%超えをはっきり言うには約{math.ceil(need):,}R（いま {len(rs):,}R）")
-    # 選び方を変えた日で分ける
+    lines.append(f"  通算の回収率 {roi:.1f}%  幅 {lo:.1f}〜{hi:.1f}%  100%超え {over:.1f}%")
+    lines.append("  選び方ごと（過去の検証は、その選び方で学習に使っていない期間を買ったときの回収率）")
     rules = RULES[k]
-    if len(rules) > 1:
-        for i, (since, name) in enumerate(rules):
-            until = rules[i + 1][0] if i + 1 < len(rules) else "99999999"
-            part = [r for r in rs if since <= r["date"] < until]
-            if part:
-                ps, pr = np.array([r["stake"] for r in part]), np.array([r["ret"] for r in part])
-                p_roi, p_lo, p_hi, _ = boot(ps, pr)
-                lines.append(f"    {_pad(name, 10)}{len(part):>5}R  回収率 {p_roi:6.1f}%  幅 {p_lo:5.1f}〜{p_hi:5.1f}%")
+    for i, (since, name, (b_roi, b_lo, b_hi)) in enumerate(rules):
+        until = rules[i + 1][0] if i + 1 < len(rules) else "99999999"
+        part = [r for r in rs if since <= r["date"] < until]
+        if not part:
+            lines.append(f"    {_pad(name, 18)}まだ結果の出たレースがありません（過去の検証 {b_roi:.1f}%）")
+            continue
+        ps, pr = np.array([r["stake"] for r in part]), np.array([r["ret"] for r in part])
+        p_roi, p_lo, p_hi, p_over = boot(ps, pr)
+        band = f"幅 {b_lo:.1f}〜{b_hi:.1f}%" if b_lo is not None else "幅なし"
+        lines.append(f"    {_pad(name, 18)}{len(part):>5}R  回収率 {p_roi:6.1f}%  幅 {p_lo:5.1f}〜{p_hi:5.1f}%  100%超え {p_over:5.1f}%"
+                     f"  ｜ 過去の検証 {b_roi:.1f}%（{band}）")
+        verdict = ("実戦の幅の中に、過去の検証の数字が入っている（今のところ検証どおりと言える範囲）" if p_lo <= b_roi <= p_hi
+                   else "実戦の幅の外に、過去の検証の数字がある（検証より悪い。数が増えても続くなら見直す）" if p_hi < b_roi
+                   else "実戦の幅の外に、過去の検証の数字がある（検証より良い。たまたまのこともあるので、数が増えるまで様子を見る）")
+        lines.append(f"      → {verdict}")
+        need = races_needed(ps, pr, b_roi)
+        if need == need:
+            lines.append(f"      回収率が検証どおり{b_roi:.0f}%なら、100%超えをはっきり言うには約{math.ceil(need):,}R（いま {len(part):,}R）")
     best, cur, best_from = streaks(rs)
     lines.append(f"  連敗（締切順）：一番長い {best}連敗（{best_from}〜）  今 {cur}連敗")
     # 当たった組の、決めたときのオッズと確定オッズ
