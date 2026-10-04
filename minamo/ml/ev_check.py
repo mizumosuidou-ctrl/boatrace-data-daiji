@@ -692,7 +692,23 @@ HIT_TH = 2.0  # 当てに行く買い方：合成オッズがこれ以上を保�
 MG_BASE, MG_MULT, MG_MAX = 10_000, 2, 5  # マーチンゲール：1万円から、負けたら2倍、5連敗で振り出し
 
 
-def hit_rows(races: list[dict], th: float = HIT_TH) -> list[dict]:
+AVOID = ("SG", "G1", "マスターズ", "ルーキーズ")  # ユーザーが避けていたレースの種類
+
+
+def race_categories(raw: Path) -> dict[str, str]:
+    """「日付-場」→ レースの種類（開催一覧 series.csv の大会名・グレードから。formation.category と同じ分け方）。"""
+    from .. import formation
+    from . import series as series_mod
+
+    ser = series_mod.load(raw)
+    if ser.empty:
+        return {}
+    days = ser["race_date"].astype(str).str.replace("-", "", regex=False).str[:8]
+    return {f"{d}-{v}": formation.category(t if isinstance(t, str) else "", g if isinstance(g, str) else "")
+            for d, v, t, g in zip(days, ser["venue"], ser["title"], ser["grade"])}
+
+
+def hit_rows(races: list[dict], th: float = HIT_TH, cats: dict | None = None) -> list[dict]:
     """補正B・後半の各レースで、確率の高い順に合成オッズ th 倍以上を保てる所まで買ったとき（store.co_picks）。
     ret は1レースの投資を1としたときの払戻（金額はオッズの逆数で配分、払戻は確定オッズ）。見送りのレースは入れない。"""
     from .. import store
@@ -710,7 +726,8 @@ def hit_rows(races: list[dict], th: float = HIT_TH) -> list[dict]:
         p_raw = sum(raw[r["race"]].get(c, 0) for c in combos)
         out.append({"race": r["race"], "ret": ret, "hit": r["hit"] in combos, "n": len(items), "comp": comp,
                     "p_set": p_set, "p_raw": p_raw, "ev": p_set * comp, "ev_raw": p_raw * comp, "top": items[0]["odds"],
-                    "p1": r["p1"], "jcd": r["race"].split("-")[1], "rno": int(r["race"].split("-")[2])})
+                    "p1": r["p1"], "jcd": r["race"].split("-")[1], "rno": int(r["race"].split("-")[2]),
+                    "cat": (cats or {}).get(r["race"][:11], "不明")})
     return sorted(out, key=lambda x: x["race"])
 
 
@@ -753,11 +770,11 @@ def martingale(rows: list[dict], base: float = MG_BASE, mult: float = MG_MULT, m
     return {"races": len(rows), "wins": wins, "busts": busts, "short": short, "net": net, "spent": spent, "dd": worst, "low": low}
 
 
-def hit_report(races: list[dict]) -> list[str]:
+def hit_report(races: list[dict], cats: dict | None = None) -> list[str]:
     """13. 当てに行く買い方（合成2倍以上・5分前オッズ）：見送るレースの分析と、マーチンゲール（1万円・2倍・5連敗で振り出し）。"""
     from ..venues import venue
 
-    rows = hit_rows(races)
+    rows = hit_rows(races, cats=cats)
     if len(rows) < 20:
         return []
     mid = rows[len(rows) // 2]["race"]
@@ -783,6 +800,10 @@ def hit_report(races: list[dict]) -> list[str]:
     bands("1点目（一番当たりそうな組）のオッズ", "top", [0, 3, 5, 8, 12, 999], lambda lo, hi: f"{lo:g}〜{hi:g}倍" if hi < 900 else f"{lo:g}倍以上")
     bands("MINAMOの①の1着確率", "p1", [0, 0.35, 0.5, 0.65, 9], pct)
     bands("レース番号", "rno", [1, 5, 9, 13], lambda lo, hi: f"{lo}〜{hi - 1}R")
+    lines.append("  レースの種類（開催の大会名・グレードから）")
+    for c in sorted({x["cat"] for x in rows}, key=lambda c: -sum(x["cat"] == c for x in rows)):
+        lines.append(_band_line(c, [x for x in rows if x["cat"] == c], mid))
+    lines.append(_band_line("SG・G1・マスターズ・ルーキーズ以外", [x for x in rows if x["cat"] not in AVOID], mid))
     lines.append("  場（50R以上。回収率の高い順に上5場・下5場）")
     by = {}
     for x in rows:
@@ -797,7 +818,11 @@ def hit_report(races: list[dict]) -> list[str]:
     filters = [("全部のレース", lambda x: True), ("確率（補正後）50%以上", lambda x: x["p_set"] >= 0.5),
                ("確率（補正後）60%以上", lambda x: x["p_set"] >= 0.6), ("期待値（補正後）0.9以上", lambda x: x["ev"] >= 0.9),
                ("期待値（補正後）1.0以上", lambda x: x["ev"] >= 1.0), ("期待値（補正前）1.0以上", lambda x: x["ev_raw"] >= 1.0),
-               ("期待値（補正前）1.2以上", lambda x: x["ev_raw"] >= 1.2)]
+               ("期待値（補正前）1.2以上", lambda x: x["ev_raw"] >= 1.2),
+               ("SG・G1・マスターズ・ルーキーズを見送り", lambda x: x["cat"] not in AVOID),
+               ("同上＋期待値（補正前）0.8以上", lambda x: x["cat"] not in AVOID and x["ev_raw"] >= 0.8),
+               ("同上＋鳴門・徳山・唐津・児島も見送り※", lambda x: x["cat"] not in AVOID and x["ev_raw"] >= 0.8
+                and x["jcd"] not in ("14", "18", "23", "16"))]
     for name, f in filters:
         g = [x for x in rows if f(x)]
         if not g:
@@ -806,6 +831,31 @@ def hit_report(races: list[dict]) -> list[str]:
         lines.append(f"  {_pad(name, 24)}{m['races']:>5}R  サイクル{m['wins'] + m['busts']:>5}  勝ち{m['wins']:>5}  {MG_MAX}連敗{m['busts']:>4}回"
                      f"  取り返せず{m['short']:>4}本  収支 {m['net']:>+12,.0f}円  一番減ったとき −{m['dd']:,.0f}円"
                      f"  （投資 {m['spent']:,.0f}円）")
+    lines.append("  ※ 見送る場は、この表で回収率が低かった場なので、たまたまの分も入っている（参考）")
+    lines += trial_by_category(races, cats)
+    return lines
+
+
+def trial_by_category(races: list[dict], cats: dict | None) -> list[str]:
+    """13-3. 今の試し買い（3連単・2連単、平掛け）を、レースの種類で分けた回収率。"""
+    if not cats:
+        return []
+    cal = _test_cal(races)
+    tri, ex = _trial_rows(cal)
+    rows = []  # （種類, 3連単の点数, 3連単の払戻, 2連単の点数, 2連単の払戻）
+    ex_i = iter(ex)
+    for r, t in zip(cal, tri):
+        e = next(ex_i) if r.get("x5") and r.get("xfinal") else []
+        rows.append((cats.get(r["race"][:11], "不明"), len(t), sum(of for _, _, h, of in t if h),
+                     len(e), sum(of for _, _, h, of in e if h)))
+    lines = [" 13-3. 今の試し買い（平掛け）をレースの種類で分けると（3連単 期待値1.2以上・最大9点／2連単 期待値1.2以上・最大3点）"]
+    groups = [(c, lambda x, c=c: x[0] == c) for c in sorted({x[0] for x in rows}, key=lambda c: -sum(x[0] == c for x in rows))]
+    groups.append(("SG・G1・マスターズ・ルーキーズ以外", lambda x: x[0] not in AVOID))
+    for name, f in groups:
+        g = [x for x in rows if f(x)]
+        tp, tr, xp, xr = (sum(x[i] for x in g) for i in (1, 2, 3, 4))
+        lines.append(f"    {_pad(name, 22)}{len(g):>5}R  3連単 {tp:>5}点 回収率 {100 * tr / tp if tp else float('nan'):6.1f}%"
+                     f"  2連単 {xp:>5}点 回収率 {100 * xr / xp if xp else float('nan'):6.1f}%")
     return lines
 
 
@@ -924,5 +974,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += stake_report(races)
     lines += timing_report(races)
     lines += composite_report(races)
-    lines += hit_report(races)
+    lines += hit_report(races, race_categories(raw))
     return "\n".join(lines)
