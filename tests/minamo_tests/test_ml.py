@@ -846,6 +846,10 @@ def test_ev_check_report(tmp_path):
     # ケリー：期待値1以下の組には賭けない
     assert ev_check._simulate([[(0.05, 10.0, True, 10.0)]], "kelly")["stake"] == 0
     # 10. 1点の金額を変える・ケリーに上限：外れ2回のあと当たり → 一番少ないときは 98,000円
+    # 11. 何分前のオッズで決めるか：ある時刻（15分前・5分前）だけ。当たった組の確定÷決めたときのオッズ
+    assert "11. 締切の何分前のオッズで" in text and "15分前" in text and "10分前  回収率" not in text
+    roi, lo, hi, n_hit, move = ev_check._rows_boot([[(0.2, 10.0, True, 8.0), (0.1, 20.0, False, 0.0)], [(0.2, 10.0, False, 0.0)]])
+    assert abs(roi - 800 / 3) < 1e-9 and n_hit == 1 and abs(move - 0.8) < 1e-9
     assert "10. 資金10万円で持つ1点の金額" in text and "平掛け 1点100円" in text and "1点10,000円まで" in text
     sim = ev_check._simulate([[(0.2, 10.0, False, 10.0)], [(0.2, 10.0, False, 10.0)], [(0.2, 10.0, True, 10.0)]], "flat")
     assert sim["low"] == 98_000 and sim["bank"] == 107_000
