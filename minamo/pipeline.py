@@ -17,7 +17,7 @@ from typing import Optional
 
 import requests
 
-from . import parsers, racetime, store, venue_original
+from . import notify, parsers, racetime, store, venue_original
 from .analyst import analyze, fallback_analysis
 from .fetcher import Fetcher
 from .model import predict
@@ -241,6 +241,8 @@ class Pipeline:
                 if odds2:  # 試験中：2連単（補正した3連単の確率を足して2連単に。2連単のオッズで期待値1.2以上・最大3点）
                     xc, xi = store.ex_picks(tri, odds, odds2, cal)
                     st["ex_pick"] = {"combos": xc, "items": xi, "at": now.isoformat()}
+                # 締切の数分前に、試験中の買い目を Discord に知らせる（設定があるときだけ）
+                notify.maybe_notify(st, date, vd.jcd, rno, card.deadline, self._mins_left(date, card.deadline, now))
         st["odds"] = odds or st.get("odds")
         st["odds2"] = odds2 or st.get("odds2")
         st["before_at"] = now.isoformat()
