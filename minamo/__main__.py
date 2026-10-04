@@ -70,6 +70,8 @@ def main() -> None:
     mlq.add_argument("--raw", default=None)
     mle = sub.add_parser("ev-check", help="買い目の選び方（確率上位・期待値）を、学習に使っていない期間のオッズと結果で比べる")
     mle.add_argument("--raw", default=None)
+    mll = sub.add_parser("live-check", help="実戦の成績（試験中の買い目）を、過去の検証と同じ物差しで見る表を出す")
+    mll.add_argument("--data", help="web/data の場所（既定は MINAMO_DATA_DIR）")
     mla = sub.add_parser("ability-check", help="自動発見のアビリティを買い目に使ったらどうだったかを、学習に使っていない期間で確かめる")
     mla.add_argument("--raw", default=None)
     mlr = sub.add_parser("rtm-compare", help="レースタイムモニターの予想（DEEP・NORMAL・裏の予想）とMINAMOを同じレースで比べる")
@@ -157,6 +159,10 @@ def main() -> None:
         from .ml import ev_check, live
 
         print(ev_check.build(live.ML_DIR, Path(args.raw) if args.raw else live.ML_DIR / "raw"))
+    elif args.cmd == "live-check":
+        from . import live_check
+
+        print(live_check.build(Path(args.data) if args.data else store.DATA_DIR))
     elif args.cmd == "ability-check":
         from .ml import ability_check, live
 
