@@ -1134,6 +1134,92 @@ def two_fast_outcomes(fast: list[dict], kim=None) -> list[str]:
     return lines
 
 
+def course_combos(r: dict, pats: list[str]) -> list[str]:
+    """コースの組（"1-2-3" や "1-2-*"、* は残り全部）→ 艇番の組。進入が分からなければ空。"""
+    lane = {c: l for l, c in (r.get("course_of") or {}).items()}
+    if len(lane) < 6:
+        return []
+    out = []
+    for p in pats:
+        cs = p.split("-")
+        rest = [c for c in range(1, 7) if str(c) not in cs]
+        for x in (rest if "*" in cs else [None]):
+            out.append("-".join(str(lane[x if c == "*" else int(c)]) for c in cs))
+    return list(dict.fromkeys(out))
+
+
+def one_two_report(races: list[dict]) -> list[str]:
+    """15-4. ②が速いレース（試し買いは見送り）で①-②の形を買う。15-3 は後半で見つけた形なので、
+    使っていない前半でも当たるか（新しい期間での確かめ）を見る。補正はいらない（買い目は決まった形）。"""
+    rs = sorted([r for r in races if _start_flags(r)["c2_fast"] is True], key=lambda r: r["race"])
+    other = [r for r in races if _start_flags(r)["c2_fast"] is False]
+    if len(rs) < 40:
+        return []
+    allr = sorted(races, key=lambda r: r["race"])
+    mid = allr[len(allr) // 2]["race"]  # 15-3 と同じ区切り（後半＝15-3 で形を見つけた期間）
+    old, new = [r for r in rs if r["race"] < mid], [r for r in rs if r["race"] >= mid]
+
+    def mkt1(r):
+        one = {c: l for l, c in r["course_of"].items()}.get(1)
+        inv = {c: 1 / o for c, o in r["t5"].items() if o}
+        tot = sum(inv.values())
+        return sum(v for c, v in inv.items() if c.startswith(f"{one}-")) / tot if tot else float("nan")
+
+    def p1(r):
+        return r["p_lane"].get({c: l for l, c in r["course_of"].items()}.get(1), float("nan"))
+
+    def pat(pats, cond=None):
+        return lambda r: course_combos(r, pats) if cond is None or cond(r) else []
+
+    plans = [("①-②-③・①-②-④（2点）", pat(["1-2-3", "1-2-4"])),
+             ("①-②-全（4点）", pat(["1-2-*"])),
+             ("①-②-全・①-全-②（8点）", pat(["1-2-*", "1-*-2"])),
+             ("①-②-③④：MINAMOの①1着50%以上", pat(["1-2-3", "1-2-4"], lambda r: p1(r) >= 0.5)),
+             ("①-②-全：MINAMOの①1着50%以上", pat(["1-2-*"], lambda r: p1(r) >= 0.5)),
+             ("①-②-③④：MINAMOの①が市場より高い", pat(["1-2-3", "1-2-4"], lambda r: p1(r) > mkt1(r))),
+             ("①-②-全：MINAMOの①が市場より高い", pat(["1-2-*"], lambda r: p1(r) > mkt1(r)))]
+
+    def cell(group, pick, odds="final"):
+        n = st = hit = 0
+        pays = []
+        for r in group:
+            b = pick(r)
+            if not b:
+                continue
+            n += 1
+            st += len(b)
+            if r["hit" if odds == "final" else "xhit"] in b:
+                hit += 1
+                pays.append(r[odds].get(r["hit" if odds == "final" else "xhit"], 0))
+        if not st:
+            return f"{_pad('（買うレースなし）', 36)}"
+        roi = 100 * sum(pays) / st
+        cut = 100 * (sum(pays) - max(pays)) / st if pays else 0.0  # 一番大きな払戻を1回除くと
+        return f"{n:>4}R 的中{100 * hit / n:5.1f}% 回収率{roi:6.1f}%（最大除く{cut:6.1f}%）"
+
+    lines = [f" 15-4. ②が速いレース（試し買いは見送り）で①-②の形を買う（{len(rs)}R・全期間。5分前オッズで決め、払戻は確定オッズ。1点100円）",
+             "  15-3 は後半で見つけた形。前半はその形を見つけるのに使っていない期間なので、ここでも100%を超えるかが本当の確かめ。"
+             "（最大除く）＝一番大きな払戻1回を除いた回収率",
+             f"    {_pad('買い方', 40)}{_pad(f'前半・新しい期間（{len(old)}R）', 48)}{_pad(f'後半・見つけた期間（{len(new)}R）', 48)}"
+             f"{_pad('全期間', 48)}ふつうのレース（比べ）"]
+    for name, pick in plans:
+        lines.append(f"    {_pad(name, 40)}{cell(old, pick)}  {cell(new, pick)}  {cell(rs, pick)}  {cell(other, pick)}")
+    xs = [{**r, "xhit": "-".join(r["hit"].split("-")[:2])} for r in rs if r.get("xfinal")]
+    if len(xs) >= 40:
+        xo = [r for r in xs if r["race"] < mid]
+        xn = [r for r in xs if r["race"] >= mid]
+        pick = pat(["1-2"])
+        lines.append(f"    {_pad('2連単 ①-②（1点）', 40)}{cell(xo, pick, 'xfinal')}  {cell(xn, pick, 'xfinal')}  "
+                     f"{cell(xs, pick, 'xfinal')}")
+    two2 = sum(1 for r in rs if r["course_of"].get(int(r["hit"].split("-")[1])) == 2)
+    one1 = sum(1 for r in rs if r["course_of"].get(int(r["hit"].split("-")[0])) == 1)
+    one2 = sum(1 for r in rs if r["course_of"].get(int(r["hit"].split("-")[0])) == 1
+               and r["course_of"].get(int(r["hit"].split("-")[1])) == 2)
+    lines.append(f"  全期間：①1着 {100 * one1 / len(rs):.1f}%、②2着 {100 * two2 / len(rs):.1f}%、①-②の決着 {100 * one2 / len(rs):.1f}%"
+                 f"（①が1着のときの②2着 {100 * one2 / one1 if one1 else 0:.1f}%）")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -1254,4 +1340,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     from . import dataset as ds
 
     lines += two_head_report(races, ds.load_kimarite(raw))
+    lines += one_two_report(races)
     return "\n".join(lines)
