@@ -673,6 +673,45 @@ function bindMyPick(race) {
   });
 }
 
+// TIME予想（あなたの予想方法）：判定・進入・通常予想・キーマン・買い目・仮想資金・予想理由
+function timeHtml(race) {
+  const t = race.time_pick;
+  if (!t) return "";
+  const B = Object.fromEntries((t.boats || []).map((b) => [b.boat, b]));
+  const won = race.result && !race.result.cancelled ? race.result.trifecta : null;
+  const all = [...(t.main || []), ...(t.sub || [])];
+  const list = (xs) => (xs && xs.length ? xs.map((c) => `<span class="nowrap ${c === won ? "hit-c" : ""}">${combo(c)}</span>`).join(" ") : "なし");
+  const kmRows = (t.keymen || []).map((k, i) => `<tr><td>キーマン${i + 1}</td><td>${boat(k.boat, "sm")} ${esc(k.name || "")}</td><td>${k.course}</td>
+    <td>${k.race_rank ?? "--"}位</td><td>${k.series_rank ?? "--"}/${k.series_n ?? "--"}</td><td>${k.runs}本</td><td>${k.sr != null ? k.sr.toFixed(2) : "--"}</td>
+    <td>${k.both ? "節内・6艇内の両方" : k.series ? "節内の順位" : "6艇内の順位"}</td><td>${esc(k.role || "")}</td></tr>`).join("");
+  const srTop = (t.boats || []).filter((b) => b.sr != null).sort((a, b) => a.sr - b.sr)[0];
+  const notes = [];
+  if (!t.confirmed) notes.push("進入未確定");
+  (t.ref || []).forEach((x) => notes.push(`${x.boat}号艇 ${x.name}はタイムの集計が${x.runs}本だけなので参考（キーマンにしない）`));
+  const n = all.length;
+  return `<section class="section">
+    <div class="section-head"><div><h2 class="section-title">TIME予想 Version ${esc(t.version || "")}<small>あなたの予想方法。通常予想（MINAMO）を土台に、レースタイムの良い選手（キーマン）を必ず入れる3連単。DEEP予想はMINAMOの統計モデル、全国RT順位は節内の順位で代用。仮想資金の検証用（500レースまでは判断しない）</small></h2></div></div>
+    <div class="panel time-panel">
+      <p><b>判定：${esc(t.status || "")}</b> · データ取得 ${hhmm(t.at)}${race.pick_fixed ? "（決定）" : "（仮）"}${won && t.combos && t.combos.length ? ` · <b>${t.combos.includes(won) ? `的中（${t.combos.indexOf(won) + 1}番目）` : "はずれ"}</b>` : ""}</p>
+      <h4>■展示後の進入</h4>
+      <p>${(t.boats || []).map((b) => `<span class="nowrap">${b.course}コース ${boat(b.boat, "sm")}</span>`).join(" ")} · ${t.confirmed ? "確定（展示の進入）" : "進入未確定"}</p>
+      <h4>■通常予想</h4>
+      <p>軸 ${t.axis ? boat(t.axis, "sm") : "--"} · イン逃げ指数 ${t.escape != null ? Math.round(t.escape * 100) + "%" : "--"} · 通常買い目 ${list(t.normal)}</p>
+      ${kmRows ? `<h4>■TIMEキーマン</h4><div class="ledger-scroll"><table class="streak-t"><thead><tr><th></th><th>艇・選手</th><th>コース</th><th>6艇内RT</th><th>節内RT</th><th>集計</th><th>平均ST順位</th><th>採用理由</th><th>役割</th></tr></thead><tbody>${kmRows}</tbody></table></div>` : ""}
+      ${t.status === "予想可能" ? `<h4>■TIME買い目</h4>
+      <p>本線：${list(t.main)}<br>押さえ：${list(t.sub)}<br>追加候補（買い目には入れない）：${list(t.extra)}</p>
+      <h4>■仮想資金配分</h4><p>${n}点 × ${yen(t.unit)} ＝ ${yen((t.unit || 0) * n)}</p>
+      <h4>■予想理由</h4>
+      <p>通常予想の軸：${t.axis ? `${t.axis}号艇${B[t.axis] ? `（${B[t.axis].course}コース）` : ""}` : "--"}<br>
+      レースタイム上の強み：${(t.keymen || []).map((k) => `${k.boat}号艇 6艇内${k.race_rank}位・節内${k.series_rank}/${k.series_n}位（${k.runs}本）`).join("、")}<br>
+      スタート上の強み：${srTop ? `${srTop.boat}号艇が平均スタート順位1位（${srTop.sr.toFixed(2)}）` : "--"}<br>
+      コース上の強み：${(t.keymen || []).map((k) => `${k.boat}号艇は${k.course}コース（${esc(k.role || "")}）`).join("、")}<br>
+      モーター・展示・天候：MINAMOの通常予想の確率に含めています<br>
+      注意材料：${notes.length ? esc(notes.join("。")) : "なし"}</p>` : `<p class="small muted">${t.status === "進入待ち" ? "展示の進入が分かってから予想します。" : t.status === "データ不足" ? "節間のレースタイムがまだ無いので予想しません（初日など）。" : "キーマンの条件を満たす選手がいないので見送りです。"}${notes.length ? " " + esc(notes.join("。")) : ""}</p>`}
+    </div>
+  </section>`;
+}
+
 const MARK_SYM = [["honmei", "◎", "本命"], ["taikou", "○", "対抗"], ["ana", "▲", "穴"]];
 
 async function renderRace(r, refresh = false) {
@@ -755,6 +794,7 @@ async function renderRace(r, refresh = false) {
       <div class="section-head"><div><h2 class="section-title">推奨買い目<small>買い目と配分（％）、オッズから見た妙味</small></h2></div></div>
       ${ticketsHtml(race)}
     </section>
+    ${timeHtml(race)}
 
     <section class="section">
       <div class="section-head"><div><h2 class="section-title">あなたの予想と比べる<small>1着・2着・3着の艇を選ぶと、MINAMOの確率・オッズ・期待値と並べます。◎はMINAMOの推奨買い目、★は試験中の買い目にもある組。このブラウザだけに保存されます</small></h2></div></div>
@@ -796,6 +836,7 @@ const PICK_KIND = {
   ev: { label: "3連単", rule: "MINAMOの確率を市場（オッズ）と合わせて補正し、期待値（確率×オッズ）が1.2以上の3連単を最大9点", check: "過去の検証（学習に使っていない約3,000レース）で回収率124%（幅101〜146%）" },
   co: { label: "3連単 合成", rule: "3連単と同じ組を、合成オッズ配分（オッズの低い組を多めに。どれが当たっても払戻が同じ）で買う。当たれば必ず投資の合成オッズ倍（真ん中18倍）が戻り、トリガミになりません", check: "過去の検証（学習に使っていない約3,000レース）で回収率122%（幅99〜149%）" },
   ex: { label: "2連単", rule: "補正した確率を2連単にまとめ、2連単のオッズで期待値1.2以上の組を最大3点", check: "過去の検証（学習に使っていない約3,000レース）で回収率120%（幅109〜131%）" },
+  time: { label: "TIME", rule: "TIME予想（あなたの予想方法）：通常予想（MINAMO）を土台に、レースタイムの良い選手（キーマン）を必ず入れる3連単。キーマンが居なければ見送り。DEEP予想はMINAMOの統計モデル、全国RT順位は節内の順位で代用", check: "500レースまでは検証運用（成績の良い日だけで判断しない）" },
 };
 // 組ごとの金額で当たったときの払戻の幅（100円単位にそろえるので、組によって少しずれる）
 const payRange = (items, stakes) => {
@@ -828,6 +869,8 @@ function pickCard(date, r, now, k = "ev", s = getStake(k)) {
   const done = res && !r.cancelled;
   const items = r[`${k}_items`] || (r[`${k}_pick`] || []).map((c) => ({ combo: c }));
   const won = done && r[`${k}_hit`];
+  const meta = k === "time" ? r.time_meta || {} : null;
+  if (k === "time") return timeCard(date, r, now, items.filter((x) => x.kind !== "追加候補"), meta, res, done);
   const comp = k === "co" ? compositeOf(items) : null;
   // 合成オッズ配分：1レースの金額 × 合成オッズ ÷ オッズ（100円単位）
   const stakes = items.map((x) => (k === "co" ? (comp && x.odds ? Math.max(100, Math.round((s.budget * comp) / x.odds / 100) * 100) : null) : stakeFor(x, s)));
@@ -841,6 +884,23 @@ function pickCard(date, r, now, k = "ev", s = getStake(k)) {
       ${items.map((x, i) => `<tr class="${done && x.combo === res ? "on" : ""}"><td>${combo(x.combo)}</td><td>${x.p != null ? pct(x.p, 1) + "%" : "--"}</td><td>${x.odds ?? "--"}</td><td>${k === "co" ? (comp && x.odds ? Math.round((100 * comp) / x.odds) + "%" : "--") : x.ev != null ? x.ev.toFixed(2) : "--"}</td><td>${stakes[i] == null ? "--" : yen(stakes[i])}</td></tr>`).join("")}
     </tbody></table>
     <div class="small muted">${k === "co" && comp ? `<span class="nowrap">合成 ${comp.toFixed(1)}倍</span> · ` : ""}${items.length}点 · 合計 ${stakes.some((v) => v == null) ? "--" : yen(total)}${k === "co" && comp && !done && stakes.every((v) => v) ? ` · <span class="nowrap">当たれば ${payRange(items, stakes)}</span>` : ""}${won && hitStake ? ` · <span class="nowrap">払戻 ${yen(Math.round(hitStake * (pickPay(r, k) || 0) / 100))}</span>` : ""} · オッズ ${hhmm(r[`${k}_at`])} 時点${done ? ` · <span class="nowrap">結果 ${esc(res)}</span>` : ""}</div>
+  </a>`;
+}
+// TIME予想のカード：キーマン・本線／押さえ・仮想資金（1点の金額は設定のまま）
+function timeCard(date, r, now, items, meta, res, done) {
+  const dl = deadlineMs(date, r.deadline);
+  const won = done && r.time_hit;
+  const unit = meta.unit || 0;
+  const km = (meta.keymen || []).map((k, i) => `<div>キーマン${i + 1} ${boat(k.boat, "sm")} ${esc(k.name || "")}（${k.course}コース・役割 ${esc(k.role || "")}）</div>`).join("");
+  return `<a class="panel pick-card ${done ? (won ? "won" : "lost") : ""}" href="#/race/${date}/${r.v.jcd}/${r.rno}">
+    <div class="pick-h"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span>${!done && !r.cancelled ? `<span class="chip fix ${r.pick_fixed ? "src-claude" : ""}">${r.pick_fixed ? "決定" : "仮"}</span>` : ""}
+      ${done ? `<span class="chip ${won ? "src-claude" : ""}">${won ? `的中（${r.time_rank}番目） ${yen((r.time_return || 0) * BET_UNIT)}` : "はずれ"}</span>`
+        : r.cancelled ? `<span class="chip">中止</span>` : dl > now ? `<span class="cd" data-deadline="${dl}">${fmtCountdown(dl - now)}</span>` : `<span class="chip">締切</span>`}</div>
+    <div class="small" style="margin:0 0 8px;line-height:1.8">${km}</div>
+    <table class="pick-t"><thead><tr><th>TIME</th><th>区分</th><th>評価点</th><th>仮想1点</th></tr></thead><tbody>
+      ${items.map((x) => `<tr class="${done && x.combo === res ? "on" : ""}"><td>${combo(x.combo)}</td><td>${esc(x.kind)}</td><td>${x.score != null ? Math.round(x.score) : "--"}</td><td>${yen(unit)}</td></tr>`).join("")}
+    </tbody></table>
+    <div class="small muted">${items.length}点 · 仮想 ${yen(unit * items.length)} · Version ${esc(meta.version || "")} · ${hhmm(r.time_at)} 時点${done ? ` · <span class="nowrap">結果 ${esc(res)}</span>` : ""}</div>
   </a>`;
 }
 const getPickKind = () => { try { return localStorage.getItem("minamo-pick-kind") || "ev"; } catch { return "ev"; } };
@@ -861,7 +921,7 @@ async function renderPicks(refresh = false, k = getPickKind()) {
     <div class="seg seg-big" role="group" aria-label="選び方" id="pickKind">${Object.entries(PICK_KIND).map(([kk, x]) => `<button type="button" data-kind="${kk}" class="${kk === k ? "on" : ""}">${x.label}</button>`).join("")}</div>
     <span class="eyebrow">${fmtDate(date)}（${weekday(date)}）</span>
     <h1 class="section-title" style="font-size:clamp(36px,5vw,72px)">今買う候補<small>試験中の選び方（${PICK_KIND[k].label}）：${PICK_KIND[k].rule}。無ければ見送り。${PICK_KIND[k].check}でしたが、まだ試験中です</small></h1>
-    ${k === "co" ? `<form class="panel stake-form" id="stakeForm" onsubmit="return false">
+    ${k === "time" ? `<p class="small muted" style="margin:0 0 6px">仮想資金で数える検証用です（実際の購入の指示ではありません）。1点の金額は設定（通常予想が6点なら6点×1点の金額、そうでなければ12点）のままです。</p>` : k === "co" ? `<form class="panel stake-form" id="stakeForm" onsubmit="return false">
       <label>1レースの金額<input type="number" inputmode="numeric" name="budget" min="100" step="100" value="${s.budget}">円</label>
       <p class="small muted">組ごとの金額は「1レースの金額×合成オッズ÷オッズ」（100円単位、最低100円なので合計は少しずれます）。過去の検証（資金10万円）の目安は1レース300〜500円。この端末だけに保存します。</p>
     </form>` : `<form class="panel stake-form" id="stakeForm" onsubmit="return false">
@@ -878,8 +938,8 @@ async function renderPicks(refresh = false, k = getPickKind()) {
     <div class="calib">
       <div class="panel"><h4>今日の候補</h4><div class="big">${bought.length}<small style="font-size:.45em">R</small></div><div class="small">見送り ${skipped}R · 締切前 ${open.length}R</div></div>
       <div class="panel"><h4>的中</h4><div class="big">${hits}<small style="font-size:.45em">/${settled.length}R</small></div><div class="small">結果の出たレース</div></div>
-      <div class="panel"><h4>今日の回収率</h4><div class="big">${stake ? ((ret / stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">${k === "co" ? "1レース同じ金額で買った場合" : "1点同じ金額で買った場合"}</div></div>
-      <div class="panel"><h4>今日の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${stake ? signedYen((ret - stake) * BET_UNIT) : "--"}</div><div class="small">${k === "co" ? "1レース1,000円" : "1点1,000円"}</div></div>
+      <div class="panel"><h4>今日の回収率</h4><div class="big">${stake ? ((ret / stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">${k === "co" ? "1レース同じ金額で買った場合" : k === "time" ? "仮想資金で数えた場合" : "1点同じ金額で買った場合"}</div></div>
+      <div class="panel"><h4>今日の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${stake ? signedYen((ret - stake) * BET_UNIT) : "--"}</div><div class="small">${k === "co" ? "1レース1,000円" : k === "time" ? "仮想資金（設定の金額）" : "1点1,000円"}</div></div>
     </div>
     <div class="section-head" style="margin-top:34px"><div><h2 class="section-title">締切前・結果待ち<small>締切の近い順。締切の約5分前のオッズで組を決めて「決定」にし、Discord に知らせます。それまでは「仮」で、オッズが変わると組が入れ替わります。成績は決定した組で数えます</small></h2></div></div>
     ${open.length ? `<div class="pick-grid">${open.map((r) => pickCard(date, r, now, k, s)).join("")}</div>` : `<div class="panel" style="padding:20px">今は締切前の候補がありません。直前情報（展示）が出たレースから順に候補を決めます。</div>`}
@@ -894,13 +954,13 @@ async function renderPicks(refresh = false, k = getPickKind()) {
     renderPicks(false, b.dataset.kind);
   });
   const form = $("#stakeForm");
-  form.addEventListener("click", (ev) => {
+  if (form) form.addEventListener("click", (ev) => {
     const b = ev.target.closest("[data-how]");
     if (!b) return;
     setStake(k, { ...getStake(k), how: b.dataset.how });
     renderPicks(false, k);
   });
-  form.addEventListener("change", (ev) => {
+  if (form) form.addEventListener("change", (ev) => {
     const el = ev.target;
     const v = Math.round(Number(el.value) / 100) * 100;
     if (!el.name || !(v >= 100)) return;
@@ -993,6 +1053,14 @@ async function renderRecord() {
         <div class="panel rv" style="--i:3"><h4>1レース1,000円の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.co_return >= T.co_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.co_return - T.co_stake) * 10)}</div><div class="small">投資 ${yen(T.co_stake * 10)} · 払戻 ${yen(T.co_return * 10)}</div></div>
       </div>
       ${evTrendHtml(rec.days, "co", "合成オッズ配分")}` : ""}
+      ${T.time_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">TIME予想（あなたの予想方法）<small>${PICK_KIND.time.rule}。仮想資金で数えます。${PICK_KIND.time.check}（いま ${T.time_bought}R）</small></h2></div></div>
+      <div class="calib">
+        <div class="panel rv"><h4>的中率</h4><div class="big">${T.time_bought ? ((T.time_hits / T.time_bought) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.time_hits}/${T.time_bought}R（買ったレースのうち）</div></div>
+        <div class="panel rv" style="--i:1"><h4>回収率</h4><div class="big" style="color:var(--accent)">${T.time_stake ? ((T.time_return / T.time_stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">12点運用なら ${T.time12_stake ? ((T.time12_return / T.time12_stake) * 100).toFixed(1) : "--"}%（的中 ${T.time12_hits}R）</div></div>
+        <div class="panel rv" style="--i:2"><h4>買ったレース</h4><div class="big">${T.time_bought}<small style="font-size:.45em">R</small></div><div class="small">見送り ${T.time_races - T.time_bought}R（キーマン不成立・データ不足など）</div></div>
+        <div class="panel rv" style="--i:3"><h4>仮想収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.time_return >= T.time_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.time_return - T.time_stake) * 10)}</div><div class="small">投資 ${yen(T.time_stake * 10)} · 払戻 ${yen(T.time_return * 10)}</div></div>
+      </div>
+      ${evTrendHtml(rec.days, "time", "TIME予想")}` : ""}
       ${T.ex_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：2連単の買い目<small>${PICK_KIND.ex.rule}（無ければ見送り）。実際の推奨買い目は変えず、成績だけを数えています</small></h2></div></div>
       <div class="calib">
         <div class="panel rv"><h4>的中率</h4><div class="big">${T.ex_bought ? ((T.ex_hits / T.ex_bought) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.ex_hits}/${T.ex_bought}R（買ったレースのうち）</div></div>

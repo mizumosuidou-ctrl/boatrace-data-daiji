@@ -17,7 +17,7 @@ from typing import Optional
 
 import requests
 
-from . import notify, parsers, racetime, store, venue_original
+from . import notify, parsers, racetime, store, time_predict, venue_original
 from .analyst import analyze, fallback_analysis
 from .fetcher import Fetcher
 from .model import predict
@@ -107,10 +107,12 @@ class Pipeline:
         ev_pick = st.get("ev_pick") or {}
         ex_pick = st.get("ex_pick") or {}
         payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev_pick.get("combos"),
-                                   ex=ex_pick.get("combos") if "ex_pick" in st else None, ev_items=ev_pick.get("items"))
+                                   ex=ex_pick.get("combos") if "ex_pick" in st else None, ev_items=ev_pick.get("items"),
+                                   time_pick=st.get("time_pick"))
         payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
         payload["ev_at"] = ev_pick.get("at")
         payload["pick_fixed"] = st.get("pick_fixed")  # 試験中の買い目を固定した時刻（それまでは仮）
+        payload["time_pick"] = st.get("time_pick")  # TIME予想（キーマン・買い目・判定）
         payload["ex_items"] = ex_pick.get("items")  # 試験中の2連単
         payload["ex_at"] = ex_pick.get("at")
         payload["odds2"] = st.get("odds2") or {}
@@ -237,7 +239,8 @@ class Pipeline:
             hh, mm = map(int, card.deadline.split(":"))
             if now < datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST):
                 cal = store.ev_calib()
-                tri = predict(card, before, odds).trifecta
+                pr = predict(card, before, odds)
+                tri = pr.trifecta
                 combos = store.ev_picks(tri, odds, cal)
                 prob = dict(store.calibrate(tri, odds, *cal) if cal else tri)
                 st["ev_pick"] = {"combos": combos, "at": now.isoformat(), "cal": list(cal) if cal else None,
@@ -246,6 +249,9 @@ class Pipeline:
                 if odds2:  # 試験中：2連単（補正した3連単の確率を足して2連単に。2連単のオッズで期待値1.2以上・最大3点）
                     xc, xi = store.ex_picks(tri, odds, odds2, cal)
                     st["ex_pick"] = {"combos": xc, "items": xi, "at": now.isoformat()}
+                tp = self._time_pick(card, before, odds, pr, st)  # TIME予想（サーバーに設定があるときだけ）
+                if tp:
+                    st["time_pick"] = {**tp, "at": now.isoformat()}
                 mins_left = self._mins_left(date, card.deadline, now)
                 if mins_left <= PICK_FIX_MIN:
                     st["pick_fixed"] = now.isoformat()
@@ -353,6 +359,26 @@ class Pipeline:
             return False
         st["orig"] = {str(b): v for b, v in got.items()}
         return True
+
+    @staticmethod
+    def _time_pick(card, before, odds, pr, st: dict) -> Optional[dict]:
+        """TIME予想。通常予想＝MINAMOの本線（推奨買い目）と本命、DEEP予想＝統計モデル。設定が無ければ None。"""
+        cfg = time_predict.config()
+        if not cfg:
+            return None
+        try:
+            boats, confirmed = time_predict.boats_info(card, before, pr, store.read_json(store.DATA_DIR / "insights.json"))
+            ai = st.get("ai") or {}
+            normal = [p["combo"] for p in ai.get("picks", []) if p.get("kind", "本線") == "本線"] or [c for c, _ in pr.trifecta[:6]]
+            esc = (pr.escape or {}).get("index")
+            res = time_predict.predict(boats, confirmed, normal, ai.get("honmei"), esc / 100 if esc is not None else None, odds, cfg)
+        except (KeyError, TypeError, ValueError) as exc:  # 設定の書き間違いなど。予想は止めない
+            log.warning("TIME予想: %s", exc)
+            return None
+        res["normal"] = normal
+        res["boats"] = [{k: b[k] for k in ("boat", "name", "course", "race_rank", "series_rank", "series_n", "runs", "sr", "rt_eval")}
+                        for b in sorted(boats, key=lambda b: b["course"] or b["boat"])]
+        return res
 
     def _settle(self, date: str, vd: VenueDay, rno: int, st: dict, now: Optional[datetime] = None) -> bool:
         now = now or store.now_jst()

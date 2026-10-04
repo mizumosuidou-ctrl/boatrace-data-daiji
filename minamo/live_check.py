@@ -26,8 +26,12 @@ RULES = {"ev": [("", "補正なし・最大6点", (94.9, None, None)), ("2026100
                 ("20261005", "補正B・最大9点・5分前に固定", (124.2, 104.3, 147.4))],
          "ex": [("", "補正B・最大3点・直前", (120.0, 109.4, 131.0)), ("20261005", "補正B・最大3点・5分前に固定", (120.5, 110.2, 132.0))],
          # 組は3連単と同じ。金額を合成オッズ配分に（ev-check「12-2.」：121.9%・幅98.7〜149.3%）
-         "co": [("", "3連単と同じ組・合成オッズ配分", (121.9, 98.7, 149.3))]}
-LABEL = {"ev": "3連単（期待値1.2以上）", "ex": "2連単（期待値1.2以上）", "co": "3連単（合成オッズ配分。1レースの投資は同じ）"}
+         "co": [("", "3連単と同じ組・合成オッズ配分", (121.9, 98.7, 149.3))],
+         # TIME予想（ユーザーの予想方法）：過去の検証は無い。500レースまでは判断しない
+         "time": [("", "TIME予想", (None, None, None))]}
+TIME_MIN_RACES = 500
+LABEL = {"ev": "3連単（期待値1.2以上）", "ex": "2連単（期待値1.2以上）", "co": "3連単（合成オッズ配分。1レースの投資は同じ）",
+         "time": "TIME予想（あなたの予想方法・仮想資金）"}
 # ev-check「10.」の目安：資金10万円・平掛けの1点・ケリー1/4の1点の上限
 PLANS = {"ev": (100, 1_000), "ex": (300, 3_000)}
 Z90 = 1.645
@@ -43,13 +47,18 @@ def rows(data_dir: Path, k: str) -> list[dict]:
         if race.get("demo") or res.get("cancelled") or not st.get(f"{k}_bought") or st.get(f"{k}_stake") is None:
             continue
         date, combo = race.get("date") or path.parent.name, res.get("exacta" if k == "ex" else "trifecta")
+        tp = race.get("time_pick") or {}
         if not combo:
             continue
         out.append({"key": (date, race.get("deadline") or "99:99", race.get("jcd", ""), race.get("rno", 0)),
                     "date": date, "label": f"{date[4:6]}/{date[6:]} {(race.get('venue') or {}).get('name', '')}{race.get('rno', '')}R",
                     "stake": float(st[f"{k}_stake"]), "ret": float(st.get(f"{k}_return") or 0), "hit": bool(st.get(f"{k}_hit")),
                     "result": combo, "pay": (res.get("exacta_payout" if k == "ex" else "payout") or 0),
-                    "items": race.get(f"{src}_items") or [], "mins": mins_before(date, race.get("deadline"), race.get(f"{src}_at"))})
+                    "items": [] if k == "time" else race.get(f"{src}_items") or [],
+                    "mins": mins_before(date, race.get("deadline"), tp.get("at") if k == "time" else race.get(f"{src}_at")),
+                    "n": len(tp.get("combos") or []) if k == "time" else None,
+                    "s12": float(st.get("time12_stake") or 0), "r12": float(st.get("time12_return") or 0),
+                    "in_escape": st.get("time_in_escape")})
     out.sort(key=lambda x: x["key"])
     return out
 
@@ -114,9 +123,10 @@ def section(rs: list[dict], k: str) -> list[str]:
     st, rt = np.array([r["stake"] for r in rs]), np.array([r["ret"] for r in rs])
     roi, lo, hi, over = boot(st, rt)
     hits = sum(r["hit"] for r in rs)
-    pts = np.mean([len(r["items"]) if k == "co" else r["stake"] / 100 for r in rs])
+    pts = np.mean([r["n"] if k == "time" else len(r["items"]) if k == "co" else r["stake"] / 100 for r in rs])
+    unit = "1レース" if k == "co" else "仮想資金" if k == "time" else "1点"
     lines.append(f"  {rs[0]['date']}〜{rs[-1]['date']}  {len(rs):,}R  平均{pts:.1f}点  的中 {hits}R（{100 * hits / len(rs):.1f}%）"
-                 f"  投資 {st.sum() * 10:,.0f}円 → 払戻 {rt.sum() * 10:,.0f}円（{'1レース' if k == 'co' else '1点'}1,000円）")
+                 f"  投資 {st.sum() * 10:,.0f}円 → 払戻 {rt.sum() * 10:,.0f}円（{unit if k == 'time' else unit + '1,000円'}）")
     lines.append(f"  通算の回収率 {roi:.1f}%  幅 {lo:.1f}〜{hi:.1f}%  100%超え {over:.1f}%")
     lines.append("  選び方ごと（過去の検証は、その選び方で学習に使っていない期間を買ったときの回収率）")
     rules = RULES[k]
@@ -128,6 +138,11 @@ def section(rs: list[dict], k: str) -> list[str]:
             continue
         ps, pr = np.array([r["stake"] for r in part]), np.array([r["ret"] for r in part])
         p_roi, p_lo, p_hi, p_over = boot(ps, pr)
+        if b_roi is None:  # 過去の検証が無い（TIME予想）
+            lines.append(f"    {_pad(name, 28)}{len(part):>5}R  回収率 {p_roi:6.1f}%  幅 {p_lo:5.1f}〜{p_hi:5.1f}%  100%超え {p_over:5.1f}%")
+            if k == "time":
+                lines += time_extra(part)
+            continue
         band = f"幅 {b_lo:.1f}〜{b_hi:.1f}%" if b_lo is not None else "幅なし"
         lines.append(f"    {_pad(name, 28)}{len(part):>5}R  回収率 {p_roi:6.1f}%  幅 {p_lo:5.1f}〜{p_hi:5.1f}%  100%超え {p_over:5.1f}%"
                      f"  ｜ 過去の検証 {b_roi:.1f}%（{band}）")
@@ -165,6 +180,20 @@ def section(rs: list[dict], k: str) -> list[str]:
     return lines + daily(rs)
 
 
+def time_extra(rs: list[dict]) -> list[str]:
+    """TIME予想：12点運用との比べ・イン逃げレースかどうか・500レースまでの残り。"""
+    s12, r12 = sum(r["s12"] for r in rs), sum(r["r12"] for r in rs)
+    lines = [f"      12点運用（1点1,000円）なら 回収率 {100 * r12 / s12:6.1f}%" if s12 else "      12点運用：記録なし"]
+    for flag, name in ((True, "イン逃げレース"), (False, "非イン逃げレース")):
+        g = [r for r in rs if r["in_escape"] is flag]
+        if g:
+            s, t = sum(r["stake"] for r in g), sum(r["ret"] for r in g)
+            lines.append(f"      {_pad(name, 18)}{len(g):>5}R 的中{sum(r['hit'] for r in g):>4}R  回収率 {100 * t / s if s else float('nan'):6.1f}%")
+    left = TIME_MIN_RACES - len(rs)
+    lines.append(f"      → {'検証運用中（あと' + str(left) + 'Rで500R。それまでは有効性を判断しない）' if left > 0 else '500Rに届きました'}")
+    return lines
+
+
 def daily(rs: list[dict]) -> list[str]:
     """日ごとの成績と通算（1点1,000円。合成オッズ配分は1レース1,000円）。"""
     lines = ["  日ごと（1点1,000円）"]
@@ -180,6 +209,6 @@ def daily(rs: list[dict]) -> list[str]:
 
 def build(data_dir: Path = store.DATA_DIR) -> str:
     lines = ["実戦の成績（試験中の買い目。締切前に決めた組を、その時のオッズで。幅はレースを入れ替えて1000回数え直した下5%〜上95%）"]
-    for k in ("ev", "co", "ex"):
+    for k in ("ev", "co", "ex", "time"):
         lines += section(rows(data_dir, k), k)
     return "\n".join(lines)
