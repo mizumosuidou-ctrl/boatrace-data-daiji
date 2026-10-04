@@ -647,7 +647,7 @@ function trialHitsHtml(race, s) {
     ["TIME", s.time_bought, s.time_hit, s.time_rank],
   ].filter(([, b]) => b != null);
   if (!items.length) return "";
-  return `<p class="small trial-hits">${items.map(([n, b, h, k]) => `<span class="nowrap">${n}：${!b ? "見送り" : h ? `<b class="pos">的中（${k}点目）</b>` : "はずれ"}</span>`).join(" · ")}</p>`;
+  return `<p class="small trial-hits">${items.map(([n, b, h, k]) => `<span class="nowrap">${n}：${!b ? "見送り" : h ? `<b class="pos">的中（${k}点目）</b>` : "はずれ"}</span>`).join(" · ")}${race.trial_skip ? `<br>試し買いの見送りの理由：${esc(race.trial_skip)}` : ""}</p>`;
 }
 
 // あなたの予想：1着・2着・3着に入れる艇を選ぶと、組み合わせ（フォーメーション）を作り、MINAMOの確率・オッズと並べる。
@@ -855,6 +855,7 @@ async function renderRace(r, refresh = false) {
     <section class="section">
       <div class="section-head"><div><h2 class="section-title">推奨買い目<small>買い目と配分（％）、オッズから見た妙味</small></h2></div></div>
       ${ticketsHtml(race)}
+      ${race.trial_skip && !race.result ? `<p class="small trial-hits"><span class="chip">試し買い 見送り</span> ${esc(race.trial_skip)}。このレースは試し買い（3連単・合成・2連単）を買いません</p>` : ""}
     </section>
     ${timeHtml(race)}
 
@@ -973,6 +974,7 @@ async function renderPicks(refresh = false, k = getPickKind()) {
   const races = allRaces().filter((r) => Array.isArray(r[`${k}_pick`]));
   const bought = races.filter((r) => r[`${k}_pick`].length);
   const skipped = races.length - bought.length;
+  const skippedC2 = races.filter((r) => r.trial_skip && !r[`${k}_pick`].length).sort((a, b) => b.deadline.localeCompare(a.deadline));
   const open = bought.filter((r) => !pickRes(r, k) && !r.cancelled).sort((a, b) => a.deadline.localeCompare(b.deadline));
   const done = bought.filter((r) => pickRes(r, k) || r.cancelled).sort((a, b) => b.deadline.localeCompare(a.deadline));
   const settled = done.filter((r) => pickRes(r, k) && !r.cancelled && r[`${k}_stake`] != null);
@@ -999,7 +1001,7 @@ async function renderPicks(refresh = false, k = getPickKind()) {
         過去の検証（資金10万円）の目安：${k === "ev" ? "平掛け1点100円、またはケリー1/4で1点1,000円まで" : "平掛け1点300〜500円、またはケリー1/4で1点3,000円まで"}。この端末だけに保存します。</p>
     </form>`}
     <div class="calib">
-      <div class="panel"><h4>今日の候補</h4><div class="big">${bought.length}<small style="font-size:.45em">R</small></div><div class="small">見送り ${skipped}R · 締切前 ${open.length}R</div></div>
+      <div class="panel"><h4>今日の候補</h4><div class="big">${bought.length}<small style="font-size:.45em">R</small></div><div class="small">見送り ${skipped}R${k !== "time" && skippedC2.length ? `（うち②が速い ${skippedC2.length}R）` : ""} · 締切前 ${open.length}R</div></div>
       <div class="panel"><h4>的中</h4><div class="big">${hits}<small style="font-size:.45em">/${settled.length}R</small></div><div class="small">結果の出たレース</div></div>
       <div class="panel"><h4>今日の回収率</h4><div class="big">${stake ? ((ret / stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">${k === "co" ? "1レース同じ金額で買った場合" : k === "time" ? "仮想資金で数えた場合" : "1点同じ金額で買った場合"}</div></div>
       <div class="panel"><h4>今日の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${stake ? signedYen((ret - stake) * BET_UNIT) : "--"}</div><div class="small">${k === "co" ? "1レース1,000円" : k === "time" ? "仮想資金（設定の金額）" : "1点1,000円"}</div></div>
@@ -1007,6 +1009,8 @@ async function renderPicks(refresh = false, k = getPickKind()) {
     <div class="section-head" style="margin-top:34px"><div><h2 class="section-title">締切前・結果待ち<small>締切の近い順。締切の約5分前のオッズで組を決めて「決定」にし、Discord に知らせます。それまでは「仮」で、オッズが変わると組が入れ替わります。成績は決定した組で数えます</small></h2></div></div>
     ${open.length ? `<div class="pick-grid">${open.map((r) => pickCard(date, r, now, k, s)).join("")}</div>` : `<div class="panel" style="padding:20px">今は締切前の候補がありません。直前情報（展示）が出たレースから順に候補を決めます。</div>`}
     ${done.length ? `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">結果<small>新しい順</small></h2></div></div><div class="pick-grid">${done.map((r) => pickCard(date, r, now, k, s)).join("")}</div>` : ""}
+    ${k !== "time" && skippedC2.length ? `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">見送ったレース<small>②の平均スタート順位が①より0.5以上速いレースは、試し買いを見送ります（過去の検証で、このレースの3連単は約70%とはっきり負けていたため）</small></h2></div></div>
+    <div class="panel skip-list">${skippedC2.map((r) => `<a href="#/race/${date}/${r.v.jcd}/${r.rno}" class="skip-row"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span><span class="chip">見送り</span><span class="small">${esc(r.trial_skip)}</span>${pickRes(r, k) ? `<span class="small nowrap">結果 ${esc(pickRes(r, k))}${pickPay(r, k) ? ` ${yen(pickPay(r, k) * BET_UNIT)}` : ""}</span>` : ""}</a>`).join("")}</div>` : ""}
     <p class="small muted" style="margin-top:22px;line-height:1.7">これまでの通算は<a href="#/record">成績</a>の「試験中：オッズで絞った買い目」にあります。舟券の購入はご自身の判断でお願いします。</p>
   </section></div>`;
   if (refresh) scrollTo({ top: y });

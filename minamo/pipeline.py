@@ -112,6 +112,7 @@ class Pipeline:
         payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
         payload["ev_at"] = ev_pick.get("at")
         payload["pick_fixed"] = st.get("pick_fixed")  # 試験中の買い目を固定した時刻（それまでは仮）
+        payload["trial_skip"] = st.get("trial_skip")  # 試し買いを見送った理由
         payload["time_pick"] = st.get("time_pick")  # TIME予想（キーマン・買い目・判定）
         payload["ex_items"] = ex_pick.get("items")  # 試験中の2連単
         payload["ex_at"] = ex_pick.get("at")
@@ -241,14 +242,16 @@ class Pipeline:
                 cal = store.ev_calib()
                 pr = predict(card, before, odds)
                 tri = pr.trifecta
-                combos = store.ev_picks(tri, odds, cal)
+                skip = store.trial_skip(pr.boats)  # ②が①より速いレースは、試し買い（3連単・合成・2連単）を見送る
+                combos = [] if skip else store.ev_picks(tri, odds, cal)
                 prob = dict(store.calibrate(tri, odds, *cal) if cal else tri)
-                st["ev_pick"] = {"combos": combos, "at": now.isoformat(), "cal": list(cal) if cal else None,
+                st["trial_skip"] = skip
+                st["ev_pick"] = {"combos": combos, "at": now.isoformat(), "cal": list(cal) if cal else None, "skip": skip,
                                  "items": [{"combo": c, "p": round(prob[c], 4), "odds": odds[c], "ev": round(prob[c] * odds[c], 2)}
                                            for c in combos]}
                 if odds2:  # 試験中：2連単（補正した3連単の確率を足して2連単に。2連単のオッズで期待値1.2以上・最大3点）
-                    xc, xi = store.ex_picks(tri, odds, odds2, cal)
-                    st["ex_pick"] = {"combos": xc, "items": xi, "at": now.isoformat()}
+                    xc, xi = ([], []) if skip else store.ex_picks(tri, odds, odds2, cal)
+                    st["ex_pick"] = {"combos": xc, "items": xi, "at": now.isoformat(), "skip": skip}
                 tp = self._time_pick(card, before, odds, pr, st)  # TIME予想（サーバーに設定があるときだけ）
                 if tp:
                     st["time_pick"] = {**tp, "at": now.isoformat()}
