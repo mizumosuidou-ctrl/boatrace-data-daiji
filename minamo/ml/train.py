@@ -229,7 +229,8 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     # 修正7：F持ちのスタート・壁・レース番号・節の初日／最終日を1つずつ足し、検証期間で良くなったものだけ残す
     adopted = {}
     best = m_v2 if extra_adopt else m_v1
-    for name, group in (("fhold", ds.FHOLD_FEATURES), ("wall", ds.WALL_FEATURES), ("race", ds.RACE_FEATURES), ("day", ds.DAY_FEATURES)):
+    for name, group in (("fhold", ds.FHOLD_FEATURES), ("wall", ds.WALL_FEATURES), ("race", ds.RACE_FEATURES), ("day", ds.DAY_FEATURES),
+                        ("shape", ds.SHAPE_FEATURES)):
         feats = pre_feats + group
         model = _fit(tr, va, feats)
         m = evaluate(te, normalize(te, model.predict(te[feats])))
@@ -353,11 +354,11 @@ def summary_ja(meta: dict) -> str:
         "",
         f"{'':14}{'1着的中':>8}{'3連単1点':>9}{'5点':>7}{'10点':>7}{'対数損失':>9}",
     ]
-    names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre_fhold": "＋F持ち", "pre_wall": "＋壁", "pre_race": "＋レース番号", "pre_day": "＋初日・最終日",
+    names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre_fhold": "＋F持ち", "pre_wall": "＋壁", "pre_race": "＋レース番号", "pre_day": "＋初日・最終日", "pre_shape": "＋展開の形",
              "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
              "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後", "post_wind": "└展示後＋風",
              "orig_pre": "└直近 展示前", "orig_post": "└直近 展示後", "orig_post_orig": "└直近 +ｵﾘｼﾞﾅﾙ"}
-    for key in ("baseline", "pre_v1", "pre_fhold", "pre_wall", "pre_race", "pre_day", "pre", "baseline_ex_races", "pre_ex_races", "post", "post_wind",
+    for key in ("baseline", "pre_v1", "pre_fhold", "pre_wall", "pre_race", "pre_day", "pre_shape", "pre", "baseline_ex_races", "pre_ex_races", "post", "post_wind",
                 "orig_pre", "orig_post", "orig_post_orig"):
         if key in m:
             r = m[key]
@@ -374,7 +375,8 @@ def summary_ja(meta: dict) -> str:
             lines.append(f"2着・3着の専用モデル（{tag}）: " + ("使う" if pl["adopt"] else "使わない")
                          + f"（混ぜる割合 {pl['w']}、3連単の対数損失 {b['tri_ll']:.3f}→{q['tri_ll']:.3f}、"
                          f"10点的中 {b['tri_top10'] * 100:.1f}%→{q['tri_top10'] * 100:.1f}%）")
-    labels = {"fhold": "F持ちのスタート順位", "wall": "壁（2〜6コースの選手が入ったときの1コース1着率）", "wind": "風（展示後）", "race": "レース番号", "day": "節の初日・最終日"}
+    labels = {"fhold": "F持ちのスタート順位", "wall": "壁（2〜6コースの選手が入ったときの1コース1着率）", "wind": "風（展示後）", "race": "レース番号", "day": "節の初日・最終日",
+              "shape": "展開の形（スタート隊形・一番大きなスタート順位の差の場所と大きさ）"}
     for k, v in (meta.get("new_adopt") or {}).items():
         lines.append(f"{labels.get(k, k)}: " + ("使う（入れた方が良い）" if v else "使わない（入れても良くならない）"))
     swaps = (meta.get("priors") or {}).get("motor_swaps") or {}

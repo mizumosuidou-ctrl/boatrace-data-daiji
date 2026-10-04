@@ -1070,3 +1070,19 @@ def test_series_dates_include_backfill(tmp_path):
     pd.DataFrame({"race_date": ["20260920", "20260921"]}).to_csv(tmp_path / "facts_backfill.csv", index=False)
     pd.DataFrame({"race_date": ["20260802"], "venue": ["01"]}).to_csv(tmp_path / "series.csv", index=False)
     assert series.dates_to_fetch(tmp_path) == ["20260801", "20260920", "20260921"]
+
+
+def test_shape_features():
+    """展開の形：①〉④③② で、②と③の間（③が速い）に0.5の差。進入コースが分からない艇がいれば隊形は空。"""
+    from minamo.ml import dataset as ds
+
+    df = pd.DataFrame({"race_id": ["a"] * 6 + ["b"] * 6, "course_i": list(range(1, 7)) * 2,
+                       "sr_c": [2.0, 3.5, 3.0, 2.5, 4.0, 4.5] + [3.0, 2.0, np.nan, 4.0, 3.5, 3.6]})
+    ds.add_shape(df)
+    a = df[df["race_id"] == "a"].set_index("course_i")
+    assert a["shape_c1_top"].eq(1).all() and a["shape_key"].eq(5).all()  # (4,3,2) の並び・①が上
+    assert a["shape_gap_max"].iloc[0] == pytest.approx(0.5) and a["shape_gap_at"].eq(2).all()
+    assert a.loc[3, "shape_gap_rel"] == 0 and a.loc[2, "shape_gap_rel"] == -1
+    b = df[df["race_id"] == "b"].set_index("course_i")
+    assert b["shape_key"].isna().all() and b["shape_c1_top"].isna().all()  # ③の順位が無い
+    assert b["shape_gap_at"].eq(1).all() and b["shape_gap_max"].iloc[0] == pytest.approx(1.0)  # ①3.0→②2.0
