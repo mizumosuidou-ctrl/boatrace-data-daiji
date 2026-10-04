@@ -940,3 +940,32 @@ def test_discover_finds_clear_patterns_only():
     # ふつうの選手（ランダムな着順）はほとんど拾わない
     assert len(set(out["toban"]) - {"9999", "8888"}) <= 3
     assert list(out.columns) == dc.COLUMNS
+
+
+def test_discover_compares_with_same_grade():
+    """A1選手がどこでも上位なのは級別の差なので、同じ級別の平均と比べて拾わない。"""
+    import numpy as np
+
+    from minamo.ml import discover as dc
+
+    rng = np.random.default_rng(2)
+    start = pd.Timestamp("2025-10-01")
+    rows = []
+    for i in range(6000):
+        date = start + pd.Timedelta(days=int(i * 360 / 6000))
+        tob = [str(x) for x in rng.choice(np.arange(1000, 1300), 6, replace=False)]
+        a1 = int(rng.integers(0, 6))
+        if i % 40 == 0:
+            a1 = 3
+            tob[3] = "7777"  # A1。ほかのA1と同じように強い（4コースで160走）
+        order = list(rng.permutation(6))
+        if rng.random() < 0.8:  # A1は8割で3着以内
+            order.remove(a1)
+            order.insert(int(rng.integers(0, 3)), a1)
+        for pos, c in enumerate(order):
+            rows.append({"toban": tob[c], "date": date, "course": c + 1, "lane": c + 1, "finish": pos + 1,
+                         "start_rank": float(rng.integers(1, 7)), "race_id": f"r{i}", "grade": "A1" if c == a1 else "B1"})
+    facts = pd.DataFrame(rows)
+    out = dc.discover(facts, pd.DataFrame(columns=["toban", "date", "f_hold"]), pd.Series(0, index=facts.index),
+                      start + pd.Timedelta(days=361))
+    assert "7777" not in set(out["toban"])

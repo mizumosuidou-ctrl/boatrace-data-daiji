@@ -1,6 +1,7 @@
 """選手別アビリティの自動発見（学習のたびに、直近1年の成績から探す）。
 
-「その選手がそのコースに入ると、ふつう（そのコースの全選手の平均）よりはっきり違う」ものだけを残す。
+「その選手がそのコースに入ると、ふつう（同じ級別の選手の、そのコースの平均）よりはっきり違う」ものだけを残す。
+（全選手の平均と比べると、A1はどこでも「上手」、B2はどこでも「苦手」になり、級別の差を拾うだけになるため）
 偶然の偏りを拾わないように、次の3つを全部満たすものだけ：
   - 走数が足りている（MIN_N 以上）
   - 差が大きい（EFFECT 以上）
@@ -30,94 +31,82 @@ def _z(k, n, p0):
     return (k - n * p0) / np.sqrt(n * p0 * (1 - p0))
 
 
-def _halves(g: pd.DataFrame, flag: str, base, mid, sign: int) -> pd.Series:
-    """前半・後半のどちらでも、ふつうより同じ向きに離れているか（各半分 MIN_HALF 走以上）。"""
-    a, b = g[g["date"] < mid], g[g["date"] >= mid]
-    def ok(h):
-        s = h.groupby(["toban", "course"])[flag].agg(["sum", "count"])
-        r = s["sum"] / s["count"]
-        bb = base if np.isscalar(base) else s.index.get_level_values("course").map(base).to_numpy()
-        return (s["count"] >= MIN_HALF) & (sign * (r - bb) > 0)
-    ua, ub = ok(a), ok(b)
-    idx = ua.index.union(ub.index)
-    return ua.reindex(idx, fill_value=False) & ub.reindex(idx, fill_value=False)
+def _expect(f: pd.DataFrame, flag: str) -> pd.Series:
+    """1走ごとの「ふつうの率」：同じ級別×同じコースの平均（級別が分からなければコースの平均）。"""
+    by_c = f.groupby("course")[flag].transform("mean")
+    if "grade" not in f:
+        return by_c
+    g = f["grade"].astype(str).where(f["grade"].notna(), "")
+    return f.groupby([g, f["course"]])[flag].transform("mean").where(g != "", by_c)
+
+
+def _compare(d: pd.DataFrame, keys: list, flag: str, mid) -> pd.DataFrame:
+    """keys ごとに、実際（k）と、ふつうの率の合計（e）・ばらつき（v）、前半・後半それぞれの差の向き。"""
+    d = d.assign(_v=d["p0"] * (1 - d["p0"]), _h=(d["date"] >= mid).astype(int))
+    s = d.groupby(keys).agg(k=(flag, "sum"), n=(flag, "count"), e=("p0", "sum"), v=("_v", "sum"))
+    h = d.groupby(keys + ["_h"]).agg(k=(flag, "sum"), n=(flag, "count"), e=("p0", "sum")).unstack("_h")
+    for i in (0, 1):
+        s[f"n{i}"] = h[("n", i)] if ("n", i) in h else 0
+        s[f"d{i}"] = (h[("k", i)] - h[("e", i)]) if ("k", i) in h else 0
+    s = s.fillna(0)
+    s["rate"], s["base"] = s["k"] / s["n"], s["e"] / s["n"]
+    s["z"] = (s["k"] - s["e"]) / np.sqrt(s["v"].clip(lower=1e-9))
+    s["both_up"] = (s["n0"] >= MIN_HALF) & (s["n1"] >= MIN_HALF) & (s["d0"] > 0) & (s["d1"] > 0)
+    s["both_dn"] = (s["n0"] >= MIN_HALF) & (s["n1"] >= MIN_HALF) & (s["d0"] < 0) & (s["d1"] < 0)
+    return s
 
 
 def _rate_rule(f: pd.DataFrame, flag: str, mid, up_name, down_name, courses, effect_up=EFFECT, effect_down=EFFECT_BAD,
                what: str = "") -> list[dict]:
-    """選手×コースの率（flag）が、そのコースのふつうより高い／低いもの。"""
-    f = f[f["course"].isin(courses)]
-    base = f.groupby("course")[flag].mean()
-    s = f.groupby(["toban", "course"])[flag].agg(["sum", "count"])
-    s = s[s["count"] >= MIN_N]
-    if s.empty:
-        return []
-    b = s.index.get_level_values("course").map(base).to_numpy()
-    r = (s["sum"] / s["count"]).to_numpy()
-    z = _z(s["sum"].to_numpy(), s["count"].to_numpy(), b)
-    up = _halves(f, flag, base, mid, 1).reindex(s.index, fill_value=False).to_numpy()
-    dn = _halves(f, flag, base, mid, -1).reindex(s.index, fill_value=False).to_numpy()
+    """選手×コースの率（flag）が、同じ級別の選手のそのコースのふつうより、はっきり高い／低いもの。"""
+    f = f[f["course"].isin(courses)].copy()
+    f["p0"] = _expect(f, flag)
+    s = _compare(f, ["toban", "course"], flag, mid)
+    s = s[s["n"] >= MIN_N]
     out = []
-    for (toban, c), rr, bb, zz, u, d, n in zip(s.index, r, b, z, up, dn, s["count"]):
-        if up_name and rr >= bb + effect_up and zz >= Z_MIN and u:
-            out.append({"toban": toban, "course": int(c), "name": up_name(int(c)), "rank": "S" if rr >= bb + effect_up + 0.10 else "A",
-                        "detail": f"{int(c)}コースの{what} {rr * 100:.1f}%（ふつう {bb * 100:.1f}%、{n}走）", "z": round(float(zz), 1)})
-        if down_name and rr <= bb - effect_down and zz <= -Z_MIN and d:
-            out.append({"toban": toban, "course": int(c), "name": down_name(int(c)), "rank": "B",
-                        "detail": f"{int(c)}コースの{what} {rr * 100:.1f}%（ふつう {bb * 100:.1f}%、{n}走）", "z": round(float(zz), 1)})
+    for (toban, c), r in s.iterrows():
+        c = int(c)
+        txt = f"{c}コースの{what} {r['rate'] * 100:.1f}%（同じ級別のふつう {r['base'] * 100:.1f}%、{int(r['n'])}走）"
+        if up_name and r["rate"] >= r["base"] + effect_up and r["z"] >= Z_MIN and r["both_up"]:
+            out.append({"toban": toban, "course": c, "name": up_name(c), "rank": "S" if r["rate"] >= r["base"] + effect_up + 0.10 else "A",
+                        "detail": txt, "z": round(float(r["z"]), 1)})
+        if down_name and r["rate"] <= r["base"] - effect_down and r["z"] <= -Z_MIN and r["both_dn"]:
+            out.append({"toban": toban, "course": c, "name": down_name(c), "rank": "B", "detail": txt, "z": round(float(r["z"]), 1)})
     return out
 
 
 def _influence(f: pd.DataFrame, mid) -> list[dict]:
-    """その選手が1コースのとき、ほかのコースの艇が3着以内に残りやすい（春園選手の①逃げ⑥残しのような形）。
-    と、その選手が2コースのとき、①が1着になりやすい（壁）。"""
+    """その選手が1コースのとき、ほかのコースの艇が3着以内に残りやすい（春園選手の①逃げ⑥残しのような形）と、
+    その選手が2コースのとき、①が1着になりやすい（壁）。ふつうの率は、相手の艇の級別×コースの平均。"""
     out = []
+    f = f.copy()
+    f["p3"] = _expect(f, "top3")
+    f["p1"] = _expect(f, "win")
     one = f.drop_duplicates(["race_id", "course"])
-    piv = one.pivot(index="race_id", columns="course", values="top3")
-    who = {c: g.set_index("race_id")["toban"] for c, g in one[one["course"] <= 2].groupby("course")}
-    date = f.groupby("race_id")["date"].first()
-    win1 = one[one["course"] == 1].set_index("race_id")["win"]
-    if 1 in who:
-        races = pd.DataFrame({"toban": who[1].reindex(piv.index), "date": date.reindex(piv.index)})
+    by = {c: g.set_index("race_id") for c, g in one.groupby("course")}
+    if 1 in by:
         for k in range(2, 7):
-            if k not in piv:
+            if k not in by:
                 continue
-            races["v"] = piv[k]
-            d = races.dropna(subset=["toban", "v"])
-            base = d["v"].mean()
-            s = d.groupby("toban")["v"].agg(["sum", "count"])
-            s = s[s["count"] >= MIN_N_RACES]
-            for toban, row in s.iterrows():
-                n, k3 = int(row["count"]), float(row["sum"])
-                r = k3 / n
-                zz = float(_z(k3, n, base))
-                if r < base + EFFECT_BAD or zz < Z_MIN:
-                    continue
-                g = d[d["toban"] == toban]
-                ha, hb = g[g["date"] < mid]["v"], g[g["date"] >= mid]["v"]
-                if len(ha) < MIN_HALF or len(hb) < MIN_HALF or ha.mean() <= base or hb.mean() <= base:
-                    continue
+            o = by[k][["top3", "p3", "date"]].rename(columns={"p3": "p0"})
+            o["toban"] = by[1]["toban"].reindex(o.index)
+            o = o.dropna(subset=["toban"])
+            s = _compare(o, ["toban"], "top3", mid)
+            s = s[(s["n"] >= MIN_N_RACES) & (s["rate"] >= s["base"] + EFFECT_BAD) & (s["z"] >= Z_MIN) & s["both_up"]]
+            for toban, r in s.iterrows():
                 out.append({"toban": toban, "course": 1, "name": f"①のとき{CIRCLED[k - 1]}残り", "rank": "A",
-                            "detail": f"この選手が1コースのとき、{k}コース艇の3着以内 {r * 100:.1f}%（ふつう {base * 100:.1f}%、{n}レース）",
-                            "z": round(zz, 1)})
-    if 2 in who:
-        d = pd.DataFrame({"toban": who[2], "v": win1.reindex(who[2].index), "date": date.reindex(who[2].index)}).dropna(subset=["toban", "v"])
-        base = d["v"].mean()
-        s = d.groupby("toban")["v"].agg(["sum", "count"])
-        s = s[s["count"] >= MIN_N]
-        for toban, row in s.iterrows():
-            n, k1 = int(row["count"]), float(row["sum"])
-            r = k1 / n
-            zz = float(_z(k1, n, base))
-            if r < base + EFFECT or zz < Z_MIN:
-                continue
-            g = d[d["toban"] == toban]
-            ha, hb = g[g["date"] < mid]["v"], g[g["date"] >= mid]["v"]
-            if len(ha) < MIN_HALF or len(hb) < MIN_HALF or ha.mean() <= base or hb.mean() <= base:
-                continue
-            out.append({"toban": toban, "course": 2, "name": "②壁", "rank": "S" if r >= base + EFFECT + 0.10 else "A",
-                        "detail": f"この選手が2コースのとき、①の1着率 {r * 100:.1f}%（ふつう {base * 100:.1f}%、{n}走）",
-                        "z": round(zz, 1)})
+                            "detail": f"この選手が1コースのとき、{k}コース艇の3着以内 {r['rate'] * 100:.1f}%"
+                                      f"（ふつう {r['base'] * 100:.1f}%、{int(r['n'])}レース）", "z": round(float(r["z"]), 1)})
+    if 1 in by and 2 in by:
+        o = by[1][["win", "p1", "date"]].rename(columns={"p1": "p0"})
+        o["toban"] = by[2]["toban"].reindex(o.index)
+        o = o.dropna(subset=["toban"])
+        s = _compare(o, ["toban"], "win", mid)
+        s = s[(s["n"] >= MIN_N) & (s["rate"] >= s["base"] + EFFECT) & (s["z"] >= Z_MIN) & s["both_up"]]
+        for toban, r in s.iterrows():
+            out.append({"toban": toban, "course": 2, "name": "②壁", "rank": "S" if r["rate"] >= r["base"] + EFFECT + 0.10 else "A",
+                        "detail": f"この選手が2コースのとき、①の1着率 {r['rate'] * 100:.1f}%（ふつう {r['base'] * 100:.1f}%、{int(r['n'])}走）",
+                        "z": round(float(r["z"]), 1)})
     return out
 
 
@@ -144,24 +133,24 @@ def _maezuke(f: pd.DataFrame, mid) -> list[dict]:
 
 
 def _fhold(f: pd.DataFrame) -> list[dict]:
-    """F持ちのときにスタートが遅くなる（同じ選手のふだんの平均スタート順位と比べる。コースは問わない）。"""
-    ok = f["start_rank"].between(1, 6)
-    g = f[ok]
+    """F持ちのときのスタートの遅れ（同じ選手のふだんとの差）が、ふつうの選手の遅れ方より、はっきり大きい。"""
+    g = f[f["start_rank"].between(1, 6)]
+    if not g["is_hold"].any() or g["is_hold"].all():
+        return []
+    gap0 = g.loc[g["is_hold"], "start_rank"].mean() - g.loc[~g["is_hold"], "start_rank"].mean()  # ふつうの遅れ
     s = g.groupby(["toban", "is_hold"])["start_rank"].agg(["mean", "count", "std"]).unstack("is_hold")
     out = []
-    if (True not in s["mean"]) or (False not in s["mean"]):
-        return out
     for toban, row in s.iterrows():
-        nf, nn = row[("count", True)], row[("count", False)]
-        if not (nf >= 10 and nn >= 20):
+        nf, nn = row.get(("count", True)), row.get(("count", False))
+        if not (nf == nf and nn == nn and nf >= 10 and nn >= 20):
             continue
         diff = row[("mean", True)] - row[("mean", False)]
         sd = np.nanmean([row[("std", True)], row[("std", False)]]) or 1.5
-        zz = diff / (sd * np.sqrt(1 / nf + 1 / nn))
-        if diff >= 0.8 and zz >= Z_MIN:
+        zz = (diff - gap0) / (sd * np.sqrt(1 / nf + 1 / nn))
+        if diff - gap0 >= 0.5 and zz >= Z_MIN:
             out.append({"toban": toban, "course": 0, "name": "F持ちでスタート慎重", "rank": "A",
-                        "detail": f"F持ちのときの平均スタート順位 {row[('mean', True)]:.2f}（ふだん {row[('mean', False)]:.2f}、F持ち{int(nf)}走）",
-                        "z": round(float(zz), 1)})
+                        "detail": f"F持ちのときの平均スタート順位 {row[('mean', True)]:.2f}（ふだん {row[('mean', False)]:.2f}、"
+                                  f"F持ち{int(nf)}走。ふつうの選手の遅れは {gap0:+.2f}）", "z": round(float(zz), 1)})
     return out
 
 
@@ -169,7 +158,8 @@ def discover(facts: pd.DataFrame, fstate: pd.DataFrame, f_recent: pd.Series, nex
     since = next_date - pd.Timedelta(days=YEAR_DAYS)
     mid = next_date - pd.Timedelta(days=YEAR_DAYS // 2)
     keep = facts["date"] >= since
-    f = facts.loc[keep, ["toban", "date", "course", "lane", "finish", "start_rank", "race_id"]].copy()
+    cols = ["toban", "date", "course", "lane", "finish", "start_rank", "race_id"] + (["grade"] if "grade" in facts else [])
+    f = facts.loc[keep, cols].copy()
     f["course"] = f["course"].astype(int)
     f["lane"] = f["lane"].astype(int)
     f["win"] = (f["finish"] == 1).astype(float)
