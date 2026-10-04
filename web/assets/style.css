@@ -837,3 +837,6 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .calib > .panel { min-width: 0; }
 @media (max-width: 720px) { .calib .big { font-size: clamp(24px, 8.5vw, 42px); } }
 .pick-h .chip.fix { margin-left: 0; }
+/* 買い候補：選び方の切り替え（ページの一番上） */
+.seg-big { display: flex; width: 100%; max-width: 560px; margin: 0 0 18px; }
+.seg-big button { flex: 1; font-size: 15px; font-weight: 700; padding: 12px 10px; white-space: nowrap; }
