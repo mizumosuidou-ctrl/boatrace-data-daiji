@@ -839,6 +839,12 @@ def test_ev_check_report(tmp_path):
     assert "5-1. 結果のぶれ" in text and "100%超え" in text and "5-2." in text and "5-3." in text and "5-4." in text
     # 6. 2連単：3連単の確率を足して2連単に。オッズが無ければ比べられないと出す
     assert "6. 2連単" in text and "7. 3連単の点数の比べ" in text and "いつも9点（確率の高い順）" in text
+    assert "9. 1点の金額の決め方" in text and "ケリー1/4" in text
+    # 平掛け：1点1,000円で、10倍が当たれば +9,000円。はずれは −1,000円
+    sim = ev_check._simulate([[(0.2, 10.0, True, 10.0)], [(0.2, 10.0, False, 10.0)]], "flat")
+    assert sim["bank"] == 100_000 + 9_000 - 1_000 and abs(sim["roi"] - 500.0) < 1e-9
+    # ケリー：期待値1以下の組には賭けない
+    assert ev_check._simulate([[(0.05, 10.0, True, 10.0)]], "kelly")["stake"] == 0
     xp = ev_check.exacta_probs(races[0]["probs"])
     assert len(xp) == 30 and abs(sum(xp.values()) - 1) < 1e-9
     r = {**races[0], "x5": {c: 10.0 for c in xp}, "xfinal": {c: 10.0 for c in xp}}
