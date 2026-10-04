@@ -75,6 +75,11 @@ WIND_FEATURES = ["wind_tail", "wind_cross", "wave_cm"]
 RACE_FEATURES = ["race_no"]
 # 節の初日・最終日（開催一覧の「初日」「最終日」。分からなければ空）。最終日は多くの場で①が強かった
 DAY_FEATURES = ["day_first", "day_last"]
+# 展開の形（レース全体。ユーザーの予想のやり方：進入コース順のスタート隊形と、どこにスタート順位の差があるか）
+#   shape_c1_top：①の平均スタート順位が②③④のどれよりも速い（同じなら①）、shape_key：スタート隊形トゥエルブ（0〜11）、
+#   shape_gap_max：隣のコースより外が速い差の一番大きいもの、shape_gap_at：その場所（k なら k と k+1 の間）、
+#   shape_gap_rel：自分のコース − 差の外側のコース（0 なら自分が差の外側＝内より速い艇、−1 なら差のすぐ内側）
+SHAPE_FEATURES = ["shape_c1_top", "shape_key", "shape_gap_max", "shape_gap_at", "shape_gap_rel"]
 WALL_SMOOTH = 10.0
 
 # 画面の「要因」表示用のまとまり
@@ -82,7 +87,7 @@ FACTOR_GROUPS = {
     "course": ["course", "venue_i", "course_winrate_prior", "race_no", "day_first", "day_last"],
     "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order", "sr_90", "sr_c_f", "pred_start_order_f"],
     "tenkai": ["sr_gap_inner", "sr_gap_c1", "sr_gap_outer", "sr_inner_slowest_gap", "n_inner_slower",
-               ],
+               ] + SHAPE_FEATURES,
     "skill": ["grade_o", "win_c", "top2_c", "top3_c", "n_all", "win_all", "top2_all"],
     "motor": ["motor_2", "motor_2_rel", "n_m", "motor_res", "motor_kp"],
     "local": ["n_v", "win_v", "top2_v"],
@@ -822,6 +827,39 @@ def add_new_race_features(df: pd.DataFrame) -> pd.DataFrame:
     df["wall_min"] = g.transform("min")
     c2 = wall.where(df["course_i"] == 2)
     df["wall_c2"] = c2.groupby(df["race_id"]).transform("max")
+    add_shape(df)
+    return df
+
+
+_SHAPE_ORDERS = [(2, 3, 4), (2, 4, 3), (3, 2, 4), (3, 4, 2), (4, 2, 3), (4, 3, 2)]
+
+
+def add_shape(df: pd.DataFrame) -> pd.DataFrame:
+    """展開の形（SHAPE_FEATURES）。コースごとの平均スタート順位（sr_c）だけから作る（締切前に分かる）。"""
+    for c in SHAPE_FEATURES:
+        df[c] = np.nan
+    if df.empty:
+        return df
+    sr = df.pivot_table(index="race_id", columns="course_i", values="sr_c", aggfunc="first")
+    sr = sr.reindex(columns=range(1, 7))
+    s = sr.to_numpy(dtype=float)
+    gaps = s[:, :5] - s[:, 1:]  # k と k+1 の間：内の順位 − 外の順位（正なら外の方が速い）
+    ok = ~np.isnan(gaps).all(axis=1)
+    gat = np.full(len(s), np.nan)
+    gmax = np.full(len(s), np.nan)
+    gat[ok] = np.nanargmax(np.where(np.isnan(gaps[ok]), -np.inf, gaps[ok]), axis=1) + 1
+    gmax[ok] = np.nanmax(gaps[ok], axis=1)
+    first4 = ~np.isnan(s[:, :4]).any(axis=1)
+    c1top = np.where(first4, (s[:, 0] <= np.nanmin(s[:, 1:4], axis=1)).astype(float), np.nan)
+    key = np.full(len(s), np.nan)
+    for i in np.where(first4)[0]:
+        order = tuple(sorted((2, 3, 4), key=lambda c: (s[i, c - 1], c)))
+        key[i] = _SHAPE_ORDERS.index(order) + (0 if c1top[i] else 6)
+    shape = pd.DataFrame({"shape_c1_top": c1top, "shape_key": key, "shape_gap_max": gmax, "shape_gap_at": gat}, index=sr.index)
+    m = shape.reindex(df["race_id"].to_numpy())
+    for c in shape.columns:
+        df[c] = m[c].to_numpy()
+    df["shape_gap_rel"] = df["course_i"] - (df["shape_gap_at"] + 1)
     return df
 
 
@@ -904,7 +942,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows["top3"] = (rows["finish"] <= 3).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
     rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
-    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":
