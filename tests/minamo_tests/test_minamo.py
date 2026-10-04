@@ -764,6 +764,7 @@ def test_live_check(tmp_path):
                 "settle": {"ev_bought": True, "ev_hit": hit, "ev_stake": 200, "ev_return": 1800 if hit else 0,
                            "ex_bought": True, "ex_hit": not hit, "ex_stake": 100, "ex_return": 0 if hit else 500},
                 "ev_items": [{"combo": "1-2-3", "p": 0.1, "odds": 15.0, "ev": 1.5}, {"combo": "1-3-2", "p": 0.05, "odds": 30.0, "ev": 1.5}],
+                "ev_at": f"{d[:4]}-{d[4:6]}-{d[6:]}T{int(deadline[:2]):02d}:{int(deadline[3:]) - 2 if int(deadline[3:]) >= 2 else 0:02d}:00+09:00",
                 "ex_items": [{"combo": "2-1", "p": 0.3, "odds": 5.0, "ev": 1.5}]}
     races = [race("20261003", 1, "10:30", False), race("20261003", 2, "11:00", False), race("20261003", 3, "11:30", True),
              {"date": "20261003", "jcd": "02", "rno": 4, "deadline": "12:00", "result": {"trifecta": "1-2-3"},
@@ -787,4 +788,8 @@ def test_live_check(tmp_path):
     # 資金10万円・平掛け1点100円：確率とオッズの残る4R×200円の投資、当たり2本×1,800円
     assert "確定 ÷ 決めたとき＝平均 1.20倍" in text and "残っている 4R" in text and "最後の資金    102,800円" in text
     assert "10/05    2R 的中  1R" in text
+    # 決めた時刻：10:30→10:28、11:00→11:00（0分前）、11:30→11:28
+    assert live_check.mins_before("20261003", "10:30", "2026-10-03T10:28:00+09:00") == 2.0
+    assert live_check.mins_before("20261003", None, None) is None
+    assert "買い目を決めた時刻：締切の平均" in text
     assert "まだ結果の出たレースがありません" in live_check.build(tmp_path / "none")

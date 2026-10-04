@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -44,9 +45,20 @@ def rows(data_dir: Path, k: str) -> list[dict]:
                     "date": date, "label": f"{date[4:6]}/{date[6:]} {(race.get('venue') or {}).get('name', '')}{race.get('rno', '')}R",
                     "stake": float(st[f"{k}_stake"]), "ret": float(st.get(f"{k}_return") or 0), "hit": bool(st.get(f"{k}_hit")),
                     "result": combo, "pay": (res.get("payout" if k == "ev" else "exacta_payout") or 0),
-                    "items": race.get(f"{k}_items") or []})
+                    "items": race.get(f"{k}_items") or [], "mins": mins_before(date, race.get("deadline"), race.get(f"{k}_at"))})
     out.sort(key=lambda x: x["key"])
     return out
+
+
+def mins_before(date: str, deadline: str | None, at: str | None) -> float | None:
+    """買い目を決めた時刻が、締切の何分前か（分からなければ None）。"""
+    try:
+        hh, mm = map(int, (deadline or "").split(":"))
+        when = datetime.fromisoformat(at)
+    except (ValueError, TypeError):
+        return None
+    dl = datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST)
+    return (dl - when.astimezone(store.JST)).total_seconds() / 60
 
 
 def boot(st: np.ndarray, rt: np.ndarray, n: int = 1000, seed: int = 0) -> tuple[float, float, float, float]:
@@ -123,7 +135,13 @@ def section(rs: list[dict], k: str) -> list[str]:
             lines.append(f"      回収率が検証どおり{b_roi:.0f}%なら、100%超えをはっきり言うには約{math.ceil(need):,}R（いま {len(part):,}R）")
     best, cur, best_from = streaks(rs)
     lines.append(f"  連敗（締切順）：一番長い {best}連敗（{best_from}〜）  今 {cur}連敗")
-    # 当たった組の、決めたときのオッズと確定オッズ
+    # 買い目を決めた時刻（最後に決め直した時刻。締切の何分前か）
+    mins = sorted(r["mins"] for r in rs if r["mins"] is not None)
+    if mins:
+        late = sum(m <= 5 for m in mins)
+        lines.append(f"  買い目を決めた時刻：締切の平均 {np.mean(mins):.1f}分前（真ん中 {np.median(mins):.1f}分前、早い {mins[-1]:.1f}・遅い {mins[0]:.1f}。"
+                     f"5分前より後 {100 * late / len(mins):.0f}%、{len(mins)}R）")
+        # 当たった組の、決めたときのオッズと確定オッズ
     moves = [(r["pay"] / 100) / x["odds"] for r in rs if r["hit"] for x in r["items"] if x["combo"] == r["result"] and x.get("odds")]
     if moves:
         lines.append(f"  当たった組のオッズ：確定 ÷ 決めたとき＝平均 {np.mean(moves):.2f}倍（{len(moves)}本。1より小さいと、締切までに下がっている）")
