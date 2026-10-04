@@ -721,3 +721,32 @@ def test_abilities_registered_and_keep_combos(tmp_path, monkeypatch):
     main = [p["combo"] for p in out if p["kind"] == "本線"]
     assert len(main) == 6 and "2-4-5" in main and "2-1-5" in main and "1-2-3" not in main
     assert next(p for p in out if p["combo"] == "2-1-5")["ability"] == "①逃げ⑥残し" and out[-1]["kind"] == "妙味"
+
+
+def test_discord_notify_once_then_change(monkeypatch):
+    """締切8分前から1回送り、組が変わったら1回だけ送り直す。設定が無ければ送らない。見送りは送らない。"""
+    from minamo import notify
+
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda text: sent.append(text) or True)
+    st = {"ev_pick": {"combos": ["1-3-5"], "items": [{"combo": "1-3-5", "odds": 45.2}]}, "ex_pick": {"combos": ["1-3"], "items": []}}
+    monkeypatch.delenv("MINAMO_DISCORD_WEBHOOK", raising=False)
+    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 6)
+    assert sent == [] and "notified" not in st
+    monkeypatch.setenv("MINAMO_DISCORD_WEBHOOK", "https://example.invalid/hook")
+    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 12)  # まだ早い
+    assert sent == []
+    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 6)
+    assert len(sent) == 1 and "戸田 9R" in sent[0] and "1-3-5（45.2倍）" in sent[0] and "2連単 1点：1-3" in sent[0]
+    assert "#/race/20261004/02/9" in sent[0]
+    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 3)  # 変わっていなければ送らない
+    assert len(sent) == 1
+    st["ev_pick"] = {"combos": ["1-3-5", "3-1-5"]}
+    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 2)
+    assert len(sent) == 2 and sent[1].startswith("【変更】")
+    st["ev_pick"] = {"combos": []}
+    notify.maybe_notify(st, "20261004", "02", 9, "15:00", 1)  # 変更は1回だけ
+    assert len(sent) == 2
+    st2 = {"ev_pick": {"combos": []}, "ex_pick": {"combos": []}}
+    notify.maybe_notify(st2, "20261004", "02", 10, "15:30", 6)  # 見送りは送らない
+    assert len(sent) == 2 and notify.pick_message("20261004", "02", 10, "15:30", 6, {}, {}) is None
