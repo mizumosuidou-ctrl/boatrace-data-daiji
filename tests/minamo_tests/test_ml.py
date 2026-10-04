@@ -324,6 +324,10 @@ def test_extra_features_reach_live(trained):
     df = ds.add_race_features(pred.frame(card), with_ex=False)
     assert list(df["rt_rank_race"][:2]) == [1, 2] and df.loc[1, "rt_best_gap"] == pytest.approx(1.5)
     assert list(df["rt_top15"][:2]) == [1, 0] and np.isnan(df.loc[2, "rt_top15"]) and (df["rt_day"] == 3).all()
+    # 決まり手：学習で選手×コースの表を残し、当日の予想にも入る（1コースは逃げ・差され、2〜6コースは差し・まくり）
+    assert (out / "stats_kimarite.csv.gz").exists() and "kimarite" in pred.new
+    assert df.loc[0, "km_nige"] > 0 and np.isnan(df.loc[0, "km_sashi"]) and df.loc[3, "km_makuri"] >= 0
+    assert (df["race_c1_nige"] == df.loc[0, "km_nige"]).all() and df.loc[0, "disp_km_n"] >= 0
 
 
 def test_old_model_without_extra_tables_still_predicts(trained, tmp_path, monkeypatch):
@@ -1086,3 +1090,31 @@ def test_shape_features():
     b = df[df["race_id"] == "b"].set_index("course_i")
     assert b["shape_key"].isna().all() and b["shape_c1_top"].isna().all()  # ③の順位が無い
     assert b["shape_gap_at"].eq(1).all() and b["shape_gap_max"].iloc[0] == pytest.approx(1.0)  # ①3.0→②2.0
+
+
+def test_kimarite_stats():
+    """決まり手：書き方をそろえ、選手×コースの前日までの数から率（1コースは逃げ・差され、2コースは逃し・差し など）。"""
+    from minamo.ml import dataset as ds
+
+    assert [ds.norm_kimarite(x) for x in ("捲り差し", "まくり", "差し", "逃げ", "Makurizashi", "抜き", "", None)] == \
+        ["まくり差し", "まくり", "差し", "逃げ", "まくり差し", "抜き", None, None]
+    d1, d2, d3 = pd.Timestamp("2026-09-01"), pd.Timestamp("2026-09-02"), pd.Timestamp("2026-09-03")
+    facts = pd.DataFrame({
+        "race_id": ["r1"] * 2 + ["r2"] * 2, "toban": ["A", "B"] * 2, "course": [1, 2, 1, 2],
+        "date": [d1, d1, d2, d2], "finish": [1, 2, 2, 1]})
+    kim = pd.Series({"r1": "逃げ", "r2": "差し"})
+    table, pri = ds.kimarite_stats(facts, kim, next_date=d3)
+    a = table[(table["toban"] == "A") & (table["date"] == d3)].iloc[0]
+    b = table[(table["toban"] == "B") & (table["date"] == d3)].iloc[0]
+    assert a["km_n"] == 2 and a["km_c_nige"] == 1 and a["km_c_lsashi"] == 1
+    assert b["km_n"] == 2 and b["km_c_sashi"] == 1 and b["km_c_inesc"] == 1
+    assert pri["1-km_c_nige"] == 0.5 and pri["2-km_c_sashi"] == 0.5
+    rows = pd.DataFrame({"toban": ["A", "B"], "course_i": [1, 2], "date": [d3, d3]})
+    out = ds.apply_kimarite(rows, table, {"kimarite": pri})
+    assert out.loc[0, "disp_km_nige"] == 0.5 and out.loc[0, "disp_km_sasare"] == 0.5 and np.isnan(out.loc[0, "disp_km_sashi"])
+    assert out.loc[1, "disp_km_sashi"] == 0.5 and out.loc[1, "disp_km_nogashi"] == 0.5 and np.isnan(out.loc[1, "km_nige"])
+    assert out.loc[0, "km_nige"] == pytest.approx((1 + 10 * 0.5) / (2 + 10))  # ふつうの率で平滑化
+    # レース全体：1コースの艇の差され率を、ほかの艇にも
+    out["race_id"], out["course"], out["sr_c"] = "x", out["course_i"], [2.0, 3.0]
+    out = ds.add_race_features(out.assign(venue="01", motor_2=np.nan), with_ex=False)
+    assert out["race_c1_sasare"].nunique() == 1 and out["race_c1_sasare"].iloc[1] == out.loc[0, "km_sasare"]

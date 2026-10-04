@@ -11,7 +11,7 @@ mkdir -p "$RAW"
 DB_CONTAINER=${DB_CONTAINER:-boatrace-postgres}
 DB_NAME=${DB_NAME:-rtmonitor}
 REQUIRED="facts exhibition motors"
-OPTIONAL="weather original_db f_state odds_hist odds_results rtm_preds rtm_shadow"
+OPTIONAL="weather original_db f_state odds_hist odds_results rtm_preds rtm_shadow kimarite"
 
 export_csv() {
   local name=$1

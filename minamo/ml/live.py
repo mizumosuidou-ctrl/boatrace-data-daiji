@@ -48,7 +48,7 @@ class MLPredictor:
             self.extra[name] = t.assign(date=self.stats_date)
         # 修正7：F持ちのスタートのずれ・壁（無ければ使わない）
         self.new = {}
-        for name in ("fhold", "wall"):
+        for name in ("fhold", "wall", "kimarite"):
             path = self.dir / f"stats_{name}.csv.gz"
             if path.exists():
                 self.new[name] = pd.read_csv(path, dtype={"toban": str}).assign(date=self.stats_date)
@@ -213,7 +213,11 @@ def _stats(row) -> dict:
         return _num_or_none(v, d)
     return {"n_c": int(row.get("n_c", 0) or 0), "win_c": g("disp_win_c"), "top2_c": g("disp_top2_c"), "top3_c": g("disp_top3_c"),
             "sr_c": g("disp_sr_c", 2), "top_st": g("disp_top_st"), "wall": g("disp_wall"),
-            "wall_n": int(row.get("disp_wall_n") or 0) if _num_or_none(row.get("disp_wall_n")) is not None else None}
+            "wall_n": int(row.get("disp_wall_n") or 0) if _num_or_none(row.get("disp_wall_n")) is not None else None,
+            # 決まり手（直近1年・その進入コース）。1コース：逃げ・差され・まくられ・まくられ差し、2コース：逃し、2〜6コース：差し・まくり・まくり差し
+            "km": {k: g(f"disp_{k}") for k in ("km_nige", "km_sasare", "km_makurare", "km_makusasare", "km_nogashi",
+                                                 "km_sashi", "km_makuri", "km_makurisashi") if g(f"disp_{k}") is not None},
+            "km_n": int(row.get("disp_km_n") or 0) if _num_or_none(row.get("disp_km_n")) is not None else None}
 
 
 def _num_or_none(v, digits: int = 2) -> Optional[float]:

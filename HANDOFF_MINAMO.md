@@ -544,3 +544,13 @@ ev-check の「4.」で補正を試す。検証期間（8/24〜9/10、2,469R）�
 - `dataset.SHAPE_FEATURES`（add_shape、sr_c だけから作る）：shape_c1_top（①が②③④より速い）、shape_key（隊形トゥエルブ 0〜11）、
   shape_gap_max・shape_gap_at（外が速い差の一番大きいものと場所）、shape_gap_rel（自分のコース − 差の外側のコース）。
   学習で「＋展開の形」として足し、検証期間で良くなったときだけ使う（修正7と同じ）。当日の予想にも同じ関数で入る。
+- 10/5 学習（展開の形を追加）：採用（対数損失 1.204→1.203、ほぼ誤差）。艇ごとの差（sr_gap_inner・sr_gap_c1）が先に入っていたため。
+
+## 決まり手を材料に（PR #117）
+
+- 書き出し：`minamo/ml/sql/kimarite.sql`（race_summaries の winning_method）→ var/ml/raw/kimarite.csv（db_export.sh の OPTIONAL）。
+  公式サイトから足す日は facts_backfill が kimarite_backfill.csv にも書く。足し終えた日の分は `python -m minamo ml-kimarite`（結果ページだけ、1秒1件）。
+  odds_results.csv の winning_method も使う。書き方は norm_kimarite でそろえる（捲り→まくり、英語表記も）。
+- 材料（KIMARITE_FEATURES、直近1年・前日まで・選手×進入コース、ふつうの率で平滑化）：1コース 逃げ・差され・まくられ・まくられ差し、2コース 逃し、
+  2〜6コース 差し・まくり・まくり差し、race_c1_*（そのレースの1コースの艇の率を全艇に）。学習で「＋決まり手」として試し、良ければ使う。
+- 画面：レース画面「決まり手（進入コースでの率）」（日和の表と同じ考え方）。stats.km・stats.km_n。

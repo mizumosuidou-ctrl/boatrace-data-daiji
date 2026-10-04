@@ -496,6 +496,24 @@ function abilityHtml(race, scope = getScope()) {
     <thead><tr><th>進入</th><th>艇</th><th>選手</th><th>出走</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}<th>壁率</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
+// 決まり手（日和の「逃げ・差され・まくられ」のような表）：その選手がその進入コースに入ったときの、直近1年の率
+const KM_COLS = [["逃げ", "km_nige"], ["差され", "km_sasare"], ["まくられ", "km_makurare"], ["まくられ差し", "km_makusasare"],
+  ["逃し", "km_nogashi"], ["差し", "km_sashi"], ["まくり", "km_makuri"], ["まくり差し", "km_makurisashi"]];
+function kimariteHtml(race) {
+  const C = courseOf(race);
+  const S = Object.fromEntries(race.prediction.boats.map((b) => [b.boat, b.stats || {}]));
+  if (!Object.values(S).some((s) => s.km && Object.keys(s.km).length)) return "";
+  const ex = exEntry(race);
+  const E = race.entries.slice().sort((a, b) => (C[a.boat] ?? a.boat) - (C[b.boat] ?? b.boat));
+  const rows = E.map((e) => {
+    const s = S[e.boat] || {}, km = s.km || {};
+    const cells = KM_COLS.map(([, k]) => `<td>${km[k] == null ? '<span class="muted">–</span>' : (km[k] * 100).toFixed(1)}</td>`).join("");
+    return `<tr><td>${C[e.boat] ? courseTag(C[e.boat], e.boat, ex) : "--"}</td><td>${boat(e.boat, "sm")}</td><td class="name">${esc(e.name)}</td>
+      <td class="num">${s.km_n ?? 0}</td>${cells}</tr>`;
+  }).join("");
+  return `<div class="panel sheet"><table><thead><tr><th>進入</th><th>艇</th><th>選手</th><th>集計</th>${KM_COLS.map(([l]) => `<th>${l}</th>`).join("")}</tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
 // 選手別アビリティ：展示後の進入コースで判定（展示前は枠なり想定で「仮」）。買い目反映ありのものだけ予想に効く
 function skillsHtml(race) {
   const C = courseOf(race);
@@ -838,6 +856,7 @@ async function renderRace(r, refresh = false) {
       ${race.entries.some((e) => e.rt_best != null) ? `<p class="small muted" style="margin:10px 2px 0;line-height:1.7">ﾀｲﾑ6艇内＝節間ベストのレースタイムの、このレースの6艇の中での順位。選手別順位＝節間ベストの、その節に出ている選手の中での順位（順位/人数）。全走順位＝節間ベストの、その節の全部の走り（1走ずつ数える）の中での順位。前走順位＝いちばん新しい走りのタイムの、各選手のいちばん新しい走りの中での順位（数字に触れると前走のタイム）。ﾀｲﾑ評価＝この「6艇内の順位」と「節内の順位（上位10%・10〜30%・30〜60%・それより下）」だった選手の過去の3連対率が、同じコースの平均より何ポイント高いか${ins && ins.racetime && ins.racetime.n ? `（${ins.racetime.n.toLocaleString("ja-JP")}走から）` : ""}。</p>` : ""}
       ${abilityHtml(race) ? `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">実力（進入コースでの成績）<small>この進入コースに入ったときの成績（前日まで・全場、%）。F持ちの選手は、F持ちだったときの成績</small></h2></div></div><div id="ability">${abilityHtml(race)}</div>
       <p class="small muted" style="margin:10px 2px 0;line-height:1.7">出走＝そのコースでの出走数。平均ST順位＝そのコースでの本番のスタート順位の平均（小さいほど早い。スタート隊形トゥエルブの元の数字）。トップST率＝そのコースで本番のスタートが1番だった割合。トップ時1着・2連＝そのトップスタートのときの1着率・2連対率。「F持ち時」＝今F持ちの選手は、F持ちだったときの成績（期間で区切らず、ためていく）。壁率＝その選手がこのコースのとき①が1着だった割合（高いほど①が逃げやすい）。</p>` : ""}
+      ${kimariteHtml(race) ? `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">決まり手（進入コースでの率）<small>その選手がこの進入コースに入ったときの直近1年（前日まで・全場、%）。1コース：逃げ・差され・まくられ・まくられ差し、2コース：逃し（1コースに逃げられた）、2〜6コース：差し・まくり・まくり差し（その決まり手で1着）。集計＝そのコースで決まり手の分かるレース数</small></h2></div></div>${kimariteHtml(race)}` : ""}
       ${skillsHtml(race)}
       ${prevNext}
     </section>
