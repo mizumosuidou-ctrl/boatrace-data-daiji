@@ -73,7 +73,7 @@ def test_training_beats_course_baseline(trained):
     assert meta["adopt"] is True
     # ev-check のスタート隊形の表のため、検証期間の進入コースと平均スタート順位も残す
     tp = pd.read_csv(out / "test_preds.csv.gz")
-    assert {"course_i", "sr_c"} <= set(tp.columns) and tp["course_i"].between(1, 6).all()
+    assert {"course_i", "sr_c", "lap_rank", "ex_time_rank"} <= set(tp.columns) and tp["course_i"].between(1, 6).all()
     saved = json.loads((out / "meta.json").read_text())
     base = ds.BASE_FEATURES if saved["extra_adopt"] else ds.BASE_FEATURES_V1
     added = [f for name, g in (("fhold", ds.FHOLD_FEATURES), ("wall", ds.WALL_FEATURES)) if saved["new_adopt"][name] for f in g]
@@ -1157,3 +1157,14 @@ def test_kimarite_fill_from_result_list(tmp_path):
     assert fb.fill_kimarite(tmp_path, "20261003", "20261004", F()) == 0 and F.calls == 4  # 取り終えた日はとばす
     kim = ds.load_kimarite(tmp_path)
     assert kim["20261004-12-03"] == "まくり差し" and len(kim) == 48
+
+
+def test_two_head_combos():
+    """②の1着の形：まくり＝②-③-全・②-全-③（8点）、差し＝②-①-全（4点）、両方は重なりを除いて11点。進入が変わればその艇番で。"""
+    from minamo.ml import ev_check
+
+    r = {"course_of": {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}}
+    mk, sa, both = (ev_check.two_head_combos(r, k) for k in ("makuri", "sashi", "both"))
+    assert len(mk) == 8 and "2-3-1" in mk and "2-6-3" in mk and len(sa) == 4 and sa[0] == "2-1-3" and len(both) == 11
+    r = {"course_of": {1: 1, 2: 3, 3: 2, 4: 4, 5: 5, 6: 6}}  # 3号艇が2コース、2号艇が3コース
+    assert ev_check.two_head_combos(r, "sashi") == ["3-1-2", "3-1-4", "3-1-5", "3-1-6"]

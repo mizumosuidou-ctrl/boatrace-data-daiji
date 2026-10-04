@@ -90,6 +90,9 @@ def load(ml_dir: Path, raw: Path) -> list[dict]:
             row["course_of"] = {int(l): int(c) for l, c in zip(g["lane"], g["course_i"])}
             row["sr"] = {int(c): float(v) for c, v in zip(g["course_i"], g["sr_c"]) if v == v}
             row["p_lane"] = {int(l): float(v) for l, v in zip(g["lane"], g["p"])}
+            for col, key in (("lap_rank", "lap_rank"), ("ex_time_rank", "ex_rank")):  # 展示の順位（艇番→順位。無ければ入れない）
+                if col in g and g[col].notna().sum() >= 4:
+                    row[key] = {int(l): float(v) for l, v in zip(g["lane"], g[col]) if v == v}
         out.append(row)
     return out
 
@@ -994,6 +997,88 @@ def start_report(races: list[dict]) -> list[str]:
     return lines
 
 
+def two_head_combos(r: dict, shape: str) -> list[str]:
+    """②（2コースの艇）が1着の形。まくり＝②-③-全・②-全-③、差し＝②-①-全、両方＝重なりを除いて全部。艇番で返す。"""
+    lane = {c: l for l, c in r["course_of"].items()}
+    if not all(c in lane for c in (1, 2, 3)):
+        return []
+    a, one, three = lane[2], lane[1], lane[3]
+    rest = [l for l in range(1, 7) if l != a]
+    makuri = [f"{a}-{three}-{x}" for x in rest if x != three] + [f"{a}-{x}-{three}" for x in rest if x != three]
+    sashi = [f"{a}-{one}-{x}" for x in rest if x != one]
+    if shape == "makuri":
+        return makuri
+    if shape == "sashi":
+        return sashi
+    return list(dict.fromkeys(makuri + sashi))
+
+
+def two_head_report(races: list[dict]) -> list[str]:
+    """15. ②が①より速いレースで、②の1着を狙う（まくり・差し・展示で切り替え）。補正B・後半、5分前オッズで決め、払戻は確定オッズ。"""
+    cal = _test_cal(races)
+    if not cal or not any(r.get("sr") for r in cal):
+        return []
+    fast = [r for r in cal if _start_flags(r)["c2_fast"] is True]
+    other = [r for r in cal if _start_flags(r)["c2_fast"] is False]
+    if len(fast) < 20:
+        return []
+    mid = fast[len(fast) // 2]["race"]
+    has_lap = sum(1 for r in fast if r.get("lap_rank")) >= 20
+    has_ex = sum(1 for r in fast if r.get("ex_rank")) >= 20
+
+    def by_show(key, n=2):
+        def f(r):
+            two = {c: l for l, c in r["course_of"].items()}.get(2)
+            rk = (r.get(key) or {}).get(two)
+            if rk is None:
+                return []
+            return two_head_combos(r, "makuri" if rk <= n else "sashi")
+        return f
+
+    plans = [("まくり：②-③-全・②-全-③（8点）", lambda r: two_head_combos(r, "makuri")),
+             ("差し：②-①-全（4点）", lambda r: two_head_combos(r, "sashi")),
+             ("両方（11点）", lambda r: two_head_combos(r, "both"))]
+    if has_lap:
+        plans.append(("周回展示で切り替え：②の一周が2位以内ならまくり、ほかは差し", by_show("lap_rank")))
+    if has_ex:
+        plans.append(("展示タイムで切り替え：②が2位以内ならまくり、ほかは差し", by_show("ex_rank")))
+
+    def summ(rs, pick):
+        st = rt = hit = n = 0
+        for r in rs:
+            b = pick(r)
+            if not b:
+                continue
+            n += 1
+            st += len(b)
+            if r["hit"] in b:
+                hit += 1
+                rt += r["final"].get(r["hit"], 0)
+        return n, st, hit, rt
+
+    def cell(rs, pick):
+        n, st, hit, rt = summ(rs, pick)
+        return f"{n:>4}R 的中{100 * hit / n if n else 0:5.1f}% 回収率{100 * rt / st if st else float('nan'):6.1f}%"
+
+    wins2 = sum(1 for r in fast if {c: l for l, c in r["course_of"].items()}.get(2) == int(r["hit"].split("-")[0]))
+    inv2 = []
+    for r in fast:
+        two = {c: l for l, c in r["course_of"].items()}.get(2)
+        inv = {c: 1 / o for c, o in r["t5"].items() if o}
+        tot = sum(inv.values())
+        if tot and two:
+            inv2.append(sum(v for c, v in inv.items() if c.startswith(f"{two}-")) / tot)
+    lines = [f"\n15. ②が①より速いレース（②の平均スタート順位が①より0.5以上速い）で、②の1着を狙う（補正B・後半 {len(fast)}R。"
+             "5分前オッズで決め、払戻は確定オッズ。1点100円の平掛け）",
+             f"  ②の1着：実際 {100 * wins2 / len(fast):.1f}%／市場（5分前オッズ）の見立て {100 * np.mean(inv2):.1f}%"
+             + ("" if has_lap else "　※ 周回展示・展示タイムの順位は、次の学習（ml-train）のあとに出ます"),
+             f"    {_pad('買い方', 52)}{_pad('②が速いレース', 32)}{_pad('（前半）', 30)}{_pad('（後半）', 30)}ふつうのレース（比べ）"]
+    for name, pick in plans:
+        lines.append(f"    {_pad(name, 52)}{cell(fast, pick)}  {cell([r for r in fast if r['race'] < mid], pick)}  "
+                     f"{cell([r for r in fast if r['race'] >= mid], pick)}  {cell(other, pick)}")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -1111,4 +1196,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += composite_report(races)
     lines += hit_report(races, race_categories(raw))
     lines += start_report(races)
+    lines += two_head_report(races)
     return "\n".join(lines)
