@@ -71,6 +71,9 @@ def test_training_beats_course_baseline(trained):
     m = meta["metrics"]
     assert m["pre"]["logloss"] < m["baseline"]["logloss"]
     assert meta["adopt"] is True
+    # ev-check のスタート隊形の表のため、検証期間の進入コースと平均スタート順位も残す
+    tp = pd.read_csv(out / "test_preds.csv.gz")
+    assert {"course_i", "sr_c"} <= set(tp.columns) and tp["course_i"].between(1, 6).all()
     saved = json.loads((out / "meta.json").read_text())
     base = ds.BASE_FEATURES if saved["extra_adopt"] else ds.BASE_FEATURES_V1
     added = [f for name, g in (("fhold", ds.FHOLD_FEATURES), ("wall", ds.WALL_FEATURES)) if saved["new_adopt"][name] for f in g]
