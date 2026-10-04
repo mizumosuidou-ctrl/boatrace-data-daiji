@@ -102,9 +102,13 @@ class Pipeline:
             st["ai_stage"] = "card"
             self._save(date, f"{jcd}-{rno:02d}", st)
         ev_pick = st.get("ev_pick") or {}
-        payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev_pick.get("combos"))
+        ex_pick = st.get("ex_pick") or {}
+        payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev_pick.get("combos"),
+                                   ex=ex_pick.get("combos") if "ex_pick" in st else None)
         payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
         payload["ev_at"] = ev_pick.get("at")
+        payload["ex_items"] = ex_pick.get("items")  # 試験中の2連単
+        payload["ex_at"] = ex_pick.get("at")
         payload["odds2"] = st.get("odds2") or {}
         payload["formation"] = self._formation(card, pred, vday)
         store.write_json(store.race_path(date, jcd, rno), payload)
@@ -231,6 +235,9 @@ class Pipeline:
                 st["ev_pick"] = {"combos": combos, "at": now.isoformat(), "cal": list(cal) if cal else None,
                                  "items": [{"combo": c, "p": round(prob[c], 4), "odds": odds[c], "ev": round(prob[c] * odds[c], 2)}
                                            for c in combos]}
+                if odds2:  # 試験中：2連単（補正した3連単の確率を足して2連単に。2連単のオッズで期待値1.2以上・最大3点）
+                    xc, xi = store.ex_picks(tri, odds, odds2, cal)
+                    st["ex_pick"] = {"combos": xc, "items": xi, "at": now.isoformat()}
         st["odds"] = odds or st.get("odds")
         st["odds2"] = odds2 or st.get("odds2")
         st["before_at"] = now.isoformat()
