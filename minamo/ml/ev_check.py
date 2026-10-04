@@ -688,6 +688,127 @@ def ev_dutch_report(cal: list[dict], n: int = 1000, seed: int = 0) -> list[str]:
     return lines
 
 
+HIT_TH = 2.0  # 当てに行く買い方：合成オッズがこれ以上を保てる所まで（5分前オッズ）
+MG_BASE, MG_MULT, MG_MAX = 10_000, 2, 5  # マーチンゲール：1万円から、負けたら2倍、5連敗で振り出し
+
+
+def hit_rows(races: list[dict], th: float = HIT_TH) -> list[dict]:
+    """補正B・後半の各レースで、確率の高い順に合成オッズ th 倍以上を保てる所まで買ったとき（store.co_picks）。
+    ret は1レースの投資を1としたときの払戻（金額はオッズの逆数で配分、払戻は確定オッズ）。見送りのレースは入れない。"""
+    from .. import store
+
+    raw = {r["race"]: r["probs"] for r in races}
+    out = []
+    for r in _test_cal(races):
+        items = store.co_picks(sorted(r["probs"].items(), key=lambda kv: -kv[1]), r["t5"], th)
+        if not items:
+            continue
+        comp = store.composite([x["odds"] for x in items])
+        combos = [x["combo"] for x in items]
+        ret = sum(x["w"] * r["final"].get(x["combo"], 0) for x in items if x["combo"] == r["hit"])
+        p_set = sum(r["probs"][c] for c in combos)
+        p_raw = sum(raw[r["race"]].get(c, 0) for c in combos)
+        out.append({"race": r["race"], "ret": ret, "hit": r["hit"] in combos, "n": len(items), "comp": comp,
+                    "p_set": p_set, "p_raw": p_raw, "ev": p_set * comp, "ev_raw": p_raw * comp, "top": items[0]["odds"],
+                    "p1": r["p1"], "jcd": r["race"].split("-")[1], "rno": int(r["race"].split("-")[2])})
+    return sorted(out, key=lambda x: x["race"])
+
+
+def _band_line(name: str, g: list[dict], mid: str) -> str:
+    """件数・的中・回収率（前／後）・5連敗の起きやすさ（1サイクルあたり）。"""
+    if not g:
+        return f"    {_pad(name, 22)}    0R"
+    hit = np.mean([x["hit"] for x in g])
+    roi = 100 * np.mean([x["ret"] for x in g])
+    a, b = [x for x in g if x["race"] < mid], [x for x in g if x["race"] >= mid]
+    ra = f"{100 * np.mean([x['ret'] for x in a]):5.1f}" if a else "  -- "
+    rb = f"{100 * np.mean([x['ret'] for x in b]):5.1f}" if b else "  -- "
+    return (f"    {_pad(name, 22)}{len(g):>5}R 的中{100 * hit:5.1f}% 回収率{roi:6.1f}%（前 {ra}% 後 {rb}%）"
+            f" 5連敗 {100 * (1 - hit) ** MG_MAX:4.1f}%")
+
+
+def martingale(rows: list[dict], base: float = MG_BASE, mult: float = MG_MULT, max_loss: int = MG_MAX) -> dict:
+    """日付順に買う。負けたら次のレースの金額を mult 倍、当たるか max_loss 連敗で base に戻す。
+    当たったときの払戻は 金額×ret（締切までにオッズが下がると、取り返しきれないこともある）。"""
+    step = wins = busts = short = 0
+    net = peak = worst = low = 0.0
+    spent = cost = 0.0  # cost はそのサイクルで使った合計
+    for r in rows:
+        stake = base * mult ** step
+        spent += stake
+        cost += stake
+        net += stake * (r["ret"] - 1)
+        if r["hit"]:
+            wins += 1
+            short += stake * r["ret"] < cost  # 当たったのに、そのサイクルの投資を取り返せなかった
+            step, cost = 0, 0.0
+        else:
+            step += 1
+            if step == max_loss:
+                busts += 1
+                step, cost = 0, 0.0
+        peak = max(peak, net)
+        worst = max(worst, peak - net)
+        low = min(low, net)
+    return {"races": len(rows), "wins": wins, "busts": busts, "short": short, "net": net, "spent": spent, "dd": worst, "low": low}
+
+
+def hit_report(races: list[dict]) -> list[str]:
+    """13. 当てに行く買い方（合成2倍以上・5分前オッズ）：見送るレースの分析と、マーチンゲール（1万円・2倍・5連敗で振り出し）。"""
+    from ..venues import venue
+
+    rows = hit_rows(races)
+    if len(rows) < 20:
+        return []
+    mid = rows[len(rows) // 2]["race"]
+    lines = [f"\n13. 当てに行く買い方（確率の高い順に、合成オッズ{HIT_TH:g}倍以上を保てる所まで。5分前オッズで決め、金額はオッズの逆数で配分。"
+             f"補正B・後半 {len(rows):,}R。前／後＝その期間を日付で半分にした回収率。5連敗＝的中率から見た、1サイクルで5連敗する確率）",
+             " 13-1. 見送るレースの分析（どんなレースなら回収率が高いか）",
+             _band_line("全部", rows, mid)]
+
+    def bands(title, key, cuts, fmt):
+        lines.append(f"  {title}")
+        for lo, hi in zip(cuts[:-1], cuts[1:]):
+            g = [x for x in rows if lo <= x[key] < hi]
+            if g:
+                lines.append(_band_line(fmt(lo, hi), g, mid))
+
+    pct = lambda lo, hi: f"{100 * lo:.0f}〜{100 * hi:.0f}%" if hi < 9 else f"{100 * lo:.0f}%以上"
+    num = lambda lo, hi: f"{lo:g}〜{hi:g}" if hi < 900 else f"{lo:g}以上"
+    bands("MINAMOが見た、買う組のどれかが当たる確率（補正後）", "p_set", [0, 0.3, 0.4, 0.5, 0.6, 0.7, 9], pct)
+    bands("同じ確率（補正前のMINAMO）", "p_raw", [0, 0.3, 0.4, 0.5, 0.6, 0.7, 9], pct)
+    bands("レースの期待値（補正後の確率×合成オッズ。1より大きいと市場より当たると見ている）", "ev", [0, 0.8, 0.9, 1.0, 999], num)
+    bands("レースの期待値（補正前の確率×合成オッズ）", "ev_raw", [0, 0.8, 0.9, 1.0, 1.1, 1.2, 999], num)
+    bands("点数", "n", [1, 4, 7, 11, 999], lambda lo, hi: f"{lo}〜{hi - 1}点" if hi < 900 else f"{lo}点以上")
+    bands("1点目（一番当たりそうな組）のオッズ", "top", [0, 3, 5, 8, 12, 999], lambda lo, hi: f"{lo:g}〜{hi:g}倍" if hi < 900 else f"{lo:g}倍以上")
+    bands("MINAMOの①の1着確率", "p1", [0, 0.35, 0.5, 0.65, 9], pct)
+    bands("レース番号", "rno", [1, 5, 9, 13], lambda lo, hi: f"{lo}〜{hi - 1}R")
+    lines.append("  場（50R以上。回収率の高い順に上5場・下5場）")
+    by = {}
+    for x in rows:
+        by.setdefault(x["jcd"], []).append(x)
+    ranked = sorted((j for j in by if len(by[j]) >= 50), key=lambda j: -np.mean([x["ret"] for x in by[j]]))
+    shown = ranked if len(ranked) <= 10 else ranked[:5] + ["…"] + ranked[-5:]
+    for j in shown:
+        lines.append("    …" if j == "…" else _band_line(venue(j).name, by[j], mid))
+    # 13-2. マーチンゲール
+    lines.append(f" 13-2. マーチンゲール（{MG_BASE:,}円から、負けたら{MG_MULT}倍、当たるか{MG_MAX}連敗で{MG_BASE:,}円に戻す。日付順。"
+                 "取り返せず＝当たったのに、締切までのオッズの下がりでそのサイクルの投資に届かなかった本数）")
+    filters = [("全部のレース", lambda x: True), ("確率（補正後）50%以上", lambda x: x["p_set"] >= 0.5),
+               ("確率（補正後）60%以上", lambda x: x["p_set"] >= 0.6), ("期待値（補正後）0.9以上", lambda x: x["ev"] >= 0.9),
+               ("期待値（補正後）1.0以上", lambda x: x["ev"] >= 1.0), ("期待値（補正前）1.0以上", lambda x: x["ev_raw"] >= 1.0),
+               ("期待値（補正前）1.2以上", lambda x: x["ev_raw"] >= 1.2)]
+    for name, f in filters:
+        g = [x for x in rows if f(x)]
+        if not g:
+            continue
+        m = martingale(g)
+        lines.append(f"  {_pad(name, 24)}{m['races']:>5}R  サイクル{m['wins'] + m['busts']:>5}  勝ち{m['wins']:>5}  {MG_MAX}連敗{m['busts']:>4}回"
+                     f"  取り返せず{m['short']:>4}本  収支 {m['net']:>+12,.0f}円  一番減ったとき −{m['dd']:,.0f}円"
+                     f"  （投資 {m['spent']:,.0f}円）")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -803,4 +924,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += stake_report(races)
     lines += timing_report(races)
     lines += composite_report(races)
+    lines += hit_report(races)
     return "\n".join(lines)
