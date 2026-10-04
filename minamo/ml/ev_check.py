@@ -1013,7 +1013,7 @@ def two_head_combos(r: dict, shape: str) -> list[str]:
     return list(dict.fromkeys(makuri + sashi))
 
 
-def two_head_report(races: list[dict]) -> list[str]:
+def two_head_report(races: list[dict], kim=None) -> list[str]:
     """15. ②が①より速いレースで、②の1着を狙う（まくり・差し・展示で切り替え）。補正B・後半、5分前オッズで決め、払戻は確定オッズ。"""
     cal = _test_cal(races)
     if not cal or not any(r.get("sr") for r in cal):
@@ -1076,6 +1076,61 @@ def two_head_report(races: list[dict]) -> list[str]:
     for name, pick in plans:
         lines.append(f"    {_pad(name, 52)}{cell(fast, pick)}  {cell([r for r in fast if r['race'] < mid], pick)}  "
                      f"{cell([r for r in fast if r['race'] >= mid], pick)}  {cell(other, pick)}")
+    lines += two_fast_outcomes(fast, kim)
+    return lines
+
+
+def _to_course(r: dict, combo: str) -> str:
+    """艇番の組 → コースの組（①-③-② のように）。"""
+    from .. import formation
+
+    return "-".join(formation.CIRCLED[r["course_of"].get(int(x), int(x)) - 1] for x in combo.split("-"))
+
+
+def two_fast_outcomes(fast: list[dict], kim=None) -> list[str]:
+    """15-2. ②が速いレースの1着のコース（実際・MINAMO・市場）と決まり手、15-3. ②が1着でないときの出目（コースで）。"""
+    from .. import formation
+
+    n = len(fast)
+    lines = [f" 15-2. ②が速いレース（{n}R）の1着のコース：実際／MINAMO／市場（5分前オッズ）"]
+    for c in range(1, 7):
+        act = mm = mk = 0.0
+        for r in fast:
+            lane = {cc: l for l, cc in r["course_of"].items()}.get(c)
+            if lane is None:
+                continue
+            act += int(r["hit"].split("-")[0]) == lane
+            mm += r["p_lane"].get(lane, 0.0)
+            inv = {k: 1 / o for k, o in r["t5"].items() if o}
+            tot = sum(inv.values())
+            mk += sum(v for k, v in inv.items() if k.startswith(f"{lane}-")) / tot if tot else 0.0
+        lines.append(f"    {formation.CIRCLED[c - 1]}  {100 * act / n:5.1f}%／{100 * mm / n:5.1f}%／{100 * mk / n:5.1f}%")
+    if kim is not None and len(kim):
+        cnt: dict[str, int] = {}
+        for r in fast:
+            k = kim.get(r["race"])
+            if k:
+                head = r["course_of"].get(int(r["hit"].split("-")[0]))
+                key = f"{formation.CIRCLED[head - 1]}の{k}" if head else k
+                cnt[key] = cnt.get(key, 0) + 1
+        tot = sum(cnt.values())
+        if tot:
+            lines.append(f"  決まり手（決まり手の分かる {tot}R）：" + "、".join(f"{k} {100 * v / tot:.0f}%" for k, v in
+                                                                  sorted(cnt.items(), key=lambda kv: -kv[1])[:8]))
+    not2 = [r for r in fast if r["course_of"].get(int(r["hit"].split("-")[0])) != 2]
+    lines.append(f" 15-3. ②が1着でないとき（{len(not2)}R、②が速いレース全体の {100 * len(not2) / n:.0f}%）の出目（コース）。"
+                 "回収率＝②が速いレースで毎回その出目を100円買ったとき")
+    stats: dict[str, list] = {}
+    for r in not2:
+        stats.setdefault(_to_course(r, r["hit"]), []).append(r["final"].get(r["hit"], 0))
+    for combo_c, pays in sorted(stats.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:15]:
+        lines.append(f"    {combo_c}  {len(pays):>3}回（{100 * len(pays) / n:4.1f}%）  平均 {100 * np.mean(pays):>7,.0f}円"
+                     f"  回収率 {100 * sum(pays) / n:6.1f}%")
+    heads: dict[str, int] = {}
+    for r in not2:
+        h = _to_course(r, r["hit"]).split("-")[0]
+        heads[h] = heads.get(h, 0) + 1
+    lines.append("  1着のコース（②以外）：" + "、".join(f"{h} {v}回" for h, v in sorted(heads.items(), key=lambda kv: -kv[1])))
     return lines
 
 
@@ -1196,5 +1251,7 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += composite_report(races)
     lines += hit_report(races, race_categories(raw))
     lines += start_report(races)
-    lines += two_head_report(races)
+    from . import dataset as ds
+
+    lines += two_head_report(races, ds.load_kimarite(raw))
     return "\n".join(lines)
