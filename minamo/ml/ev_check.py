@@ -597,6 +597,51 @@ def timing_report(races: list[dict]) -> list[str]:
     return lines
 
 
+def co_rows(races: list[dict], th: float, ev_min: float | None = None) -> list[tuple[float, int, float, float]]:
+    """合成オッズ買い（store.co_picks と同じ選び方、5分前オッズ）。レースごとに（払戻÷投資、点数、組全体の確率、合成オッズ）。
+    投資はレースごとに1、金額はオッズの逆数で配分、払戻は確定オッズ。ev_min があれば、組全体の確率×合成オッズがそれ以上のレースだけ。"""
+    from .. import store
+
+    out = []
+    for r in races:
+        items = store.co_picks(sorted(r["probs"].items(), key=lambda kv: -kv[1]), r["t5"], th)
+        if not items:
+            continue
+        comp = store.composite([x["odds"] for x in items])
+        p_set = sum(x["p"] for x in items)
+        if ev_min is not None and p_set * comp < ev_min:
+            continue
+        ret = sum(x["w"] * r["final"].get(x["combo"], 0) for x in items if x["combo"] == r["hit"])
+        out.append((ret, len(items), p_set, comp))
+    return out
+
+
+def composite_report(races: list[dict], n: int = 1000, seed: int = 0) -> list[str]:
+    """12. 3連単の合成オッズ買い（補正B・後半）：確率の高い順に足し、合成オッズが線を下回る手前まで。どれが当たっても払戻は同じ。"""
+    cal = _test_cal(races)
+    if not cal:
+        return []
+    lines = [f"\n12. 3連単の合成オッズ買い（補正B・後半 {len(cal):,}R。確率の高い順に足し、合成オッズが線を下回る手前まで。"
+             "金額はオッズの逆数で配分＝どれが当たっても払戻は同じ。5分前オッズで決め、払戻は確定オッズ）",
+             "  トリガミ＝当たったのに払戻が投資より少ない（締切までにオッズが下がったとき）。期待値＝組全体の確率×合成オッズ"]
+    rng = np.random.default_rng(seed)
+    for name, th, ev_min in (("合成1.3倍以上", 1.3, None), ("合成1.5倍以上", 1.5, None), ("合成2倍以上", 2.0, None),
+                             ("合成3倍以上", 3.0, None), ("合成1.5倍以上・期待値1.0以上", 1.5, 1.0),
+                             ("合成1.5倍以上・期待値1.2以上", 1.5, 1.2), ("合成2倍以上・期待値1.2以上", 2.0, 1.2)):
+        rows = co_rows(cal, th, ev_min)
+        if not rows:
+            continue
+        ret = np.array([x[0] for x in rows])
+        hit = ret > 0
+        idx = rng.integers(0, len(ret), size=(n, len(ret)))
+        boot = 100 * ret[idx].mean(axis=1)
+        tg = int((hit & (ret < 1)).sum())
+        lines.append(f"  {_pad(name, 30)}{len(rows):>5}R（{100 * len(rows) / len(cal):3.0f}%） 平均{np.mean([x[1] for x in rows]):4.1f}点"
+                     f" 合成{np.median([x[3] for x in rows]):4.1f}倍 的中{100 * hit.mean():5.1f}% 回収率{100 * ret.mean():6.1f}%"
+                     f"  幅 {np.percentile(boot, 5):5.1f}〜{np.percentile(boot, 95):5.1f}%  トリガミ {tg}本")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -711,4 +756,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += bankroll_report(races)
     lines += stake_report(races)
     lines += timing_report(races)
+    lines += composite_report(races)
     return "\n".join(lines)

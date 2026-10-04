@@ -125,6 +125,37 @@ def ex_picks(trifecta: list, odds3: Optional[dict[str, float]], odds2: Optional[
     return [x["combo"] for x in out], out
 
 
+# 試験中：3連単の合成オッズ買い（確率の高い順に足していき、合成オッズが CO_MIN 倍を下回る手前まで。
+# どれが当たっても払戻が同じになるよう、オッズの逆数で金額を配分する＝当たれば必ず投資の CO_MIN 倍以上。トリガミにならない）
+CO_MIN = 1.5
+CO_DEPTH = 40  # 確率上位何組まで見るか
+
+
+def composite(odds: list[float]) -> float:
+    """合成オッズ：1 ÷ Σ(1/オッズ)。どれが当たっても、払戻が投資の何倍になるか。"""
+    inv = sum(1 / o for o in odds if o)
+    return 1 / inv if inv else 0.0
+
+
+def co_picks(trifecta: list, odds: Optional[dict[str, float]], th: float = CO_MIN, depth: int = CO_DEPTH) -> list[dict]:
+    """確率の高い順に組を足し、合成オッズが th 倍以上を保てる所まで。組ごとの金額の割合 w（合計1）つき。
+    1点目のオッズが th 倍未満なら空（見送り）。"""
+    if not odds:
+        return []
+    acc, out = 0.0, []
+    for c, p in trifecta[:depth]:
+        o = odds.get(c)
+        if not o:
+            continue
+        if 1 / (acc + 1 / o) < th:
+            break
+        acc += 1 / o
+        out.append({"combo": c, "p": round(p, 4), "odds": o})
+    for x in out:
+        x["w"] = round((1 / x["odds"]) / acc, 4)
+    return out
+
+
 def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Optional[list] = None,
            ex: Optional[list] = None) -> dict:
     picks = [p["combo"] for p in ai.get("picks", [])]
