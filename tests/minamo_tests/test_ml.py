@@ -1003,3 +1003,4 @@ def test_ability_check_report(tmp_path, monkeypatch):
     line = next(x for x in text.splitlines() if "①のとき⑥残り" in x)
     # 持ち主のレース（10R）は1-2-6で全部的中、持たないレース（10R）は的中なし
     assert "10R 2.0点 的中100.0% 回収率2500.0%" in line and "的中  0.0%" in line
+    assert "同じレースのふつうの上位6点" in text

@@ -17,6 +17,9 @@ from . import ev_check
 from .wind_table import _pad
 
 
+SOFT = 0.5  # 「苦手」の艇を外さずに弱く見るときの倍率
+
+
 def _course_map(facts: pd.DataFrame, race_ids: set) -> dict[str, dict[int, tuple[int, str]]]:
     """レース → {進入コース: (艇番, 登番)}。"""
     f = facts[facts["race_id"].isin(race_ids)][["race_id", "course", "lane", "toban"]]
@@ -119,7 +122,7 @@ def build(ml_dir: Path, raw: Path) -> str:
              ""]
     for kind, (desc, pick) in strat.items():
         courses = [1] if kind.startswith("①のとき") or kind == "イン逃げ苦手" else [2] if kind == "②壁" else range(2, 7)
-        hit_rows, ctrl_rows = [], []
+        hit_rows, ctrl_rows, owners = [], [], {}
         for r in races:
             cm = cmap.get(r["race"])
             if not cm:
@@ -129,5 +132,16 @@ def build(ml_dir: Path, raw: Path) -> str:
                 b = pick(r, cm, c)
                 if b:
                     (hit_rows if has else ctrl_rows).append((r, b))
+                    if has:
+                        owners.setdefault(r["race"], (r, cm[c][0]))
         lines.append(f"  {_pad(kind, 14)}{_pad(desc, 30)}{_sum(hit_rows)}  （{_sum(ctrl_rows).strip()}）")
+        if owners:  # 同じレースで、ふつうの確率上位6点（アビリティを使わない今のMINAMO）
+            plain = [(r, _top(r, lambda x: True, 6)) for r, _ in owners.values()]
+            lines.append(f"  {'':14}{_pad('　同じレースのふつうの上位6点', 30)}{_sum(plain)}")
+            if kind == "苦手":  # 外さずに、その艇を含む組の確率を半分にして上位6点
+                soft = []
+                for r, boat in owners.values():
+                    w = {c: p * (SOFT if str(boat) in c.split("-") else 1.0) for c, p in r["probs"].items()}
+                    soft.append((r, sorted(w, key=w.get, reverse=True)[:6]))
+                lines.append(f"  {'':14}{_pad(f'　その艇を含む組を×{SOFT}にして上位6点', 30)}{_sum(soft)}")
     return "\n".join(lines)
