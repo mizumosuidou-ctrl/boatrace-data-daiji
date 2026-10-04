@@ -412,6 +412,8 @@ def test_pipeline_full_day(sandbox):
     assert isinstance(race["ex_pick"], list) and "ex_hit" in race["settle"]
     assert race["settle"]["ex_stake"] == 100 * len(race["ex_pick"])
     assert race["settle"]["ex_return"] == (1230 if "4-1" in race["ex_pick"] else 0)
+    # 合成オッズ配分：同じ3連単の組を、1レース100の投資でオッズの逆数に配分
+    assert race["settle"]["co_stake"] == (100 if race["ev_pick"] else 0) and "co_hit" in race["settle"]
     assert len(race["tri_all"]) == 120 and abs(sum(race["tri_all"].values()) - 1) < 1e-3 and len(race["odds_all"]) == 120
     assert all(x["ev"] >= store.EV_MIN for x in race["ev_items"])
     summ = json.loads((sandbox / "data" / date / "day.json").read_text())["venues"][0]["races"]
@@ -750,6 +752,7 @@ def test_discord_notify_once(monkeypatch):
     assert sent == []
     notify.maybe_notify(st, "20261004", "02", 9, "15:00", 5.2)
     assert len(sent) == 1 and "戸田 9R" in sent[0] and "あと5分" in sent[0] and "1-3-5（45.2倍）" in sent[0]
+    assert "合成 45.2倍・配分 1-3-5 100%" in sent[0]
     assert "2連単 1点：1-3" in sent[0] and "#/race/20261004/02/9" in sent[0]
     notify.maybe_notify(st, "20261004", "02", 9, "15:00", 3)  # 2回目は送らない
     assert len(sent) == 1
@@ -768,7 +771,8 @@ def test_live_check(tmp_path):
                 "result": {"trifecta": "1-2-3" if hit else "2-1-3", "payout": 1800, "exacta": "1-2" if hit else "2-1",
                            "exacta_payout": 500, "cancelled": False},
                 "settle": {"ev_bought": True, "ev_hit": hit, "ev_stake": 200, "ev_return": 1800 if hit else 0,
-                           "ex_bought": True, "ex_hit": not hit, "ex_stake": 100, "ex_return": 0 if hit else 500},
+                           "ex_bought": True, "ex_hit": not hit, "ex_stake": 100, "ex_return": 0 if hit else 500,
+                           "co_bought": True, "co_hit": hit, "co_stake": 100, "co_return": 1200 if hit else 0},
                 "ev_items": [{"combo": "1-2-3", "p": 0.1, "odds": 15.0, "ev": 1.5}, {"combo": "1-3-2", "p": 0.05, "odds": 30.0, "ev": 1.5}],
                 "ev_at": f"{d[:4]}-{d[4:6]}-{d[6:]}T{int(deadline[:2]):02d}:{int(deadline[3:]) - 2 if int(deadline[3:]) >= 2 else 0:02d}:00+09:00",
                 "ex_items": [{"combo": "2-1", "p": 0.3, "odds": 5.0, "ev": 1.5}]}
@@ -794,11 +798,24 @@ def test_live_check(tmp_path):
     # 資金10万円・平掛け1点100円：確率とオッズの残る4R×200円の投資、当たり2本×1,800円
     assert "確定 ÷ 決めたとき＝平均 1.20倍" in text and "残っている 4R" in text and "最後の資金    102,800円" in text
     assert "10/05    2R 的中  1R" in text
+    # 合成オッズ配分：15倍と30倍（合成10倍）。1レース100の投資で、当たれば1,800×10÷15＝1,200。2本÷5R → 480%
+    assert "3連単（合成オッズ配分" in text and "回収率 480.0%" in text and "1レース1,000円" in text
     # 決めた時刻：10:30→10:28、11:00→11:00（0分前）、11:30→11:28
     assert live_check.mins_before("20261003", "10:30", "2026-10-03T10:28:00+09:00") == 2.0
     assert live_check.mins_before("20261003", None, None) is None
     assert "買い目を決めた時刻：締切の平均" in text
     assert "まだ結果の出たレースがありません" in live_check.build(tmp_path / "none")
+
+
+def test_settle_composite_stakes():
+    """合成オッズ配分：1レース100を、決めたときのオッズの逆数で配分。当たった組の確定配当で払戻。"""
+    res = RaceResult(trifecta="1-2-3", trifecta_payout=1800)
+    items = [{"combo": "1-2-3", "odds": 15.0}, {"combo": "1-3-2", "odds": 30.0}]
+    st = store.settle({"picks": []}, res, None, ["1-2-3", "1-3-2"], None, items)
+    assert st["co_hit"] and st["co_stake"] == 100 and st["co_return"] == 1200  # 合成10倍、15倍の組に 2/3
+    assert "co_hit" not in store.settle({"picks": []}, res, None, ["1-2-3"], None, None)  # オッズが無ければ数えない
+    st = store.settle({"picks": []}, res, None, [], None, [])
+    assert st["co_bought"] is False and st["co_stake"] == 0 and st["co_return"] == 0
 
 
 def test_composite_odds_picks():

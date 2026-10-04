@@ -107,7 +107,7 @@ class Pipeline:
         ev_pick = st.get("ev_pick") or {}
         ex_pick = st.get("ex_pick") or {}
         payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev_pick.get("combos"),
-                                   ex=ex_pick.get("combos") if "ex_pick" in st else None)
+                                   ex=ex_pick.get("combos") if "ex_pick" in st else None, ev_items=ev_pick.get("items"))
         payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
         payload["ev_at"] = ev_pick.get("at")
         payload["pick_fixed"] = st.get("pick_fixed")  # 試験中の買い目を固定した時刻（それまでは仮）

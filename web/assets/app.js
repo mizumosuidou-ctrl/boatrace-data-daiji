@@ -794,10 +794,19 @@ async function renderRace(r, refresh = false) {
 const hhmm = (iso) => (iso ? iso.slice(11, 16) : "--:--");
 const PICK_KIND = {
   ev: { label: "3連単", rule: "MINAMOの確率を市場（オッズ）と合わせて補正し、期待値（確率×オッズ）が1.2以上の3連単を最大9点", check: "過去の検証（学習に使っていない約3,000レース）で回収率124%（幅101〜146%）" },
+  co: { label: "3連単 合成", rule: "3連単と同じ組を、合成オッズ配分（オッズの低い組を多めに。どれが当たっても払戻が同じ）で買う。当たれば必ず投資の合成オッズ倍（真ん中18倍）が戻り、トリガミになりません", check: "過去の検証（学習に使っていない約3,000レース）で回収率122%（幅99〜149%）" },
   ex: { label: "2連単", rule: "補正した確率を2連単にまとめ、2連単のオッズで期待値1.2以上の組を最大3点", check: "過去の検証（学習に使っていない約3,000レース）で回収率120%（幅109〜131%）" },
 };
+// 組ごとの金額で当たったときの払戻の幅（100円単位にそろえるので、組によって少しずれる）
+const payRange = (items, stakes) => {
+  const v = items.map((x, i) => Math.round(stakes[i] * x.odds));
+  const lo = Math.min(...v), hi = Math.max(...v);
+  return lo === hi ? yen(lo) : `${yen(lo)}〜${yen(hi)}`;
+};
+// 合成オッズ：1 ÷ Σ(1/オッズ)
+const compositeOf = (items) => { const inv = items.reduce((a, x) => a + (x.odds ? 1 / x.odds : NaN), 0); return inv > 0 ? 1 / inv : null; };
 // 1点の金額（ev-check「10.」：資金10万円なら、3連単は平掛け1点100円かケリー1/4で1点1,000円まで、2連単は300〜500円か3,000円まで）
-const STAKE_DEFAULT = { ev: { bank: 100000, how: "kelly", flat: 100, cap: 1000 }, ex: { bank: 100000, how: "kelly", flat: 300, cap: 3000 } };
+const STAKE_DEFAULT = { ev: { bank: 100000, how: "kelly", flat: 100, cap: 1000 }, ex: { bank: 100000, how: "kelly", flat: 300, cap: 3000 }, co: { budget: 500 } };
 function getStake(k) {
   let v = {};
   try { v = JSON.parse(localStorage.getItem(`minamo-stake-${k}`) || "{}") || {}; } catch { /* 読めなければ既定 */ }
@@ -811,25 +820,27 @@ function stakeFor(x, s) {
   const f = (x.p * x.odds - 1) / (x.odds - 1);
   return Math.round(Math.max(0, Math.min(s.bank * f * 0.25, s.bank * 0.05, s.cap)) / 100) * 100;
 }
-const pickRes = (r, k) => (k === "ev" ? r.result : r.result_ex);
-const pickPay = (r, k) => (k === "ev" ? r.payout : r.payout_ex);
+const pickRes = (r, k) => (k === "ex" ? r.result_ex : r.result);
+const pickPay = (r, k) => (k === "ex" ? r.payout_ex : r.payout);
 function pickCard(date, r, now, k = "ev", s = getStake(k)) {
   const dl = deadlineMs(date, r.deadline);
   const res = pickRes(r, k);
   const done = res && !r.cancelled;
   const items = r[`${k}_items`] || (r[`${k}_pick`] || []).map((c) => ({ combo: c }));
   const won = done && r[`${k}_hit`];
-  const stakes = items.map((x) => stakeFor(x, s));
+  const comp = k === "co" ? compositeOf(items) : null;
+  // 合成オッズ配分：1レースの金額 × 合成オッズ ÷ オッズ（100円単位）
+  const stakes = items.map((x) => (k === "co" ? (comp && x.odds ? Math.max(100, Math.round((s.budget * comp) / x.odds / 100) * 100) : null) : stakeFor(x, s)));
   const total = stakes.reduce((a, v) => a + (v || 0), 0);
   const hitStake = done ? stakes[items.findIndex((x) => x.combo === res)] : null;
   return `<a class="panel pick-card ${done ? (won ? "won" : "lost") : ""}" href="#/race/${date}/${r.v.jcd}/${r.rno}">
     <div class="pick-h"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span>${!done && !r.cancelled ? `<span class="chip fix ${r.pick_fixed ? "src-claude" : ""}">${r.pick_fixed ? "決定" : "仮"}</span>` : ""}
-      ${done ? `<span class="chip ${won ? "src-claude" : ""}">${won ? `的中 ${yen((pickPay(r, k) || 0) * BET_UNIT)}` : "はずれ"}</span>`
+      ${done ? `<span class="chip ${won ? "src-claude" : ""}">${won ? `的中 ${yen(k === "co" ? (r.co_return || 0) * BET_UNIT : (pickPay(r, k) || 0) * BET_UNIT)}` : "はずれ"}</span>`
         : r.cancelled ? `<span class="chip">中止</span>` : dl > now ? `<span class="cd" data-deadline="${dl}">${fmtCountdown(dl - now)}</span>` : `<span class="chip">締切</span>`}</div>
-    <table class="pick-t"><thead><tr><th>${PICK_KIND[k].label}</th><th>確率</th><th>オッズ</th><th>期待値</th><th>1点</th></tr></thead><tbody>
-      ${items.map((x, i) => `<tr class="${done && x.combo === res ? "on" : ""}"><td>${combo(x.combo)}</td><td>${x.p != null ? pct(x.p, 1) + "%" : "--"}</td><td>${x.odds ?? "--"}</td><td>${x.ev != null ? x.ev.toFixed(2) : "--"}</td><td>${stakes[i] == null ? "--" : yen(stakes[i])}</td></tr>`).join("")}
+    <table class="pick-t"><thead><tr><th>${PICK_KIND[k].label}</th><th>確率</th><th>オッズ</th><th>${k === "co" ? "配分" : "期待値"}</th><th>1点</th></tr></thead><tbody>
+      ${items.map((x, i) => `<tr class="${done && x.combo === res ? "on" : ""}"><td>${combo(x.combo)}</td><td>${x.p != null ? pct(x.p, 1) + "%" : "--"}</td><td>${x.odds ?? "--"}</td><td>${k === "co" ? (comp && x.odds ? Math.round((100 * comp) / x.odds) + "%" : "--") : x.ev != null ? x.ev.toFixed(2) : "--"}</td><td>${stakes[i] == null ? "--" : yen(stakes[i])}</td></tr>`).join("")}
     </tbody></table>
-    <div class="small muted">${items.length}点 · 合計 ${stakes.some((v) => v == null) ? "--" : yen(total)}${won && hitStake ? ` · <span class="nowrap">払戻 ${yen(Math.round(hitStake * (pickPay(r, k) || 0) / 100))}</span>` : ""} · オッズ ${hhmm(r[`${k}_at`])} 時点${done ? ` · <span class="nowrap">結果 ${esc(res)}</span>` : ""}</div>
+    <div class="small muted">${k === "co" && comp ? `<span class="nowrap">合成 ${comp.toFixed(1)}倍</span> · ` : ""}${items.length}点 · 合計 ${stakes.some((v) => v == null) ? "--" : yen(total)}${k === "co" && comp && !done && stakes.every((v) => v) ? ` · <span class="nowrap">当たれば ${payRange(items, stakes)}</span>` : ""}${won && hitStake ? ` · <span class="nowrap">払戻 ${yen(Math.round(hitStake * (pickPay(r, k) || 0) / 100))}</span>` : ""} · オッズ ${hhmm(r[`${k}_at`])} 時点${done ? ` · <span class="nowrap">結果 ${esc(res)}</span>` : ""}</div>
   </a>`;
 }
 const getPickKind = () => { try { return localStorage.getItem("minamo-pick-kind") || "ev"; } catch { return "ev"; } };
@@ -847,10 +858,13 @@ async function renderPicks(refresh = false, k = getPickKind()) {
   const s = getStake(k);
   const y = scrollY;
   $("#main").innerHTML = `<div class="wrap"><section class="section">
+    <div class="seg seg-big" role="group" aria-label="選び方" id="pickKind">${Object.entries(PICK_KIND).map(([kk, x]) => `<button type="button" data-kind="${kk}" class="${kk === k ? "on" : ""}">${x.label}</button>`).join("")}</div>
     <span class="eyebrow">${fmtDate(date)}（${weekday(date)}）</span>
     <h1 class="section-title" style="font-size:clamp(36px,5vw,72px)">今買う候補<small>試験中の選び方（${PICK_KIND[k].label}）：${PICK_KIND[k].rule}。無ければ見送り。${PICK_KIND[k].check}でしたが、まだ試験中です</small></h1>
-    <div class="seg" role="group" aria-label="券種" id="pickKind">${Object.entries(PICK_KIND).map(([kk, x]) => `<button type="button" data-kind="${kk}" class="${kk === k ? "on" : ""}">${x.label}</button>`).join("")}</div>
-    <form class="panel stake-form" id="stakeForm" onsubmit="return false">
+    ${k === "co" ? `<form class="panel stake-form" id="stakeForm" onsubmit="return false">
+      <label>1レースの金額<input type="number" inputmode="numeric" name="budget" min="100" step="100" value="${s.budget}">円</label>
+      <p class="small muted">組ごとの金額は「1レースの金額×合成オッズ÷オッズ」（100円単位、最低100円なので合計は少しずれます）。過去の検証（資金10万円）の目安は1レース300〜500円。この端末だけに保存します。</p>
+    </form>` : `<form class="panel stake-form" id="stakeForm" onsubmit="return false">
       <div class="seg" role="group" aria-label="1点の金額の決め方">${[["kelly", "ケリー1/4"], ["flat", "平掛け"]].map(([h, n]) => `<button type="button" data-how="${h}" class="${s.how === h ? "on" : ""}">${n}</button>`).join("")}</div>
       ${s.how === "kelly"
         ? `<label>資金<input type="number" inputmode="numeric" name="bank" min="1000" step="1000" value="${s.bank}">円</label>
@@ -860,12 +874,12 @@ async function renderPicks(refresh = false, k = getPickKind()) {
         ? `確率とオッズから1点の金額を決めます（資金×ケリーの1/4。資金の5%と上限まで、100円単位）。資金は買った結果に合わせてご自分で入れ直してください。`
         : `どの組も同じ金額で買います。`}
         過去の検証（資金10万円）の目安：${k === "ev" ? "平掛け1点100円、またはケリー1/4で1点1,000円まで" : "平掛け1点300〜500円、またはケリー1/4で1点3,000円まで"}。この端末だけに保存します。</p>
-    </form>
+    </form>`}
     <div class="calib">
       <div class="panel"><h4>今日の候補</h4><div class="big">${bought.length}<small style="font-size:.45em">R</small></div><div class="small">見送り ${skipped}R · 締切前 ${open.length}R</div></div>
       <div class="panel"><h4>的中</h4><div class="big">${hits}<small style="font-size:.45em">/${settled.length}R</small></div><div class="small">結果の出たレース</div></div>
-      <div class="panel"><h4>今日の回収率</h4><div class="big">${stake ? ((ret / stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">1点同じ金額で買った場合</div></div>
-      <div class="panel"><h4>今日の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${stake ? signedYen((ret - stake) * BET_UNIT) : "--"}</div><div class="small">1点1,000円</div></div>
+      <div class="panel"><h4>今日の回収率</h4><div class="big">${stake ? ((ret / stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">${k === "co" ? "1レース同じ金額で買った場合" : "1点同じ金額で買った場合"}</div></div>
+      <div class="panel"><h4>今日の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${stake ? signedYen((ret - stake) * BET_UNIT) : "--"}</div><div class="small">${k === "co" ? "1レース1,000円" : "1点1,000円"}</div></div>
     </div>
     <div class="section-head" style="margin-top:34px"><div><h2 class="section-title">締切前・結果待ち<small>締切の近い順。締切の約5分前のオッズで組を決めて「決定」にし、Discord に知らせます。それまでは「仮」で、オッズが変わると組が入れ替わります。成績は決定した組で数えます</small></h2></div></div>
     ${open.length ? `<div class="pick-grid">${open.map((r) => pickCard(date, r, now, k, s)).join("")}</div>` : `<div class="panel" style="padding:20px">今は締切前の候補がありません。直前情報（展示）が出たレースから順に候補を決めます。</div>`}
@@ -971,6 +985,14 @@ async function renderRecord() {
         <div class="panel rv" style="--i:3"><h4>1点1,000円の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.ev_return >= T.ev_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.ev_return - T.ev_stake) * 10)}</div><div class="small">投資 ${yen(T.ev_stake * 10)} · 払戻 ${yen(T.ev_return * 10)}</div></div>
       </div>
       ${evTrendHtml(rec.days)}` : ""}
+      ${T.co_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：3連単の合成オッズ配分<small>${PICK_KIND.co.rule}。1レースの投資は同じ（1,000円で数えます）</small></h2></div></div>
+      <div class="calib">
+        <div class="panel rv"><h4>的中率</h4><div class="big">${T.co_bought ? ((T.co_hits / T.co_bought) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.co_hits}/${T.co_bought}R（買ったレースのうち）</div></div>
+        <div class="panel rv" style="--i:1"><h4>回収率</h4><div class="big" style="color:var(--accent)">${T.co_stake ? ((T.co_return / T.co_stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">払戻 ÷ 投資</div></div>
+        <div class="panel rv" style="--i:2"><h4>買ったレース</h4><div class="big">${T.co_bought}<small style="font-size:.45em">R</small></div><div class="small">見送り ${T.co_races - T.co_bought}R</div></div>
+        <div class="panel rv" style="--i:3"><h4>1レース1,000円の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.co_return >= T.co_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.co_return - T.co_stake) * 10)}</div><div class="small">投資 ${yen(T.co_stake * 10)} · 払戻 ${yen(T.co_return * 10)}</div></div>
+      </div>
+      ${evTrendHtml(rec.days, "co", "合成オッズ配分")}` : ""}
       ${T.ex_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：2連単の買い目<small>${PICK_KIND.ex.rule}（無ければ見送り）。実際の推奨買い目は変えず、成績だけを数えています</small></h2></div></div>
       <div class="calib">
         <div class="panel rv"><h4>的中率</h4><div class="big">${T.ex_bought ? ((T.ex_hits / T.ex_bought) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.ex_hits}/${T.ex_bought}R（買ったレースのうち）</div></div>

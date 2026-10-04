@@ -24,8 +24,10 @@ from .ml.wind_table import _pad
 #   （ev-check「11.」：5分前のオッズで決めると3連単124.2%・2連単120.5%）
 RULES = {"ev": [("", "補正なし・最大6点", (94.9, None, None)), ("20261004", "補正B・最大6点", (118.1, 98.8, 137.5)),
                 ("20261005", "補正B・最大9点・5分前に固定", (124.2, 104.3, 147.4))],
-         "ex": [("", "補正B・最大3点・直前", (120.0, 109.4, 131.0)), ("20261005", "補正B・最大3点・5分前に固定", (120.5, 110.2, 132.0))]}
-LABEL = {"ev": "3連単（期待値1.2以上）", "ex": "2連単（期待値1.2以上）"}
+         "ex": [("", "補正B・最大3点・直前", (120.0, 109.4, 131.0)), ("20261005", "補正B・最大3点・5分前に固定", (120.5, 110.2, 132.0))],
+         # 組は3連単と同じ。金額を合成オッズ配分に（ev-check「12-2.」：121.9%・幅98.7〜149.3%）
+         "co": [("", "3連単と同じ組・合成オッズ配分", (121.9, 98.7, 149.3))]}
+LABEL = {"ev": "3連単（期待値1.2以上）", "ex": "2連単（期待値1.2以上）", "co": "3連単（合成オッズ配分。1レースの投資は同じ）"}
 # ev-check「10.」の目安：資金10万円・平掛けの1点・ケリー1/4の1点の上限
 PLANS = {"ev": (100, 1_000), "ex": (300, 3_000)}
 Z90 = 1.645
@@ -34,20 +36,20 @@ Z90 = 1.645
 def rows(data_dir: Path, k: str) -> list[dict]:
     """試験中の買い目を買って結果の出たレースを、締切順に。stake・ret は1点100円で数えた円。
     レースごとのファイル（日付/場-R.json）の settle を読む（day.json の一覧は、古い日だと払戻の欄が無いことがある）。"""
-    out = []
+    out, src = [], "ev" if k == "co" else k  # 合成オッズ配分の組・オッズ・時刻は3連単のもの
     for path in sorted(Path(data_dir).glob("*/[0-9][0-9]-[0-9][0-9].json")):
         race = store.read_json(path) or {}
         st, res = race.get("settle") or {}, race.get("result") or {}
         if race.get("demo") or res.get("cancelled") or not st.get(f"{k}_bought") or st.get(f"{k}_stake") is None:
             continue
-        date, combo = race.get("date") or path.parent.name, res.get("trifecta" if k == "ev" else "exacta")
+        date, combo = race.get("date") or path.parent.name, res.get("exacta" if k == "ex" else "trifecta")
         if not combo:
             continue
         out.append({"key": (date, race.get("deadline") or "99:99", race.get("jcd", ""), race.get("rno", 0)),
                     "date": date, "label": f"{date[4:6]}/{date[6:]} {(race.get('venue') or {}).get('name', '')}{race.get('rno', '')}R",
                     "stake": float(st[f"{k}_stake"]), "ret": float(st.get(f"{k}_return") or 0), "hit": bool(st.get(f"{k}_hit")),
-                    "result": combo, "pay": (res.get("payout" if k == "ev" else "exacta_payout") or 0),
-                    "items": race.get(f"{k}_items") or [], "mins": mins_before(date, race.get("deadline"), race.get(f"{k}_at"))})
+                    "result": combo, "pay": (res.get("exacta_payout" if k == "ex" else "payout") or 0),
+                    "items": race.get(f"{src}_items") or [], "mins": mins_before(date, race.get("deadline"), race.get(f"{src}_at"))})
     out.sort(key=lambda x: x["key"])
     return out
 
@@ -112,8 +114,9 @@ def section(rs: list[dict], k: str) -> list[str]:
     st, rt = np.array([r["stake"] for r in rs]), np.array([r["ret"] for r in rs])
     roi, lo, hi, over = boot(st, rt)
     hits = sum(r["hit"] for r in rs)
-    lines.append(f"  {rs[0]['date']}〜{rs[-1]['date']}  {len(rs):,}R  平均{st.sum() / 100 / len(rs):.1f}点  的中 {hits}R（{100 * hits / len(rs):.1f}%）"
-                 f"  投資 {st.sum() * 10:,.0f}円 → 払戻 {rt.sum() * 10:,.0f}円（1点1,000円）")
+    pts = np.mean([len(r["items"]) if k == "co" else r["stake"] / 100 for r in rs])
+    lines.append(f"  {rs[0]['date']}〜{rs[-1]['date']}  {len(rs):,}R  平均{pts:.1f}点  的中 {hits}R（{100 * hits / len(rs):.1f}%）"
+                 f"  投資 {st.sum() * 10:,.0f}円 → 払戻 {rt.sum() * 10:,.0f}円（{'1レース' if k == 'co' else '1点'}1,000円）")
     lines.append(f"  通算の回収率 {roi:.1f}%  幅 {lo:.1f}〜{hi:.1f}%  100%超え {over:.1f}%")
     lines.append("  選び方ごと（過去の検証は、その選び方で学習に使っていない期間を買ったときの回収率）")
     rules = RULES[k]
@@ -147,9 +150,11 @@ def section(rs: list[dict], k: str) -> list[str]:
     moves = [(r["pay"] / 100) / x["odds"] for r in rs if r["hit"] for x in r["items"] if x["combo"] == r["result"] and x.get("odds")]
     if moves:
         lines.append(f"  当たった組のオッズ：確定 ÷ 決めたとき＝平均 {np.mean(moves):.2f}倍（{len(moves)}本。1より小さいと、締切までに下がっている）")
-    # 資金10万円から
+    # 資金10万円から（合成オッズ配分は、1レースの金額が決まっているので出さない）
     from .ml.ev_check import _simulate
 
+    if k not in PLANS:
+        return lines + daily(rs)
     sims = sim_rows(rs)
     n_items = sum(1 for s in sims if s)
     flat, cap = PLANS[k]
@@ -157,8 +162,12 @@ def section(rs: list[dict], k: str) -> list[str]:
     for name, how, kw in ((f"平掛け 1点{flat:,}円", "flat", {"unit": flat}), (f"ケリー1/4 1点{cap:,}円まで", "kelly", {"cap": cap})):
         r = _simulate([s for s in sims if s], how, **kw)
         lines.append(f"    {_pad(name, 24)}最後の資金 {r['bank']:>10,.0f}円  一番少ないとき {r['low']:>9,.0f}円  一番減ったとき −{r['dd']:4.1f}%")
-    # 日ごと
-    lines.append("  日ごと（1点1,000円）")
+    return lines + daily(rs)
+
+
+def daily(rs: list[dict]) -> list[str]:
+    """日ごとの成績と通算（1点1,000円。合成オッズ配分は1レース1,000円）。"""
+    lines = ["  日ごと（1点1,000円）"]
     cum_s = cum_r = 0.0
     for d in sorted({r["date"] for r in rs}):
         part = [r for r in rs if r["date"] == d]
@@ -171,6 +180,6 @@ def section(rs: list[dict], k: str) -> list[str]:
 
 def build(data_dir: Path = store.DATA_DIR) -> str:
     lines = ["実戦の成績（試験中の買い目。締切前に決めた組を、その時のオッズで。幅はレースを入れ替えて1000回数え直した下5%〜上95%）"]
-    for k in ("ev", "ex"):
+    for k in ("ev", "co", "ex"):
         lines += section(rows(data_dir, k), k)
     return "\n".join(lines)

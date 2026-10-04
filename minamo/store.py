@@ -157,7 +157,7 @@ def co_picks(trifecta: list, odds: Optional[dict[str, float]], th: float = CO_MI
 
 
 def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Optional[list] = None,
-           ex: Optional[list] = None) -> dict:
+           ex: Optional[list] = None, ev_items: Optional[list] = None) -> dict:
     picks = [p["combo"] for p in ai.get("picks", [])]
     order = result.order
     hit = result.trifecta if result.trifecta in picks else None
@@ -187,6 +187,15 @@ def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Option
         out["ev_hit"] = result.trifecta in ev
         out["ev_stake"] = 100 * len(ev)
         out["ev_return"] = payout if result.trifecta in ev else 0
+    # 試験中：同じ3連単の組を合成オッズ配分（どれが当たっても払戻が同じ）で買う。1レースの投資を100として、
+    # 組ごとに 100×合成オッズ÷オッズ（決めたときのオッズ）。払戻は確定の配当
+    odds_at = {x["combo"]: x.get("odds") for x in ev_items or []}
+    if ev is not None and all(odds_at.get(c) for c in ev):
+        comp = composite([odds_at[c] for c in ev])
+        out["co_bought"] = bool(ev)
+        out["co_hit"] = result.trifecta in ev
+        out["co_stake"] = 100 if ev else 0
+        out["co_return"] = round(payout * comp / odds_at[result.trifecta]) if result.trifecta in ev else 0
     # 試験中：2連単の買い目
     if ex is not None and result.exacta:
         out["ex_bought"] = bool(ex)
@@ -216,6 +225,7 @@ def build_race(
     history: Optional[list] = None,
     ev: Optional[list] = None,
     ex: Optional[list] = None,
+    ev_items: Optional[list] = None,
 ) -> dict:
     be = {b.boat: b for b in (before.entries if before else [])}
     rt = (getattr(card, "racetime", None) or {}).get("racers") or {}
@@ -298,7 +308,7 @@ def build_race(
             "rows": [asdict(r) for r in result.rows],
         }
         if not result.cancelled and result.trifecta:
-            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex)
+            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items)
     return payload
 
 
@@ -344,6 +354,14 @@ def race_summary(race: dict) -> dict:
         "ev_items": race.get("ev_items"),
         "ev_at": race.get("ev_at"),
         "pick_fixed": race.get("pick_fixed"),
+        # 合成オッズ配分（組は3連単の試し買いと同じ）
+        "co_bought": st.get("co_bought"),
+        "co_hit": st.get("co_hit"),
+        "co_stake": st.get("co_stake"),
+        "co_return": st.get("co_return"),
+        "co_pick": race.get("ev_pick"),
+        "co_items": race.get("ev_items"),
+        "co_at": race.get("ev_at"),
         "ex_bought": st.get("ex_bought"),
         "ex_hit": st.get("ex_hit"),
         "ex_stake": st.get("ex_stake"),
@@ -417,7 +435,7 @@ def streak_rows(days: list[dict], ev: bool = False) -> list[dict]:
 
 def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
     venues = []
-    totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0, "ml_races": 0, "ml_fav_hits": 0, "shadow_fav_hits": 0, "alt_races": 0, "alt_hits": 0, "alt_stake": 0, "alt_return": 0, "method_hits": 0, "method_stake": 0, "method_return": 0, "ev_races": 0, "ev_bought": 0, "ev_hits": 0, "ev_stake": 0, "ev_return": 0, "ex_races": 0, "ex_bought": 0, "ex_hits": 0, "ex_stake": 0, "ex_return": 0}
+    totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0, "ml_races": 0, "ml_fav_hits": 0, "shadow_fav_hits": 0, "alt_races": 0, "alt_hits": 0, "alt_stake": 0, "alt_return": 0, "method_hits": 0, "method_stake": 0, "method_return": 0, "ev_races": 0, "ev_bought": 0, "ev_hits": 0, "ev_stake": 0, "ev_return": 0, "ex_races": 0, "ex_bought": 0, "ex_hits": 0, "ex_stake": 0, "ex_return": 0, "co_races": 0, "co_bought": 0, "co_hits": 0, "co_stake": 0, "co_return": 0}
     for vd in sorted(vdays, key=lambda v: v.jcd):
         races = []
         for rno in range(1, 13):
@@ -452,6 +470,12 @@ def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
                     totals["ev_hits"] += int(st["ev_hit"])
                     totals["ev_stake"] += st["ev_stake"]
                     totals["ev_return"] += st["ev_return"]
+                if "co_hit" in st:
+                    totals["co_races"] += 1
+                    totals["co_bought"] += int(st["co_bought"])
+                    totals["co_hits"] += int(st["co_hit"])
+                    totals["co_stake"] += st["co_stake"]
+                    totals["co_return"] += st["co_return"]
                 if "ex_hit" in st:
                     totals["ex_races"] += 1
                     totals["ex_bought"] += int(st["ex_bought"])
@@ -482,7 +506,8 @@ def update_record(date: str, totals: dict, demo: bool) -> None:
     days = days[-120:]
     agg = {k: sum(d.get(k, 0) for d in days) for k in ("races", "settled", "hits", "honmei_hits", "stake", "return", "ml_races", "ml_fav_hits", "shadow_fav_hits", "alt_races", "alt_hits", "alt_stake", "alt_return", "method_hits", "method_stake", "method_return",
                                                     "ev_races", "ev_bought", "ev_hits", "ev_stake", "ev_return",
-                                                    "ex_races", "ex_bought", "ex_hits", "ex_stake", "ex_return")}
+                                                    "ex_races", "ex_bought", "ex_hits", "ex_stake", "ex_return",
+                                                    "co_races", "co_bought", "co_hits", "co_stake", "co_return")}
     day_files = [read_json(DATA_DIR / d["date"] / "day.json") for d in days]
     day_files = [x for x in day_files if x]
     streaks = {"picks": losing_streaks(streak_rows(day_files)), "ev": losing_streaks(streak_rows(day_files, ev=True))}

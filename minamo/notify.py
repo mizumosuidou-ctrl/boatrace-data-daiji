@@ -13,6 +13,7 @@ from typing import Optional
 
 import requests
 
+from .store import composite
 from .venues import venue
 
 log = logging.getLogger(__name__)
@@ -42,7 +43,12 @@ def pick_message(date: str, jcd: str, rno: int, deadline: str, mins_left: float,
     if exa:
         lines.append(f"2連単 {len(exa)}点：{_fmt((ex or {}).get('items'), exa)}")
     if tri:
-        lines.append(f"3連単 {len(tri)}点：{_fmt((ev or {}).get('items'), tri)}")
+        items = (ev or {}).get("items")
+        lines.append(f"3連単 {len(tri)}点：{_fmt(items, tri)}")
+        odds = [x.get("odds") for x in items or []]
+        if odds and all(odds):  # 合成オッズ配分（どれが当たっても払戻が同じ）
+            comp = composite(odds)
+            lines.append(f"　合成 {comp:.1f}倍・配分 " + " ".join(f"{x['combo']} {100 * comp / x['odds']:.0f}%" for x in items))
     lines.append(f"{SITE_URL}#/race/{date}/{jcd}/{rno}")
     return "\n".join(lines)
 
