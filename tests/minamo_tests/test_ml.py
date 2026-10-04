@@ -852,6 +852,14 @@ def test_ev_check_report(tmp_path):
     # 合成オッズ配分：10倍と30倍（合成7.5倍）で10倍が当たる → 払戻÷投資は7.5。平掛けなら (10+0)/2=5
     (ret, pts, comp, flat), = ev_check.ev_dutch([[(0.2, 10.0, True, 10.0), (0.05, 30.0, False, 0.0)]])
     assert abs(ret - 7.5) < 1e-9 and pts == 2 and abs(comp - 7.5) < 1e-9 and abs(flat - 5.0) < 1e-9
+    # 13. 当てに行く買い方：見送りの分析とマーチンゲール
+    assert "13. 当てに行く買い方" in text and "13-1. 見送るレースの分析" in text and "13-2. マーチンゲール" in text
+    miss, win2 = {"hit": False, "ret": 0.0}, {"hit": True, "ret": 2.0}
+    m = ev_check.martingale([miss, miss, win2])  # 1万・2万・4万 → 4万×2＝8万が戻り、＋1万
+    assert m["net"] == 10_000 and m["wins"] == 1 and m["busts"] == 0 and m["short"] == 0
+    m = ev_check.martingale([miss] * 5 + [{"hit": True, "ret": 1.8}])  # 5連敗で−31万、振り出しの1万で1.8倍
+    assert m["busts"] == 1 and m["net"] == -310_000 + 8_000 and m["short"] == 0 and m["dd"] == 310_000
+    assert ev_check.martingale([miss, {"hit": True, "ret": 1.4}])["short"] == 1  # 2万×1.4＝2.8万 < 3万
     # 11. 何分前のオッズで決めるか：ある時刻（15分前・5分前）だけ。当たった組の確定÷決めたときのオッズ
     assert "11. 締切の何分前のオッズで" in text and "15分前" in text and "10分前  回収率" not in text
     roi, lo, hi, n_hit, move = ev_check._rows_boot([[(0.2, 10.0, True, 8.0), (0.1, 20.0, False, 0.0)], [(0.2, 10.0, False, 0.0)]])
