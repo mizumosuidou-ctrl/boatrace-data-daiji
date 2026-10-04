@@ -261,6 +261,7 @@ def build_race(
             "exacta": result.exacta,
             "exacta_payout": result.exacta_payout,
             "exacta_popularity": result.exacta_popularity,
+            "payouts": result.payouts,  # 3連複・2連複・拡連複・単勝・複勝の払戻と人気
             "kimarite": result.kimarite,
             "cancelled": result.cancelled,
             "rows": [asdict(r) for r in result.rows],

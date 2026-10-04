@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 
 STATE_DIR = Path(os.environ.get("MINAMO_STATE_DIR", Path(__file__).resolve().parent.parent / "var" / "state"))
 PRE_WINDOW = timedelta(minutes=int(os.environ.get("MINAMO_PRE_WINDOW_MIN", "30")))
+MORE_ODDS_MIN = float(os.environ.get("MINAMO_MORE_ODDS_MIN", "12"))  # ほかの券種のオッズを取り始める、締切の何分前か
 BEFORE_REFRESH = timedelta(minutes=int(os.environ.get("MINAMO_BEFORE_REFRESH_MIN", "4")))
 RESULT_DELAY = timedelta(minutes=int(os.environ.get("MINAMO_RESULT_DELAY_MIN", "6")))
 # 結果の取り込み：最初の20回は毎分、そのあとは5分おきに、締切から12時間まで取り直す（あきらめない）
@@ -215,10 +216,12 @@ class Pipeline:
     def _refresh(self, date: str, vd: VenueDay, rno: int, st: dict, now: datetime) -> None:
         before = parsers.parse_beforeinfo(self.fetcher.beforeinfo(date, vd.jcd, rno))
         odds = parsers.parse_odds3t(self.fetcher.odds3t(date, vd.jcd, rno))
-        odds2 = self._odds2(date, vd.jcd, rno)
+        odds2, quinella = self._odds2(date, vd.jcd, rno, with_quinella=True)
         card = _card_from(st["card"])
         card.day_label = vd.day_label
-        self._log_odds(date, vd.jcd, rno, card.deadline, now, "pre", odds, odds2)
+        # ほかの券種（単勝・複勝・2連複・拡連複・3連複）は、締切の MORE_ODDS_MIN 分前から記録する（あとで券種ごとに検証するため）
+        more = self._more_odds(date, vd.jcd, rno, quinella) if self._mins_left(date, card.deadline, now) <= MORE_ODDS_MIN else None
+        self._log_odds(date, vd.jcd, rno, card.deadline, now, "pre", odds, odds2, more)
         new_orig = before.complete and self._original(date, vd.jcd, rno, st, card, now)
         for b in before.entries:
             o = (st.get("orig") or {}).get(str(b.boat)) or {}
@@ -267,16 +270,44 @@ class Pipeline:
         except ImportError:
             return None
 
-    def _odds2(self, date: str, jcd: str, rno: int) -> dict[str, float]:
-        """2連単オッズ。取れなくても予想は続ける。"""
+    def _odds2(self, date: str, jcd: str, rno: int, with_quinella: bool = False):
+        """2連単オッズ（with_quinella なら2連複も）。取れなくても予想は続ける。"""
         try:
-            return parsers.parse_odds2t(self.fetcher.odds2tf(date, jcd, rno))
+            html = self.fetcher.odds2tf(date, jcd, rno)
         except requests.RequestException as exc:
             log.warning("odds2tf %s %s %dR: %s", date, jcd, rno, exc)
-            return {}
+            return ({}, {}) if with_quinella else {}
+        t2 = parsers.parse_odds2t(html)
+        return (t2, parsers.parse_odds2f(html)) if with_quinella else t2
+
+    @staticmethod
+    def _mins_left(date: str, deadline: Optional[str], now: datetime) -> float:
+        if not deadline:
+            return float("inf")
+        hh, mm = map(int, deadline.split(":"))
+        dl = datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST)
+        return (dl - now).total_seconds() / 60
+
+    def _more_odds(self, date: str, jcd: str, rno: int, quinella: dict) -> dict:
+        """単勝・複勝・2連複・拡連複・3連複のオッズ。取れなかった券種は入れない。"""
+        out = {"quinella": quinella} if quinella else {}
+        for page, parse in (("oddstf", parsers.parse_oddstf), ("oddsk", parsers.parse_oddsk), ("odds3f", parsers.parse_odds3f)):
+            fetch = getattr(self.fetcher, page, None)
+            if fetch is None:
+                continue
+            try:
+                got = parse(fetch(date, jcd, rno))
+            except requests.RequestException as exc:
+                log.warning("%s %s %s %dR: %s", page, date, jcd, rno, exc)
+                continue
+            if page == "oddstf":
+                out.update({k: v for k, v in got.items() if v})
+            elif got:
+                out["wide" if page == "oddsk" else "trio"] = got
+        return out
 
     def _log_odds(self, date: str, jcd: str, rno: int, deadline: Optional[str], now: datetime, kind: str,
-                  t3: dict, t2: dict) -> None:
+                  t3: dict, t2: dict, more: Optional[dict] = None) -> None:
         """オッズ履歴を var/state/odds/{date}.jsonl に1行ずつ足す（締切まで何分か付き）。展開単位の補正を作るための材料。"""
         if not t3 and not t2:
             return
@@ -286,6 +317,8 @@ class Pipeline:
             dl = datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST)
             mins = round((dl - now).total_seconds() / 60, 1)
         row = {"race": f"{date}-{jcd}-{rno:02d}", "at": now.isoformat(timespec="seconds"), "min": mins, "kind": kind, "t2": t2, "t3": t3}
+        if more:
+            row["more"] = more  # 単勝 win・複勝 place（下限, 上限）・2連複 quinella・拡連複 wide（下限, 上限）・3連複 trio
         path = STATE_DIR / "odds" / f"{date}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:

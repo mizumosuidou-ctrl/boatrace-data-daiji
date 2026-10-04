@@ -64,5 +64,17 @@ class Fetcher:
         """2連単・2連複オッズ（2連単が先に並ぶ）。"""
         return self.get("odds2tf", rno=rno, jcd=jcd, hd=hd)
 
+    def oddstf(self, hd: str, jcd: str, rno: int) -> str:
+        """単勝・複勝オッズ。"""
+        return self.get("oddstf", rno=rno, jcd=jcd, hd=hd)
+
+    def oddsk(self, hd: str, jcd: str, rno: int) -> str:
+        """拡連複オッズ。"""
+        return self.get("oddsk", rno=rno, jcd=jcd, hd=hd)
+
+    def odds3f(self, hd: str, jcd: str, rno: int) -> str:
+        """3連複オッズ。"""
+        return self.get("odds3f", rno=rno, jcd=jcd, hd=hd)
+
     def result(self, hd: str, jcd: str, rno: int) -> str:
         return self.get("raceresult", rno=rno, jcd=jcd, hd=hd)

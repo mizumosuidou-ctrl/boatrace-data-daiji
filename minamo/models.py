@@ -101,6 +101,8 @@ class RaceResult:
     exacta: str = ""
     exacta_payout: Optional[int] = None
     exacta_popularity: Optional[int] = None
+    # ほかの券種の払戻（100円あたり）。{"win": {"1": 380}, "place": {...}, "quinella": {"1=5": 1000}, "wide": {...}, "trio": {"1=2=5": 680}}
+    payouts: dict = field(default_factory=dict)
     kimarite: str = ""
     cancelled: bool = False
 
