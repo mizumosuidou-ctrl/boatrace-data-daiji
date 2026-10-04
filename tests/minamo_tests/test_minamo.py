@@ -348,6 +348,8 @@ def test_pipeline_full_day(sandbox):
     assert race["settle"]["ev_stake"] == 100 * len(race["ev_pick"])
     # 「今買う候補」ページ用：決めたときの確率・オッズ・期待値と、一覧への写し
     assert [x["combo"] for x in race["ev_items"]] == race["ev_pick"] and race["ev_at"]
+    # 自分の予想と比べる欄：120通りの確率（合計1）とオッズ
+    assert len(race["tri_all"]) == 120 and abs(sum(race["tri_all"].values()) - 1) < 1e-3 and len(race["odds_all"]) == 120
     assert all(x["ev"] >= store.EV_MIN for x in race["ev_items"])
     summ = json.loads((sandbox / "data" / date / "day.json").read_text())["venues"][0]["races"]
     assert any(r.get("ev_pick") == race["ev_pick"] and "ev_return" in r for r in summ)

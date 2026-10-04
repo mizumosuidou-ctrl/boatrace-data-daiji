@@ -3,6 +3,7 @@
    ========================================================= */
 
 :root {
+  --series-ev: #1baf7a; --series-pk: #d95926;
   --bg: #06080d;
   --bg-2: #0b1019;
   --panel: rgba(14, 20, 31, 0.72);
@@ -46,6 +47,7 @@
 }
 
 :root[data-theme="light"] {
+  --series-ev: #008f72; --series-pk: #eb6834;
   --bg: #eef2f5;
   --bg-2: #e3e9ee;
   --panel: rgba(255, 255, 255, 0.78);
@@ -72,6 +74,7 @@
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
+    --series-ev: #008f72; --series-pk: #eb6834;
     --bg: #eef2f5;
     --bg-2: #e3e9ee;
     --panel: rgba(255, 255, 255, 0.78);
@@ -767,3 +770,35 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .pick-t th { font-family: var(--f-mono); font-size: 10px; color: var(--muted); font-weight: 500; }
 .pick-t td { font-family: var(--f-mono); }
 .pick-t tr.on td { background: color-mix(in srgb, var(--hit) 16%, transparent); }
+
+/* 回収率の推移：試験中（実線）と推奨買い目（破線）。色は検証済みの2色＋線の形でも見分ける */
+.trend svg { height: auto; max-height: 300px; display: block; }
+.trend .ln { fill: none; stroke-width: 2; }
+.trend .ln.ev { stroke: var(--series-ev); }
+.trend .ln.pk { stroke: var(--series-pk); stroke-dasharray: 6 4; }
+.trend .pt.ev { fill: var(--series-ev); stroke: var(--bg); stroke-width: 2; }
+.trend .ref100 { stroke: var(--muted); stroke-dasharray: 3 3; }
+.trend .hit { fill: transparent; }
+.trend .hit:hover { fill: color-mix(in srgb, var(--text) 6%, transparent); }
+.trend text.lab { fill: var(--text-2); font-size: 11px; }
+.trend text.lab.strong { fill: var(--text); font-weight: 700; }
+.trend .legend { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); flex-wrap: wrap; }
+.trend .key { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--series-ev); margin-left: 6px; }
+.trend .key.pk { border-top: 2px dashed var(--series-pk); }
+.trend details { margin-top: 8px; }
+
+/* あなたの予想と比べる */
+.my-panel { padding: 16px 18px; }
+.my-pick { display: grid; gap: 8px; }
+.my-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.my-lab { width: 40px; font-weight: 700; font-size: 13px; }
+.my-b { background: transparent; border: 1px solid var(--line-2); border-radius: 10px; padding: 6px 8px; cursor: pointer; opacity: .45; }
+.my-b.on { opacity: 1; border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.my-clear { justify-self: start; padding: 6px 14px; font-size: 12px; }
+.my-sum { margin-top: 14px; }
+.my-t tr.on td { background: color-mix(in srgb, var(--hit) 16%, transparent); }
+.my-sum { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.my-sum .panel { padding: 12px 14px; min-width: 0; }
+.my-sum h4 { font-size: 14px; }
+.my-sum .big { font-size: 30px; }
+@media (max-width: 720px) { .my-sum { grid-template-columns: repeat(2, minmax(0, 1fr)); } .my-b { padding: 5px 6px; } .my-panel { padding: 14px 12px; } }
