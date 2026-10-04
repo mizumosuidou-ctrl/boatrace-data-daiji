@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -80,6 +81,24 @@ DAY_FEATURES = ["day_first", "day_last"]
 #   shape_gap_max：隣のコースより外が速い差の一番大きいもの、shape_gap_at：その場所（k なら k と k+1 の間）、
 #   shape_gap_rel：自分のコース − 差の外側のコース（0 なら自分が差の外側＝内より速い艇、−1 なら差のすぐ内側）
 SHAPE_FEATURES = ["shape_c1_top", "shape_key", "shape_gap_max", "shape_gap_at", "shape_gap_rel"]
+# 決まり手（選手×進入コース、直近1年・前日まで。1着の艇の決まり手から）
+#   1コース：km_nige 逃げ・km_sasare 差され・km_makurare まくられ・km_makusasare まくられ差し、2コース：km_nogashi 逃し（①に逃げられた）、
+#   2〜6コース：km_sashi 差し・km_makuri まくり・km_makurisashi まくり差し（その決まり手で1着）。
+#   race_c1_*：そのレースの1コースの艇の率（ほかの艇にも同じ値。差されやすい①に、差しの上手な②、のように組み合わせるため）
+KIMARITE_FEATURES = ["km_nige", "km_sasare", "km_makurare", "km_makusasare", "km_nogashi", "km_sashi", "km_makuri", "km_makurisashi",
+                     "race_c1_nige", "race_c1_sasare", "race_c1_makurare", "race_c1_makusasare"]
+KIMARITE_WINDOW = 365
+KIMARITE_SMOOTH = 10.0
+KIMARITE_FILES = ("kimarite.csv", "kimarite_backfill.csv", "odds_results.csv")
+# 数える組：（列, 自分が1着か, 決まり手, 1着の艇のコースが1か）。None は問わない
+_KM_COUNTS = {"km_c_nige": (True, "逃げ", None), "km_c_sashi": (True, "差し", None), "km_c_makuri": (True, "まくり", None),
+              "km_c_makusa": (True, "まくり差し", None), "km_c_lsashi": (False, "差し", None), "km_c_lmakuri": (False, "まくり", None),
+              "km_c_lmakusa": (False, "まくり差し", None), "km_c_inesc": (False, "逃げ", True)}
+# 材料 → （数える列, 使うコース）
+_KM_RATES = {"km_nige": ("km_c_nige", (1,)), "km_sasare": ("km_c_lsashi", (1,)), "km_makurare": ("km_c_lmakuri", (1,)),
+             "km_makusasare": ("km_c_lmakusa", (1,)), "km_nogashi": ("km_c_inesc", (2,)),
+             "km_sashi": ("km_c_sashi", (2, 3, 4, 5, 6)), "km_makuri": ("km_c_makuri", (2, 3, 4, 5, 6)),
+             "km_makurisashi": ("km_c_makusa", (2, 3, 4, 5, 6))}
 WALL_SMOOTH = 10.0
 
 # 画面の「要因」表示用のまとまり
@@ -87,7 +106,7 @@ FACTOR_GROUPS = {
     "course": ["course", "venue_i", "course_winrate_prior", "race_no", "day_first", "day_last"],
     "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order", "sr_90", "sr_c_f", "pred_start_order_f"],
     "tenkai": ["sr_gap_inner", "sr_gap_c1", "sr_gap_outer", "sr_inner_slowest_gap", "n_inner_slower",
-               ] + SHAPE_FEATURES,
+               ] + SHAPE_FEATURES + KIMARITE_FEATURES,
     "skill": ["grade_o", "win_c", "top2_c", "top3_c", "n_all", "win_all", "top2_all"],
     "motor": ["motor_2", "motor_2_rel", "n_m", "motor_res", "motor_kp"],
     "local": ["n_v", "win_v", "top2_v"],
@@ -641,6 +660,86 @@ def wall_stats(facts: pd.DataFrame, next_date: Optional[pd.Timestamp] = None) ->
     return asof(daily, ["toban", "course_i"], ["w_n", "w_c1"], None, next_date)
 
 
+def norm_kimarite(text) -> Optional[str]:
+    """決まり手の書き方をそろえる（捲り→まくり、英語の表記も）。分からなければ None。"""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    t = unicodedata.normalize("NFKC", text).replace("捲", "まく").replace("まくりり", "まくり").strip().lower()
+    for keys, name in ((("まくり差し", "まくりざし", "makurizashi", "makurisashi", "makuri_sashi"), "まくり差し"),
+                       (("まくり", "makuri"), "まくり"), (("差し", "sashi"), "差し"), (("逃げ", "nige"), "逃げ"),
+                       (("抜き", "nuki"), "抜き"), (("恵まれ", "megumare"), "恵まれ")):
+        if any(k in t for k in keys):
+            return name
+    return None
+
+
+def load_kimarite(raw_dir: Path) -> pd.Series:
+    """race_id → 決まり手（データベースの race_summaries・公式サイトから足した分・オッズのあるレースの結果をまとめる）。"""
+    parts = []
+    for name in KIMARITE_FILES:
+        p = Path(raw_dir) / name
+        if not p.exists():
+            continue
+        k = pd.read_csv(p, dtype=str)
+        if "winning_method" not in k or k.empty:
+            continue
+        k["race_date"] = k["race_date"].str.replace("-", "", regex=False).str[:8]
+        k["venue"] = k["venue"].str.zfill(2)
+        k["race_no"] = _num(k["race_no"])
+        k = k.dropna(subset=["race_date", "venue", "race_no"])
+        k["kind"] = k["winning_method"].map(norm_kimarite)
+        parts.append(k.dropna(subset=["kind"]).assign(race_id=lambda d: _race_id(d))[["race_id", "kind"]])
+    if not parts:
+        return pd.Series(dtype=str)
+    k = pd.concat(parts, ignore_index=True).drop_duplicates("race_id", keep="first")
+    return k.set_index("race_id")["kind"]
+
+
+def kimarite_stats(facts: pd.DataFrame, kim: pd.Series, next_date: Optional[pd.Timestamp] = None) -> tuple[pd.DataFrame, dict]:
+    """選手×コースの決まり手の数（直近1年・前日まで）と、コースごとのふつうの率（平滑化の基準）。"""
+    f = facts.loc[facts["course"].between(1, 6) & facts["race_id"].isin(kim.index), ["race_id", "toban", "course", "date", "finish"]].copy()
+    if f.empty:
+        return pd.DataFrame(), {}
+    f["course_i"] = f["course"].astype(int)
+    f["kind"] = f["race_id"].map(kim)
+    wc = f.loc[f["finish"] == 1].drop_duplicates("race_id").set_index("race_id")["course_i"]
+    f["wc1"] = f["race_id"].map(wc) == 1
+    me = f["finish"] == 1
+    f["km_n"] = 1.0
+    for col, (mine, kind, c1) in _KM_COUNTS.items():
+        m = (me if mine else ~me) & (f["kind"] == kind)
+        if c1:
+            m &= f["wc1"]
+        f[col] = m.astype(float)
+    cols = ["km_n"] + list(_KM_COUNTS)
+    pri = {}
+    for c, g in f.groupby("course_i"):
+        for col in _KM_COUNTS:
+            pri[f"{int(c)}-{col}"] = round(float(g[col].mean()), 4)
+    daily = f.groupby(["toban", "course_i", "date"], as_index=False)[cols].sum()
+    return asof(daily, ["toban", "course_i"], cols, KIMARITE_WINDOW, next_date), pri
+
+
+def apply_kimarite(rows: pd.DataFrame, table: Optional[pd.DataFrame], priors: dict) -> pd.DataFrame:
+    """決まり手の率（平滑化）と、画面に出す生の率。表が無ければ空。"""
+    if table is not None and len(table):
+        rows = rows.merge(table, on=["toban", "course_i", "date"], how="left")
+    pri = priors.get("kimarite") or {}
+    n = rows["km_n"].fillna(0) if "km_n" in rows else pd.Series(0.0, index=rows.index)
+    for feat, (col, courses) in _KM_RATES.items():
+        on = rows["course_i"].isin(courses)
+        if col not in rows or not pri:
+            rows[feat] = np.nan
+            rows[f"disp_{feat}"] = np.nan
+            continue
+        p0 = rows["course_i"].map(lambda c, col=col: pri.get(f"{int(c)}-{col}", np.nan)).astype(float)
+        k = rows[col].fillna(0)
+        rows[feat] = ((k + KIMARITE_SMOOTH * p0) / (n + KIMARITE_SMOOTH)).where(on)
+        rows[f"disp_{feat}"] = (k / n.where(n > 0)).where(on)
+    rows["disp_km_n"] = n
+    return rows.drop(columns=[c for c in ["km_n"] + list(_KM_COUNTS) if c in rows])
+
+
 def apply_new(rows: pd.DataFrame, tables: dict[str, pd.DataFrame], priors: dict) -> pd.DataFrame:
     """修正7の特徴量（F持ちのスタートのずれ・壁）を付ける。apply_stats の後に呼ぶ。表が無ければ空のまま。"""
     if "fhold" in tables:
@@ -662,7 +761,8 @@ def apply_new(rows: pd.DataFrame, tables: dict[str, pd.DataFrame], priors: dict)
     rows["disp_wall"] = (z("w_c1") / z("w_n").where(z("w_n") > 0)).where(rows["course_i"] >= 2) if "w_n" in rows else np.nan
     rows["disp_wall_n"] = z("w_n").where(rows["course_i"] >= 2) if "w_n" in rows else np.nan
     drop = [c for c in ("fh_n", "fh_sum", "nm_n", "nm_sum", "w_n", "w_c1") if c in rows]
-    return rows.drop(columns=drop)
+    rows = rows.drop(columns=drop)
+    return apply_kimarite(rows, tables.get("kimarite"), priors)
 
 
 def meetings(facts: pd.DataFrame) -> pd.DataFrame:
@@ -828,6 +928,12 @@ def add_new_race_features(df: pd.DataFrame) -> pd.DataFrame:
     c2 = wall.where(df["course_i"] == 2)
     df["wall_c2"] = c2.groupby(df["race_id"]).transform("max")
     add_shape(df)
+    for c in ("nige", "sasare", "makurare", "makusasare"):  # そのレースの1コースの艇の決まり手の率を、全艇に
+        v = pd.to_numeric(df[f"km_{c}"], errors="coerce") if f"km_{c}" in df else pd.Series(np.nan, index=df.index)
+        df[f"race_c1_{c}"] = v.where(df["course_i"] == 1).groupby(df["race_id"]).transform("max")
+    for c in KIMARITE_FEATURES:
+        if c not in df:
+            df[c] = np.nan
     return df
 
 
@@ -909,6 +1015,9 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     fstate = load_f_state(raw_dir / "f_state.csv")
     extra["fhold"], priors["fgap"] = fhold_stats(facts, fstate, next_date=nxt)
     extra["wall"] = wall_stats(facts, next_date=nxt)
+    km_table, priors["kimarite"] = kimarite_stats(facts, load_kimarite(raw_dir), next_date=nxt)
+    if len(km_table):
+        extra["kimarite"] = km_table
     profile = profile_stats(facts, fstate, f_recent, nxt)
     from .discover import discover
     found = discover(facts, fstate, f_recent, nxt)  # 選手別アビリティの自動発見（表示だけ）
@@ -942,7 +1051,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows["top3"] = (rows["finish"] <= 3).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
     rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
-    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + KIMARITE_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":

@@ -4,6 +4,7 @@
   var/ml/raw/facts_backfill.csv       1艇×1レースの実績（facts.csv と同じ列）
   var/ml/raw/exhibition_backfill.csv  展示（展示タイム・展示ST・進入・チルト）。既存の取り寄せ分に追記
   var/ml/raw/weather_backfill.csv     風（公式の風アイコン番号と風速）・波
+  var/ml/raw/kimarite_backfill.csv    決まり手（1着の艇の決まり手）
   var/ml/raw/facts_backfill_days.txt  取り終えた日（止めても、取り終えた日はとばして続きから）
 公式サイトへのアクセスは fetcher の間隔（既定1秒に1回）を守る。1日およそ500回（10分ほど）。
 """
@@ -32,6 +33,8 @@ log = logging.getLogger(__name__)
 DAYS_NAME = "facts_backfill_days.txt"
 WEATHER_NAME = "weather_backfill.csv"
 WEATHER_COLS = ["race_date", "venue", "race_no", "wind_icon", "wind_speed", "wave_cm", "weather", "updated_at"]
+KIMARITE_NAME = "kimarite_backfill.csv"
+KIMARITE_COLS = ["race_date", "venue", "race_no", "winning_method", "updated_at"]
 STAMP = "0000-backfill"  # データベースの行があればそちらを残す（重複は updated_at の新しい方）
 
 
@@ -118,8 +121,8 @@ def run(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = Non
     log.info("facts backfill: %s〜%s のうち %d 日", date_from, date_to, len(dates))
     fetcher = fetcher or Fetcher()
     files = [_writer(raw / FACTS_BACKFILL, FACT_COLS), _writer(raw / backfill.OUT_NAME, backfill.COLUMNS),
-             _writer(raw / WEATHER_NAME, WEATHER_COLS)]
-    (ff, fw), (ef, ew), (wf, ww) = files
+             _writer(raw / WEATHER_NAME, WEATHER_COLS), _writer(raw / KIMARITE_NAME, KIMARITE_COLS)]
+    (ff, fw), (ef, ew), (wf, ww), (kf, kw) = files
     n_days = 0
     t0 = time.monotonic()
     try:
@@ -130,7 +133,7 @@ def run(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = Non
                 log.warning("%s 一覧: %s", date, exc)
                 continue
             ok, races = True, 0
-            facts, exs, wes = [], [], []
+            facts, exs, wes, kms = [], [], [], []
             for vd in vdays:
                 for rno in range(1, 13):
                     try:
@@ -145,6 +148,8 @@ def run(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = Non
                         time.sleep(5)
                         continue
                     facts += fact_rows(date, vd.jcd, rno, vd.title, card, res)
+                    if res.kimarite:
+                        kms.append({"race_date": date, "venue": vd.jcd, "race_no": rno, "winning_method": res.kimarite, "updated_at": STAMP})
                     exs += ex_rows(date, vd.jcd, rno, info)
                     w = weather_row(date, vd.jcd, rno, info)
                     if w:
@@ -155,6 +160,7 @@ def run(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = Non
                 fw.writerows(facts)
                 ew.writerows(exs)
                 ww.writerows(wes)
+                kw.writerows(kms)
                 for fh, _ in files:
                     fh.flush()
                 with days_path.open("a", encoding="utf-8") as fh:
@@ -169,3 +175,44 @@ def run(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = Non
             fh.close()
     log.info("facts backfill finished: %d 日", n_days)
     return n_days
+
+
+def fill_kimarite(raw: Path, fetcher: Optional[Fetcher] = None) -> int:
+    """公式サイトから足した日のうち、決まり手がまだ無い日だけ、結果ページで決まり手を足す（1日およそ240回）。取り終えた日数を返す。"""
+    raw = Path(raw)
+    days_path = raw / DAYS_NAME
+    done = sorted(set(days_path.read_text(encoding="utf-8").split())) if days_path.exists() else []
+    have = set()
+    if (raw / KIMARITE_NAME).exists():
+        have = set(pd.read_csv(raw / KIMARITE_NAME, dtype=str, usecols=["race_date"])["race_date"])
+    todo = [d for d in done if d not in have]
+    log.info("kimarite fill: %d 日", len(todo))
+    fetcher = fetcher or Fetcher()
+    fh, w = _writer(raw / KIMARITE_NAME, KIMARITE_COLS)
+    n = 0
+    try:
+        for i, date in enumerate(todo):
+            try:
+                vdays = parsers.parse_index(fetcher.index(date))
+            except requests.RequestException as exc:
+                log.warning("%s 一覧: %s", date, exc)
+                continue
+            rows = []
+            for vd in vdays:
+                for rno in range(1, 13):
+                    try:
+                        res = parsers.parse_result(fetcher.result(date, vd.jcd, rno))
+                    except requests.RequestException as exc:
+                        log.warning("%s %s %dR: %s", date, vd.jcd, rno, exc)
+                        time.sleep(5)
+                        continue
+                    if res.kimarite and not res.cancelled:
+                        rows.append({"race_date": date, "venue": vd.jcd, "race_no": rno, "winning_method": res.kimarite, "updated_at": STAMP})
+            if rows:
+                w.writerows(rows)
+                fh.flush()
+                n += 1
+            log.info("kimarite fill %s：%dR（%d/%d日）", date, len(rows), i + 1, len(todo))
+    finally:
+        fh.close()
+    return n

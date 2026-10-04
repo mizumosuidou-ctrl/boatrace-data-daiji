@@ -30,7 +30,7 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
             # 1割の選手は途中からF持ち（スタートを控えて遅くなる）
             "f_from": rng.randint(days // 4, days) if i % 10 == 0 else None,
         })
-    facts, exh, motors, orig, weather = [], [], [], [], []
+    facts, exh, motors, orig, weather, kim = [], [], [], [], [], []
     # 場ごとのモーター（実力は隠れていて、2連率の表示は半分くらいしか当てにならない）
     pool = {f"{v:02d}": [rng.gauss(0, 1) for _ in range(40)] for v in range(1, 25)}
     d0 = date(2025, 1, 1)
@@ -73,6 +73,9 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
                         finish[i] = place
                         left.remove(i)
                         break
+            win_i = next(i for i, pl in finish.items() if pl == 1)  # 決まり手：①なら逃げ、内の隣より速ければまくり、ほかは差し
+            kim.append({"race_date": day, "venue": venue, "race_no": rno,
+                        "winning_method": "逃げ" if win_i == 0 else "まくり" if srank[win_i] < srank[win_i - 1] else "差し"})
             for i, r in enumerate(field):
                 lane = i + 1
                 facts.append({
@@ -107,6 +110,7 @@ def generate(out_dir: Path, days: int = 240, races_per_day: int = 60, n_racers: 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(facts).to_csv(out_dir / "facts.csv", index=False)
+    pd.DataFrame(kim).to_csv(out_dir / "kimarite.csv", index=False)
     pd.DataFrame(exh).to_csv(out_dir / "exhibition.csv", index=False)
     pd.DataFrame(motors).to_csv(out_dir / "motors.csv", index=False)
     pd.DataFrame(orig).to_csv(out_dir / "original.csv", index=False)

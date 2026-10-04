@@ -48,6 +48,8 @@ def main() -> None:
     mlf = sub.add_parser("ml-facts", help="データベースの実績が止まった日の次の日から昨日まで、実績・展示・風を公式サイトで足す（1秒1件）")
     mlf.add_argument("--from", dest="date_from", default=None)
     mlf.add_argument("--to", dest="date_to", default=None)
+    mlk = sub.add_parser("ml-kimarite", help="公式サイトから足した日のうち、決まり手が無い日だけ結果ページで足す（1秒1件）")
+    mlk.add_argument("--raw", help="var/ml/raw の場所")
     mlo = sub.add_parser("ml-original", help="過去のオリジナル展示（一周・まわり足・直線）をボートレース日和から取り寄せる（3〜5秒に1件）")
     mlo.add_argument("--days", type=int, default=183, help="さかのぼる日数（既定 183＝約6か月）")
     mlo.add_argument("--limit", type=int, default=None)
@@ -159,6 +161,10 @@ def main() -> None:
         from .ml import ev_check, live
 
         print(ev_check.build(live.ML_DIR, Path(args.raw) if args.raw else live.ML_DIR / "raw"))
+    elif args.cmd == "ml-kimarite":
+        from .ml import facts_backfill, live
+
+        print(f"{facts_backfill.fill_kimarite(Path(args.raw) if args.raw else live.ML_DIR / 'raw')} days fetched")
     elif args.cmd == "live-check":
         from . import live_check
 
