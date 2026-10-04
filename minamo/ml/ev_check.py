@@ -58,11 +58,11 @@ def load(ml_dir: Path, raw: Path) -> list[dict]:
     for race, g in snaps.groupby("race"):
         by = {lab: odds_history._parse(t) for lab, t in zip(g["label"], g["trifecta"])}
         if by.get("T5") and by.get("FINAL") and len(by["FINAL"]) >= 60:
-            odds[race] = (by["T5"], by["FINAL"], by.get("T1") or None)
+            odds[race] = (by["T5"], by["FINAL"], by.get("T1") or None, by.get("T10") or None, by.get("T15") or None)
         if has_x:  # 2連単（データベースにあれば）
             bx = {lab: odds_history._parse(t) for lab, t in zip(g["label"], g["exacta"])}
             if len(bx.get("T5") or {}) >= 20 and len(bx.get("FINAL") or {}) >= 20:
-                ex_odds[race] = (bx["T5"], bx["FINAL"])
+                ex_odds[race] = (bx["T5"], bx["FINAL"], bx.get("T1") or None, bx.get("T10") or None, bx.get("T15") or None)
     winner = {}
     if (raw / "odds_results.csv").exists():
         res = pd.read_csv(raw / "odds_results.csv", dtype=str)
@@ -80,9 +80,10 @@ def load(ml_dir: Path, raw: Path) -> list[dict]:
                 continue
             hit = _key(order["lane"].iloc[:3].astype(int))
         probs = {_key(c): v for c, v in trifecta_probs(dict(zip(g["lane"].astype(int), g["p"])), decay)}
-        t5, final, t1 = odds[race]
-        x5, xfinal = ex_odds.get(race, (None, None))
-        out.append({"race": race, "probs": probs, "t5": t5, "final": final, "t1": t1, "hit": hit, "x5": x5, "xfinal": xfinal,
+        t5, final, t1, t10, t15 = odds[race]
+        x5, xfinal, x1, x10, x15 = ex_odds.get(race, (None,) * 5)
+        out.append({"race": race, "probs": probs, "t5": t5, "final": final, "t1": t1, "t10": t10, "t15": t15, "hit": hit,
+                    "x5": x5, "xfinal": xfinal, "x1": x1, "x10": x10, "x15": x15,
                     "p1": float(g.loc[g["lane"] == 1, "p"].iloc[0]), "post": bool(g["post"].any())})
     return out
 
@@ -545,6 +546,57 @@ def stake_report(races: list[dict], shuffles: int = SHUFFLES) -> list[str]:
     return lines
 
 
+TIMINGS = (("T15", "t15", "x15", "15分前"), ("T10", "t10", "x10", "10分前"), ("T5", "t5", "x5", "5分前"), ("T1", "t1", "x1", "1分前"))
+
+
+def _rows_boot(rows: list, n: int = 1000, seed: int = 0) -> tuple[float, float, float, int, float]:
+    """1点同じ金額で買ったときの回収率・下5%・上95%・当たり本数・当たった組の「確定÷決めたときのオッズ」の平均。"""
+    st = np.array([len(r) for r in rows], dtype=float)
+    rt = np.array([sum(of for _, _, hit, of in r if hit) for r in rows], dtype=float)
+    moves = [of / o for r in rows for _, o, hit, of in r if hit and o]
+    if not st.sum():
+        return float("nan"), float("nan"), float("nan"), 0, float("nan")
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(st), size=(n, len(st)))
+    roi = 100 * rt[idx].sum(axis=1) / np.maximum(st[idx].sum(axis=1), 1)
+    return (100 * rt.sum() / st.sum(), float(np.percentile(roi, 5)), float(np.percentile(roi, 95)), len(moves),
+            float(np.mean(moves)) if moves else float("nan"))
+
+
+def timing_report(races: list[dict]) -> list[str]:
+    """11. 締切の何分前のオッズで買い目を決めるか（補正B・後半）。
+    同じレースで、補正と期待値に使うオッズだけを 15分前・10分前・5分前・1分前 に変えて、今の試し買いのルールで買う。払戻は確定オッズ。
+    Discord の通知は8分前（10分前と5分前の間）、実戦の買い目は締切の0〜4分前に決め直している（5分前と1分前の間）。"""
+    have = [tag for tag, t, _, _ in TIMINGS if sum(1 for r in races if r.get(t)) >= 0.8 * len(races)]
+    if "T5" not in have or len(have) < 2:
+        return []
+    keys = [t for tag, t, _, _ in TIMINGS if tag in have]
+    common = [r for r in races if all(r.get(k) and len(r[k]) >= 60 for k in keys)]
+    lines = [f"\n11. 締切の何分前のオッズで買い目を決めるか（補正B・後半。どの時刻のオッズもある {len(common):,}R の後半。払戻は確定オッズ）",
+             "  通知は8分前（10分前と5分前の間）、実戦の買い目は締切の0〜4分前に決め直し（5分前と1分前の間）。"
+             "右は、当たった組の「確定オッズ÷決めたときのオッズ」の平均（1より小さいと締切までに下がっている）"]
+    out = {"ev": [], "ex": []}
+    for tag, t, x, name in TIMINGS:
+        if tag not in have:
+            continue
+        moved = [{**r, "t5": r[t], "x5": r.get(x) if r.get(x) and r.get("xfinal") else None} for r in common]
+        cal = _test_cal(moved)
+        if not cal:
+            continue
+        tri_rows, ex_rows = _trial_rows(cal)
+        for k, rows in (("ev", tri_rows), ("ex", ex_rows)):
+            if any(rows):
+                out[k].append((name, _rows_boot(rows)))
+    for k, tag in (("ev", "3連単（期待値1.2以上・最大9点）"), ("ex", "2連単（期待値1.2以上・最大3点）")):
+        if not out[k]:
+            continue
+        lines.append(f" {tag}")
+        for name, (roi, lo, hi, n_hit, move) in out[k]:
+            lines.append(f"  {_pad(name, 8)}回収率 {roi:6.1f}%  幅 {lo:5.1f}〜{hi:5.1f}%  当たり {n_hit:>4}本"
+                         f"  当たった組の確定÷決めたとき 平均 {move:4.2f}倍")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -658,4 +710,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += exacta_detail(races)
     lines += bankroll_report(races)
     lines += stake_report(races)
+    lines += timing_report(races)
     return "\n".join(lines)
