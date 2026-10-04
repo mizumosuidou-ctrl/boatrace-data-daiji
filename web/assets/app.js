@@ -811,7 +811,7 @@ function pickCard(date, r, now, k = "ev") {
     <table class="pick-t"><thead><tr><th>${PICK_KIND[k].label}</th><th>確率</th><th>オッズ</th><th>期待値</th></tr></thead><tbody>
       ${items.map((x) => `<tr class="${done && x.combo === res ? "on" : ""}"><td>${combo(x.combo)}</td><td>${x.p != null ? pct(x.p, 1) + "%" : "--"}</td><td>${x.odds ?? "--"}</td><td>${x.ev != null ? x.ev.toFixed(2) : "--"}</td></tr>`).join("")}
     </tbody></table>
-    <div class="small muted">${items.length}点 · 1点1,000円で ${yen(items.length * 1000)} · オッズ ${hhmm(r[`${k}_at`])} 時点${done ? ` · 結果 ${esc(res)}` : ""}</div>
+    <div class="small muted">${items.length}点 · 1点1,000円で ${yen(items.length * 1000)} · オッズ ${hhmm(r[`${k}_at`])} 時点${done ? ` · <span class="nowrap">結果 ${esc(res)}</span>` : ""}</div>
   </a>`;
 }
 const getPickKind = () => { try { return localStorage.getItem("minamo-pick-kind") || "ev"; } catch { return "ev"; } };

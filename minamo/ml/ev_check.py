@@ -354,6 +354,39 @@ def _ex_rows(races: list[dict], pick) -> tuple[np.ndarray, np.ndarray]:
     return np.array(st, dtype=float), np.array(rt, dtype=float)
 
 
+def points_report(races: list[dict]) -> list[str]:
+    """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
+    races = sorted(races, key=lambda r: r["race"])
+    half = len(races) // 2
+    fit, test = races[:half], races[half:]
+    if len(fit) < 20 or len(test) < 20:
+        return []
+    cal = apply_calibration(test, *fit_calibration(fit))
+
+    def ev_th(th, k):
+        return lambda r: [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True)
+                          if r["probs"][c] >= MIN_P and _ev(r, c) >= th][:k]
+
+    def ev_top(k):
+        return lambda r: [c for c in sorted(r["probs"], key=lambda c: _ev(r, c), reverse=True) if r["probs"][c] >= MIN_P][:k]
+
+    def p_top(k):
+        return lambda r: sorted(r["probs"], key=r["probs"].get, reverse=True)[:k]
+    rows = [("今の買い方：期待値1.2以上・最大6点", ev_th(1.2, 6)), ("期待値1.2以上・最大9点", ev_th(1.2, 9)),
+            ("期待値1.2以上・最大12点", ev_th(1.2, 12)), ("期待値1.0以上・最大6点", ev_th(1.0, 6)),
+            ("期待値1.0以上・最大9点", ev_th(1.0, 9)), ("いつも6点（期待値の高い順）", ev_top(6)),
+            ("いつも9点（期待値の高い順）", ev_top(9)), ("いつも6点（確率の高い順）", p_top(6)), ("いつも9点（確率の高い順）", p_top(9))]
+    lines = [f"\n7. 3連単の点数の比べ（補正B・後半 {len(test):,}R。幅はレースを入れ替えて1000回数え直した下5%〜上95%）"]
+    for name, pick in rows:
+        st, rt = _bets(cal, pick)
+        if not len(st):
+            continue
+        roi, lo, hi, over = _boot(cal, pick)
+        lines.append(f"  {_pad(name, 36)}{len(st):>5}R {st.sum() / 100 / len(st):4.1f}点 的中{100 * (rt > 0).mean():5.1f}%"
+                     f" 回収率{roi:6.1f}%  幅 {lo:5.1f}〜{hi:5.1f}%  100%超え {over:4.1f}%")
+    return lines
+
+
 def exacta_report(races: list[dict]) -> list[str]:
     """6. 2連単の2〜3点買い。補正前は全期間、補正Bは後半（前半で決めた値）で。"""
     rs = sorted([r for r in races if r.get("x5") and r.get("xfinal")], key=lambda r: r["race"])
@@ -430,4 +463,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += calibration_report(races, ml_dir)
     lines += flat_report(races)
     lines += exacta_report(races)
+    lines += points_report(races)
     return "\n".join(lines)
