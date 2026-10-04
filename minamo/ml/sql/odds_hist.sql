@@ -1,4 +1,4 @@
--- 3連単オッズの履歴（締切15分前・10分前・5分前・1分前・確定）。1行＝1レース×1時点、オッズは「1-2-3:12.5 1-2-4:…」の文字
+-- 3連単・2連単オッズの履歴（締切15分前・10分前・5分前・1分前・確定）。1行＝1レース×1時点、オッズは「1-2-3:12.5 1-2-4:…」の文字
 COPY (
   SELECT
     COALESCE(payload->>'race_date', race_date)                AS race_date,
@@ -8,7 +8,10 @@ COPY (
     payload->>'captured_at'       AS captured_at,
     (SELECT string_agg((e->>'combination') || ':' || (e->>'odds'), ' ')
        FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o->'trifecta') = 'array' THEN o->'trifecta' ELSE '[]'::jsonb END) AS e
-    ) AS trifecta
+    ) AS trifecta,
+    (SELECT string_agg((e->>'combination') || ':' || (e->>'odds'), ' ')
+       FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o->'exacta') = 'array' THEN o->'exacta' ELSE '[]'::jsonb END) AS e
+    ) AS exacta
   FROM site_archive.records
   CROSS JOIN LATERAL (
     SELECT CASE WHEN left(payload->>'odds_json', 1) = '{' THEN (payload->>'odds_json')::jsonb END AS o

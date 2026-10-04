@@ -837,6 +837,15 @@ def test_ev_check_report(tmp_path):
     assert max(abs(mine[c] - theirs[c]) for c in theirs) < 1e-9
     # 5. 平掛け：ぶれの幅・オッズの動き・①の見立ての差・オッズの帯
     assert "5-1. 結果のぶれ" in text and "100%超え" in text and "5-2." in text and "5-3." in text and "5-4." in text
+    # 6. 2連単：3連単の確率を足して2連単に。オッズが無ければ比べられないと出す
+    assert "6. 2連単" in text
+    xp = ev_check.exacta_probs(races[0]["probs"])
+    assert len(xp) == 30 and abs(sum(xp.values()) - 1) < 1e-9
+    r = {**races[0], "x5": {c: 10.0 for c in xp}, "xfinal": {c: 10.0 for c in xp}}
+    st = ev_check.exacta_strategies()
+    assert len(st["確率上位3点"](r, xp)) == 3 and all(xp[c] * 10 >= 1.2 for c in st["期待値1.2以上・最大2点"](r, xp))
+    stake, ret = ev_check._ex_rows([r], st["確率上位2点"])
+    assert stake.tolist() == [200.0]
     roi, lo, hi, over = ev_check._boot(races, picks["確率上位6点（今の形）"])
     assert lo <= roi <= hi and 0 <= over <= 100
 
