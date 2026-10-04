@@ -101,8 +101,10 @@ class Pipeline:
             st["ai"] = ai
             st["ai_stage"] = "card"
             self._save(date, f"{jcd}-{rno:02d}", st)
-        ev = (st.get("ev_pick") or {}).get("combos")
-        payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev)
+        ev_pick = st.get("ev_pick") or {}
+        payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev_pick.get("combos"))
+        payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
+        payload["ev_at"] = ev_pick.get("at")
         payload["odds2"] = st.get("odds2") or {}
         payload["formation"] = self._formation(card, pred, vday)
         store.write_json(store.race_path(date, jcd, rno), payload)
@@ -223,8 +225,12 @@ class Pipeline:
             hh, mm = map(int, card.deadline.split(":"))
             if now < datetime.strptime(date, "%Y%m%d").replace(hour=hh, minute=mm, tzinfo=store.JST):
                 cal = store.ev_calib()
-                st["ev_pick"] = {"combos": store.ev_picks(predict(card, before, odds).trifecta, odds, cal),
-                                 "at": now.isoformat(), "cal": list(cal) if cal else None}
+                tri = predict(card, before, odds).trifecta
+                combos = store.ev_picks(tri, odds, cal)
+                prob = dict(store.calibrate(tri, odds, *cal) if cal else tri)
+                st["ev_pick"] = {"combos": combos, "at": now.isoformat(), "cal": list(cal) if cal else None,
+                                 "items": [{"combo": c, "p": round(prob[c], 4), "odds": odds[c], "ev": round(prob[c] * odds[c], 2)}
+                                           for c in combos]}
         st["odds"] = odds or st.get("odds")
         st["odds2"] = odds2 or st.get("odds2")
         st["before_at"] = now.isoformat()

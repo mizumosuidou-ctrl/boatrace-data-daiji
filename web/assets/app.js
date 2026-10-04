@@ -92,6 +92,7 @@ function parseRoute() {
   const parts = h.split("/").filter(Boolean);
   if (parts[0] === "race" && parts.length === 4) return { name: "race", date: parts[1], jcd: parts[2], rno: Number(parts[3]) };
   if (parts[0] === "record") return { name: "record" };
+  if (parts[0] === "picks") return { name: "picks" };
   if (parts[0] === "about") return { name: "about" };
   return { name: "home" };
 }
@@ -109,6 +110,7 @@ async function route() {
   try {
     if (r.name === "race") await renderRace(r);
     else if (r.name === "record") await renderRecord();
+    else if (r.name === "picks") await renderPicks();
     else if (r.name === "about") renderAbout();
     else await renderHome();
     $("#main").focus({ preventScroll: true });
@@ -706,6 +708,54 @@ async function renderRace(r, refresh = false) {
   tick();
 }
 
+/* ------------------------------------------------------------ 今買う候補（試験中：オッズで絞った買い目） */
+const hhmm = (iso) => (iso ? iso.slice(11, 16) : "--:--");
+function pickCard(date, r, now) {
+  const dl = deadlineMs(date, r.deadline);
+  const done = r.result && !r.cancelled;
+  const items = r.ev_items || (r.ev_pick || []).map((c) => ({ combo: c }));
+  const won = done && r.ev_hit;
+  return `<a class="panel pick-card ${done ? (won ? "won" : "lost") : ""}" href="#/race/${date}/${r.v.jcd}/${r.rno}">
+    <div class="pick-h"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span>
+      ${done ? `<span class="chip ${won ? "src-claude" : ""}">${won ? `的中 ${yen((r.payout || 0) * BET_UNIT)}` : "はずれ"}</span>`
+        : r.cancelled ? `<span class="chip">中止</span>` : dl > now ? `<span class="cd" data-deadline="${dl}">${fmtCountdown(dl - now)}</span>` : `<span class="chip">締切</span>`}</div>
+    <table class="pick-t"><thead><tr><th>3連単</th><th>確率</th><th>オッズ</th><th>期待値</th></tr></thead><tbody>
+      ${items.map((x) => `<tr class="${done && x.combo === r.result ? "on" : ""}"><td>${combo(x.combo)}</td><td>${x.p != null ? pct(x.p, 1) + "%" : "--"}</td><td>${x.odds ?? "--"}</td><td>${x.ev != null ? x.ev.toFixed(2) : "--"}</td></tr>`).join("")}
+    </tbody></table>
+    <div class="small muted">${items.length}点 · 1点1,000円で ${yen(items.length * 1000)} · オッズ ${hhmm(r.ev_at)} 時点${done ? ` · 結果 ${esc(r.result)}` : ""}</div>
+  </a>`;
+}
+async function renderPicks(refresh = false) {
+  if (!state.day || state.day.date !== state.date || refresh) await loadDay();
+  const date = state.date, now = nowMs();
+  const races = allRaces().filter((r) => Array.isArray(r.ev_pick));
+  const bought = races.filter((r) => r.ev_pick.length);
+  const skipped = races.length - bought.length;
+  const open = bought.filter((r) => !r.result && !r.cancelled).sort((a, b) => a.deadline.localeCompare(b.deadline));
+  const done = bought.filter((r) => r.result || r.cancelled).sort((a, b) => b.deadline.localeCompare(a.deadline));
+  const settled = done.filter((r) => r.result && !r.cancelled && r.ev_stake != null);
+  const stake = settled.reduce((a, r) => a + r.ev_stake, 0), ret = settled.reduce((a, r) => a + (r.ev_return || 0), 0);
+  const hits = settled.filter((r) => r.ev_hit).length;
+  const y = scrollY;
+  $("#main").innerHTML = `<div class="wrap"><section class="section">
+    <span class="eyebrow">${fmtDate(date)}（${weekday(date)}）</span>
+    <h1 class="section-title" style="font-size:clamp(36px,5vw,72px)">今買う候補<small>試験中の選び方：MINAMOの確率を市場（オッズ）と合わせて補正し、期待値（確率×オッズ）が1.2以上の組を最大6点。無ければ見送り。過去の検証（学習に使っていない約3,000レース）では回収率118%でしたが、まだ試験中です</small></h1>
+    <div class="calib">
+      <div class="panel"><h4>今日の候補</h4><div class="big">${bought.length}<small style="font-size:.45em">R</small></div><div class="small">見送り ${skipped}R · 締切前 ${open.length}R</div></div>
+      <div class="panel"><h4>的中</h4><div class="big">${hits}<small style="font-size:.45em">/${settled.length}R</small></div><div class="small">結果の出たレース</div></div>
+      <div class="panel"><h4>今日の回収率</h4><div class="big">${stake ? ((ret / stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">1点同じ金額で買った場合</div></div>
+      <div class="panel"><h4>今日の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${stake ? signedYen((ret - stake) * BET_UNIT) : "--"}</div><div class="small">1点1,000円</div></div>
+    </div>
+    <div class="section-head" style="margin-top:34px"><div><h2 class="section-title">締切前・結果待ち<small>締切の近い順。オッズが変わると、締切直前まで組が入れ替わることがあります（オッズは表示の時刻のもの）</small></h2></div></div>
+    ${open.length ? `<div class="pick-grid">${open.map((r) => pickCard(date, r, now)).join("")}</div>` : `<div class="panel" style="padding:20px">今は締切前の候補がありません。直前情報（展示）が出たレースから順に候補を決めます。</div>`}
+    ${done.length ? `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">結果<small>新しい順</small></h2></div></div><div class="pick-grid">${done.map((r) => pickCard(date, r, now)).join("")}</div>` : ""}
+    <p class="small muted" style="margin-top:22px;line-height:1.7">これまでの通算は<a href="#/record">成績</a>の「試験中：オッズで絞った買い目」にあります。舟券の購入はご自身の判断でお願いします。</p>
+  </section></div>`;
+  if (refresh) scrollTo({ top: y });
+  document.title = "今買う候補 — MINAMO";
+  tick();
+}
+
 /* ------------------------------------------------------------ record */
 async function renderRecord() {
   const [rec] = await Promise.all([getJSON("data/record.json")]);
@@ -973,6 +1023,7 @@ async function boot() {
     if (document.hidden) return;
     try {
       if (state.route.name === "home" && state.date === todayJst()) await renderHome(true);
+      else if (state.route.name === "picks" && state.date === todayJst()) await renderPicks(true);
       else if (state.route.name === "race" && state.race && !state.race.result && nowMs() > deadlineMs(state.race.date, state.race.deadline) - 35 * 60e3) {
         const before = state.race.updated_at;
         await renderRace(state.route, true);
