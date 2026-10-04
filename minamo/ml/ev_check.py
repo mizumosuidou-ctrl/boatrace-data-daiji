@@ -422,6 +422,69 @@ def exacta_detail(races: list[dict]) -> list[str]:
     return lines
 
 
+def _simulate(rows: list[tuple[list[tuple[float, float, bool, float]]]], how: str, start: float = 100_000.0,
+              unit: float = 1_000.0, kelly: float = 0.25) -> dict:
+    """レースを日付順に買っていく。rows はレースごとの [(確率, 5分前オッズ, 当たり, 確定オッズ), …]。
+    how: flat（1点 unit 円）・ev（unit×期待値、最大3倍）・kelly（資金×ケリー×kelly、1点100円単位・最低100円・最大で資金の5%）。"""
+    bank, peak, worst, stake_sum, ret_sum = start, start, 0.0, 0.0, 0.0
+    for picks in rows:
+        bets = []
+        for p, o5, hit, of in picks:
+            if how == "flat":
+                b = unit
+            elif how == "ev":
+                b = unit * min(3.0, max(0.5, p * o5))
+            else:
+                f = (p * o5 - 1) / (o5 - 1) if o5 > 1 else 0.0
+                b = max(0.0, min(bank * 0.05, bank * f * kelly))
+                b = round(b / 100) * 100
+                if 0 < b < 100:
+                    b = 100.0
+            bets.append((b, hit, of))
+        total = sum(b for b, _, _ in bets)
+        if total <= 0 or total > bank:
+            continue
+        ret = sum(b * of for b, hit, of in bets if hit)
+        bank += ret - total
+        stake_sum += total
+        ret_sum += ret
+        peak = max(peak, bank)
+        worst = max(worst, (peak - bank) / peak)
+    return {"bank": bank, "roi": 100 * ret_sum / stake_sum if stake_sum else float("nan"), "stake": stake_sum, "dd": 100 * worst}
+
+
+def bankroll_report(races: list[dict]) -> list[str]:
+    """9. 1点の金額の決め方（補正B・後半。資金10万円から日付順に買う）。"""
+    races = sorted(races, key=lambda r: r["race"])
+    half = len(races) // 2
+    fit, test = races[:half], races[half:]
+    if len(fit) < 20 or len(test) < 20:
+        return []
+    cal = apply_calibration(test, *fit_calibration(fit))
+    tri_rows, ex_rows = [], []
+    for r in cal:
+        cs = [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True)
+              if r["probs"][c] >= MIN_P and _ev(r, c) >= 1.2][:9]
+        tri_rows.append([(r["probs"][c], r["t5"][c], c == r["hit"], r["final"].get(c, 0)) for c in cs])
+        if r.get("x5") and r.get("xfinal"):
+            xp = exacta_probs(r["probs"])
+            hit = r["hit"].rsplit("-", 1)[0]
+            xs = [c for c in sorted(xp, key=xp.get, reverse=True)
+                  if xp[c] >= EX_MIN_P and r["x5"].get(c) and xp[c] * r["x5"][c] >= 1.2][:3]
+            ex_rows.append([(xp[c], r["x5"][c], c == hit, r["xfinal"].get(c, 0)) for c in xs])
+    lines = [f"\n9. 1点の金額の決め方（補正B・後半 {len(cal):,}R。資金10万円から日付順に買う。"
+             "平掛け＝1点1,000円、期待値に合わせる＝1,000円×期待値（0.5〜3倍）、ケリー1/4＝資金×ケリーの1/4（1点は資金の5%まで、100円単位））"]
+    for tag, rows in (("3連単（期待値1.2以上・最大9点）", tri_rows), ("2連単（期待値1.2以上・最大3点）", ex_rows)):
+        if not rows:
+            continue
+        lines.append(f" {tag}")
+        for how, name in (("flat", "平掛け"), ("ev", "期待値に合わせる"), ("kelly", "ケリー1/4")):
+            r = _simulate(rows, how)
+            lines.append(f"  {_pad(name, 18)}最後の資金 {r['bank']:>12,.0f}円  回収率 {r['roi']:6.1f}%  投資の合計 {r['stake']:>12,.0f}円"
+                         f"  一番減ったとき −{r['dd']:4.1f}%")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -533,4 +596,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += exacta_report(races)
     lines += points_report(races)
     lines += exacta_detail(races)
+    lines += bankroll_report(races)
     return "\n".join(lines)
