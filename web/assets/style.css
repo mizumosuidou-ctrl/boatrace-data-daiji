@@ -826,3 +826,4 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .other-pay .op-i small { color: var(--text-2); font-size: 11px; }
 .other-pay .op-c { display: inline-flex; align-items: center; gap: 2px; }
 .other-pay .eq { color: var(--muted); font-family: var(--f-mono); font-size: 12px; }
+.nowrap { white-space: nowrap; }

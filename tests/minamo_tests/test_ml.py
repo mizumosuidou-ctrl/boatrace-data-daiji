@@ -838,7 +838,7 @@ def test_ev_check_report(tmp_path):
     # 5. 平掛け：ぶれの幅・オッズの動き・①の見立ての差・オッズの帯
     assert "5-1. 結果のぶれ" in text and "100%超え" in text and "5-2." in text and "5-3." in text and "5-4." in text
     # 6. 2連単：3連単の確率を足して2連単に。オッズが無ければ比べられないと出す
-    assert "6. 2連単" in text
+    assert "6. 2連単" in text and "7. 3連単の点数の比べ" in text and "いつも9点（確率の高い順）" in text
     xp = ev_check.exacta_probs(races[0]["probs"])
     assert len(xp) == 30 and abs(sum(xp.values()) - 1) < 1e-9
     r = {**races[0], "x5": {c: 10.0 for c in xp}, "xfinal": {c: 10.0 for c in xp}}
