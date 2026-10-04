@@ -753,33 +753,38 @@ def test_discord_notify_once_then_change(monkeypatch):
 
 
 def test_live_check(tmp_path):
-    """実戦の成績：締切順に、回収率・幅・連敗・資金10万円から・日ごと。見送りと結果待ちは数えない。"""
+    """実戦の成績：締切順に、回収率・幅・連敗・資金10万円から・日ごと。見送り・結果待ち・中止は数えない。
+    レースごとのファイルの照合（settle）を読む（古い day.json には払戻の欄が無いため）。"""
     from minamo import live_check
 
-    def race(rno, deadline, hit, items=None):
-        it = items or [{"combo": "1-2-3", "p": 0.1, "odds": 15.0, "ev": 1.5}, {"combo": "1-3-2", "p": 0.05, "odds": 30.0, "ev": 1.5}]
-        return {"rno": rno, "deadline": deadline, "result": "1-2-3" if hit else "2-1-3", "payout": 1800,
-                "ev_bought": True, "ev_hit": hit, "ev_stake": 200, "ev_return": 1800 if hit else 0, "ev_items": it,
-                "ex_bought": True, "ex_hit": not hit, "ex_stake": 100, "ex_return": 0 if hit else 500,
-                "result_ex": "1-2" if hit else "2-1", "payout_ex": 500, "ex_items": [{"combo": "2-1", "p": 0.3, "odds": 5.0, "ev": 1.5}]}
-    days = {
-        "20261003": [race(1, "10:30", False), race(2, "11:00", False), race(3, "11:30", True),
-                     {"rno": 4, "deadline": "12:00", "result": "1-2-3", "ev_bought": False, "ev_stake": 0},  # 見送り
-                     {"rno": 5, "deadline": "12:30", "ev_pick": ["1-2-3"]}],  # 結果待ち
-        "20261005": [race(1, "10:30", False), race(2, "11:00", True)],
-    }
-    for d, races in days.items():
-        (tmp_path / d).mkdir()
-        (tmp_path / d / "day.json").write_text(json.dumps({"date": d, "venues": [{"jcd": "02", "name": "戸田", "races": races}]}))
+    def race(d, rno, deadline, hit):
+        return {"date": d, "jcd": "02", "rno": rno, "deadline": deadline, "venue": {"name": "戸田"},
+                "result": {"trifecta": "1-2-3" if hit else "2-1-3", "payout": 1800, "exacta": "1-2" if hit else "2-1",
+                           "exacta_payout": 500, "cancelled": False},
+                "settle": {"ev_bought": True, "ev_hit": hit, "ev_stake": 200, "ev_return": 1800 if hit else 0,
+                           "ex_bought": True, "ex_hit": not hit, "ex_stake": 100, "ex_return": 0 if hit else 500},
+                "ev_items": [{"combo": "1-2-3", "p": 0.1, "odds": 15.0, "ev": 1.5}, {"combo": "1-3-2", "p": 0.05, "odds": 30.0, "ev": 1.5}],
+                "ex_items": [{"combo": "2-1", "p": 0.3, "odds": 5.0, "ev": 1.5}]}
+    races = [race("20261003", 1, "10:30", False), race("20261003", 2, "11:00", False), race("20261003", 3, "11:30", True),
+             {"date": "20261003", "jcd": "02", "rno": 4, "deadline": "12:00", "result": {"trifecta": "1-2-3"},
+              "settle": {"ev_bought": False, "ev_stake": 0}},  # 見送り
+             {"date": "20261003", "jcd": "02", "rno": 5, "deadline": "12:30", "result": None, "settle": None},  # 結果待ち
+             race("20261005", 1, "10:30", False), race("20261005", 2, "11:00", True)]
+    del races[0]["ev_items"]  # 10/4 朝より前の記録には確率・オッズが無い
+    for r in races:
+        (tmp_path / r["date"]).mkdir(exist_ok=True)
+        (tmp_path / r["date"] / f"02-{r['rno']:02d}.json").write_text(json.dumps(r))
+    (tmp_path / "20261003" / "day.json").write_text("{}")
     rs = live_check.rows(tmp_path, "ev")
     assert [r["label"] for r in rs] == ["10/03 戸田1R", "10/03 戸田2R", "10/03 戸田3R", "10/05 戸田1R", "10/05 戸田2R"]
     assert live_check.streaks(rs)[:2] == (2, 0)
-    # 決めたときのオッズ15倍・確定18倍。資金10万円・平掛け1点100円：5R×200円の投資、当たり2本×1,800円
+    # 決めたときのオッズ15倍・確定18倍
     sims = live_check.sim_rows(rs)
-    assert sims[2][0] == (0.1, 15.0, True, 18.0) and sims[2][1][2] is False
+    assert sims[0] == [] and sims[2][0] == (0.1, 15.0, True, 18.0) and sims[2][1][2] is False
     text = live_check.build(tmp_path)
     assert "3連単" in text and "2連単" in text and "回収率 360.0%" in text
     assert "最大6点" in text and "最大9点" in text and "一番長い 2連敗" in text
-    assert "確定 ÷ 決めたとき＝平均 1.20倍" in text and "最後の資金    102,600円" in text
+    # 資金10万円・平掛け1点100円：確率とオッズの残る4R×200円の投資、当たり2本×1,800円
+    assert "確定 ÷ 決めたとき＝平均 1.20倍" in text and "残っている 4R" in text and "最後の資金    102,800円" in text
     assert "10/05    2R 的中  1R" in text
     assert "まだ結果の出たレースがありません" in live_check.build(tmp_path / "none")

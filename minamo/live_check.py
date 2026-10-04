@@ -1,7 +1,7 @@
 """実戦の成績を、過去の検証（ev-check）と同じ物差しで見る表（試験中の買い目。見るだけ）。
 
   python -m minamo live-check
-- 材料は web/data/日付/day.json（締切前に決めた買い目・その時の確率とオッズ・結果と配当）。
+- 材料は web/data/日付/場-R.json（締切前に決めた買い目・その時の確率とオッズ・結果と配当・照合）。
 - 3連単（ev）と2連単（ex）それぞれに：
   回収率と、レースを入れ替えて1000回数え直した幅（下5%〜上95%）・100%を超えた割合、
   過去の検証の数字との比べ、100%超えをはっきり言うのに要るレース数、
@@ -28,22 +28,22 @@ Z90 = 1.645
 
 
 def rows(data_dir: Path, k: str) -> list[dict]:
-    """試験中の買い目を買って結果の出たレースを、締切順に。stake・ret は1点100円で数えた円。"""
+    """試験中の買い目を買って結果の出たレースを、締切順に。stake・ret は1点100円で数えた円。
+    レースごとのファイル（日付/場-R.json）の settle を読む（day.json の一覧は、古い日だと払戻の欄が無いことがある）。"""
     out = []
-    for path in sorted(Path(data_dir).glob("*/day.json")):
-        day = store.read_json(path) or {}
-        if day.get("demo"):
+    for path in sorted(Path(data_dir).glob("*/[0-9][0-9]-[0-9][0-9].json")):
+        race = store.read_json(path) or {}
+        st, res = race.get("settle") or {}, race.get("result") or {}
+        if race.get("demo") or res.get("cancelled") or not st.get(f"{k}_bought") or st.get(f"{k}_stake") is None:
             continue
-        for v in day.get("venues", []):
-            for r in v.get("races", []):
-                res = r.get("result") if k == "ev" else r.get("result_ex")
-                if not res or r.get("cancelled") or not r.get(f"{k}_bought") or r.get(f"{k}_stake") is None:
-                    continue
-                pay = (r.get("payout") if k == "ev" else r.get("payout_ex")) or 0
-                out.append({"key": (day["date"], r.get("deadline") or "99:99", v.get("jcd", ""), r["rno"]),
-                            "date": day["date"], "label": f"{day['date'][4:6]}/{day['date'][6:]} {v.get('name', '')}{r['rno']}R",
-                            "stake": float(r[f"{k}_stake"]), "ret": float(r.get(f"{k}_return") or 0),
-                            "hit": bool(r.get(f"{k}_hit")), "result": res, "pay": pay, "items": r.get(f"{k}_items") or []})
+        date, combo = race.get("date") or path.parent.name, res.get("trifecta" if k == "ev" else "exacta")
+        if not combo:
+            continue
+        out.append({"key": (date, race.get("deadline") or "99:99", race.get("jcd", ""), race.get("rno", 0)),
+                    "date": date, "label": f"{date[4:6]}/{date[6:]} {(race.get('venue') or {}).get('name', '')}{race.get('rno', '')}R",
+                    "stake": float(st[f"{k}_stake"]), "ret": float(st.get(f"{k}_return") or 0), "hit": bool(st.get(f"{k}_hit")),
+                    "result": combo, "pay": (res.get("payout" if k == "ev" else "exacta_payout") or 0),
+                    "items": race.get(f"{k}_items") or []})
     out.sort(key=lambda x: x["key"])
     return out
 
