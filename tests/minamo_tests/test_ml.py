@@ -1168,3 +1168,26 @@ def test_two_head_combos():
     assert len(mk) == 8 and "2-3-1" in mk and "2-6-3" in mk and len(sa) == 4 and sa[0] == "2-1-3" and len(both) == 11
     r = {"course_of": {1: 1, 2: 3, 3: 2, 4: 4, 5: 5, 6: 6}}  # 3号艇が2コース、2号艇が3コース
     assert ev_check.two_head_combos(r, "sashi") == ["3-1-2", "3-1-4", "3-1-5", "3-1-6"]
+
+
+def test_course_combos_and_one_two_report():
+    """コースの組→艇番（* は残り全部）。15-4 は②が速いレースだけで①-②の形の回収率を、前半・後半に分けて出す。"""
+    from minamo.ml import ev_check
+
+    r = {"course_of": {1: 1, 2: 3, 3: 2, 4: 4, 5: 5, 6: 6}}  # 3号艇が2コース
+    assert ev_check.course_combos(r, ["1-2-3", "1-2-4"]) == ["1-3-2", "1-3-4"]
+    assert ev_check.course_combos(r, ["1-2-*"]) == ["1-3-2", "1-3-4", "1-3-5", "1-3-6"]
+    assert len(ev_check.course_combos(r, ["1-2-*", "1-*-2"])) == 8
+    assert ev_check.course_combos({"course_of": {1: 1}}, ["1-2-*"]) == []
+    races = []
+    for i in range(80):
+        fast = i % 2 == 0
+        races.append({"race": f"2026{i:04d}-01-01", "course_of": {l: l for l in range(1, 7)},
+                      "sr": {1: 3.0, 2: 2.0 if fast else 3.5, 3: 3.4, 4: 3.6},
+                      "p_lane": {1: 0.6, 2: 0.1, 3: 0.1, 4: 0.1, 5: 0.05, 6: 0.05},
+                      "t5": {"1-2-3": 10.0, "2-1-3": 20.0}, "final": {"1-2-3": 12.0, "1-3-2": 15.0},
+                      "hit": "1-2-3" if i % 4 == 0 else "1-3-2", "xfinal": None})
+    out = "\n".join(ev_check.one_two_report(races))
+    assert "15-4." in out and "前半・新しい期間（20R）" in out and "後半・見つけた期間（20R）" in out
+    # ②が速いレースの半分が 1-2-3（i%4==0）→ 2点で 1200円×10回/4000円 = 300%
+    assert "回収率 300.0%" in out and "①-②の決着 50.0%" in out
