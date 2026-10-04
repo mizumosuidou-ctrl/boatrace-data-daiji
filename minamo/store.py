@@ -157,7 +157,7 @@ def co_picks(trifecta: list, odds: Optional[dict[str, float]], th: float = CO_MI
 
 
 def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Optional[list] = None,
-           ex: Optional[list] = None, ev_items: Optional[list] = None) -> dict:
+           ex: Optional[list] = None, ev_items: Optional[list] = None, time_pick: Optional[dict] = None) -> dict:
     picks = [p["combo"] for p in ai.get("picks", [])]
     order = result.order
     hit = result.trifecta if result.trifecta in picks else None
@@ -196,6 +196,21 @@ def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Option
         out["co_hit"] = result.trifecta in ev
         out["co_stake"] = 100 if ev else 0
         out["co_return"] = round(payout * comp / odds_at[result.trifecta]) if result.trifecta in ev else 0
+    # TIME予想（ユーザーの予想方法。仮想資金：1点 unit 円。保存は1点1,000円を100とする単位＝unit÷10）。12点運用も比べて記録
+    if time_pick and time_pick.get("status"):
+        combos = time_pick.get("combos") or []
+        unit = (time_pick.get("unit") or 0) / 10
+        out["time_bought"] = bool(combos)
+        out["time_hit"] = result.trifecta in combos
+        out["time_rank"] = combos.index(result.trifecta) + 1 if result.trifecta in combos else None
+        out["time_stake"] = round(unit * len(combos))
+        out["time_return"] = round(payout * unit / 100) if result.trifecta in combos else 0
+        c12 = time_pick.get("combos12") or []
+        out["time12_hit"] = result.trifecta in c12
+        out["time12_stake"] = 100 * len(c12)
+        out["time12_return"] = payout if result.trifecta in c12 else 0
+        win_course = next((r.course for r in result.rows if r.place == 1), None)
+        out["time_in_escape"] = win_course == 1 if win_course else None  # イン逃げレースだったか（1コースの艇が1着）
     # 試験中：2連単の買い目
     if ex is not None and result.exacta:
         out["ex_bought"] = bool(ex)
@@ -226,6 +241,7 @@ def build_race(
     ev: Optional[list] = None,
     ex: Optional[list] = None,
     ev_items: Optional[list] = None,
+    time_pick: Optional[dict] = None,
 ) -> dict:
     be = {b.boat: b for b in (before.entries if before else [])}
     rt = (getattr(card, "racetime", None) or {}).get("racers") or {}
@@ -308,7 +324,7 @@ def build_race(
             "rows": [asdict(r) for r in result.rows],
         }
         if not result.cancelled and result.trifecta:
-            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items)
+            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick)
     return payload
 
 
@@ -362,6 +378,16 @@ def race_summary(race: dict) -> dict:
         "co_pick": race.get("ev_pick"),
         "co_items": race.get("ev_items"),
         "co_at": race.get("ev_at"),
+        # TIME予想（ユーザーの予想方法）
+        "time_bought": st.get("time_bought"),
+        "time_hit": st.get("time_hit"),
+        "time_rank": st.get("time_rank"),
+        "time_stake": st.get("time_stake"),
+        "time_return": st.get("time_return"),
+        "time_pick": (race.get("time_pick") or {}).get("combos") if race.get("time_pick") else None,
+        "time_items": time_items(race.get("time_pick")),
+        "time_at": (race.get("time_pick") or {}).get("at"),
+        "time_meta": time_meta(race.get("time_pick")),
         "ex_bought": st.get("ex_bought"),
         "ex_hit": st.get("ex_hit"),
         "ex_stake": st.get("ex_stake"),
@@ -372,6 +398,23 @@ def race_summary(race: dict) -> dict:
         "result_ex": res.get("exacta"),
         "payout_ex": res.get("exacta_payout"),
     }
+
+
+def time_items(tp: Optional[dict]) -> Optional[list]:
+    """TIME予想の買い目（本線・押さえ・追加候補。追加候補は買い目に入れない）。"""
+    if not tp:
+        return None
+    sc = tp.get("scores") or {}
+    out = [{"combo": c, "kind": "本線", "score": sc.get(c)} for c in tp.get("main") or []]
+    out += [{"combo": c, "kind": "押さえ", "score": sc.get(c)} for c in tp.get("sub") or []]
+    out += [{"combo": c, "kind": "追加候補", "score": sc.get(c)} for c in tp.get("extra") or []]
+    return out
+
+
+def time_meta(tp: Optional[dict]) -> Optional[dict]:
+    if not tp:
+        return None
+    return {k: tp.get(k) for k in ("version", "status", "keymen", "unit", "axis", "escape", "confirmed", "ref")}
 
 
 STREAK_BUCKETS = ((0, 0, "0"), (1, 1, "1"), (2, 2, "2"), (3, 3, "3"), (4, 5, "4〜5"), (6, 9, "6〜9"),
@@ -435,7 +478,7 @@ def streak_rows(days: list[dict], ev: bool = False) -> list[dict]:
 
 def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
     venues = []
-    totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0, "ml_races": 0, "ml_fav_hits": 0, "shadow_fav_hits": 0, "alt_races": 0, "alt_hits": 0, "alt_stake": 0, "alt_return": 0, "method_hits": 0, "method_stake": 0, "method_return": 0, "ev_races": 0, "ev_bought": 0, "ev_hits": 0, "ev_stake": 0, "ev_return": 0, "ex_races": 0, "ex_bought": 0, "ex_hits": 0, "ex_stake": 0, "ex_return": 0, "co_races": 0, "co_bought": 0, "co_hits": 0, "co_stake": 0, "co_return": 0}
+    totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0, "ml_races": 0, "ml_fav_hits": 0, "shadow_fav_hits": 0, "alt_races": 0, "alt_hits": 0, "alt_stake": 0, "alt_return": 0, "method_hits": 0, "method_stake": 0, "method_return": 0, "ev_races": 0, "ev_bought": 0, "ev_hits": 0, "ev_stake": 0, "ev_return": 0, "ex_races": 0, "ex_bought": 0, "ex_hits": 0, "ex_stake": 0, "ex_return": 0, "co_races": 0, "co_bought": 0, "co_hits": 0, "co_stake": 0, "co_return": 0, "time_races": 0, "time_bought": 0, "time_hits": 0, "time_stake": 0, "time_return": 0, "time12_hits": 0, "time12_stake": 0, "time12_return": 0}
     for vd in sorted(vdays, key=lambda v: v.jcd):
         races = []
         for rno in range(1, 13):
@@ -470,6 +513,15 @@ def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
                     totals["ev_hits"] += int(st["ev_hit"])
                     totals["ev_stake"] += st["ev_stake"]
                     totals["ev_return"] += st["ev_return"]
+                if "time_hit" in st:
+                    totals["time_races"] += 1
+                    totals["time_bought"] += int(st["time_bought"])
+                    totals["time_hits"] += int(st["time_hit"])
+                    totals["time_stake"] += st["time_stake"]
+                    totals["time_return"] += st["time_return"]
+                    totals["time12_hits"] += int(st["time12_hit"])
+                    totals["time12_stake"] += st["time12_stake"]
+                    totals["time12_return"] += st["time12_return"]
                 if "co_hit" in st:
                     totals["co_races"] += 1
                     totals["co_bought"] += int(st["co_bought"])
@@ -507,7 +559,9 @@ def update_record(date: str, totals: dict, demo: bool) -> None:
     agg = {k: sum(d.get(k, 0) for d in days) for k in ("races", "settled", "hits", "honmei_hits", "stake", "return", "ml_races", "ml_fav_hits", "shadow_fav_hits", "alt_races", "alt_hits", "alt_stake", "alt_return", "method_hits", "method_stake", "method_return",
                                                     "ev_races", "ev_bought", "ev_hits", "ev_stake", "ev_return",
                                                     "ex_races", "ex_bought", "ex_hits", "ex_stake", "ex_return",
-                                                    "co_races", "co_bought", "co_hits", "co_stake", "co_return")}
+                                                    "co_races", "co_bought", "co_hits", "co_stake", "co_return",
+                                                    "time_races", "time_bought", "time_hits", "time_stake", "time_return",
+                                                    "time12_hits", "time12_stake", "time12_return")}
     day_files = [read_json(DATA_DIR / d["date"] / "day.json") for d in days]
     day_files = [x for x in day_files if x]
     streaks = {"picks": losing_streaks(streak_rows(day_files)), "ev": losing_streaks(streak_rows(day_files, ev=True))}

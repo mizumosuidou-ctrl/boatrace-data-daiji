@@ -357,8 +357,12 @@ def sandbox(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_pipeline_full_day(sandbox):
+def test_pipeline_full_day(sandbox, monkeypatch):
+    from minamo import time_predict
     from minamo.pipeline import Pipeline
+
+    (sandbox / "time_v3.json").write_text(json.dumps(TIME_CFG))
+    monkeypatch.setattr(time_predict, "CONFIG_PATH", sandbox / "time_v3.json")
 
     fetcher = FakeFetcher()
     pipe = Pipeline(fetcher=fetcher, ai_enabled=False)
@@ -398,6 +402,9 @@ def test_pipeline_full_day(sandbox):
     assert pipe.tick(date, deadline - timedelta(minutes=1)) == 1
     race = json.loads(race_file.read_text())
     assert race["ev_at"] == fixed_at and race["pick_fixed"] == fixed_at
+    # TIME予想（設定があるとき）：判定と、締切前に決めた時刻
+    assert race["time_pick"]["status"] in ("予想可能", "進入待ち", "データ不足", "キーマン不成立")
+    assert race["time_pick"]["at"] == fixed_at and race["time_pick"]["version"] == "test"
     # 締切後：結果を照合
     assert pipe.tick(date, deadline + timedelta(minutes=10)) == 1
     race = json.loads(race_file.read_text())
@@ -414,6 +421,7 @@ def test_pipeline_full_day(sandbox):
     assert race["settle"]["ex_return"] == (1230 if "4-1" in race["ex_pick"] else 0)
     # 合成オッズ配分：同じ3連単の組を、1レース100の投資でオッズの逆数に配分
     assert race["settle"]["co_stake"] == (100 if race["ev_pick"] else 0) and "co_hit" in race["settle"]
+    assert "time_hit" in race["settle"] and race["settle"]["time_stake"] == 300 * len(race["time_pick"]["combos"])
     assert len(race["tri_all"]) == 120 and abs(sum(race["tri_all"].values()) - 1) < 1e-3 and len(race["odds_all"]) == 120
     assert all(x["ev"] >= store.EV_MIN for x in race["ev_items"])
     summ = json.loads((sandbox / "data" / date / "day.json").read_text())["venues"][0]["races"]
@@ -772,7 +780,10 @@ def test_live_check(tmp_path):
                            "exacta_payout": 500, "cancelled": False},
                 "settle": {"ev_bought": True, "ev_hit": hit, "ev_stake": 200, "ev_return": 1800 if hit else 0,
                            "ex_bought": True, "ex_hit": not hit, "ex_stake": 100, "ex_return": 0 if hit else 500,
-                           "co_bought": True, "co_hit": hit, "co_stake": 100, "co_return": 1200 if hit else 0},
+                           "co_bought": True, "co_hit": hit, "co_stake": 100, "co_return": 1200 if hit else 0,
+                           "time_bought": True, "time_hit": hit, "time_stake": 600, "time_return": 5400 if hit else 0,
+                           "time12_hit": hit, "time12_stake": 1200, "time12_return": 1800 if hit else 0, "time_in_escape": hit},
+                "time_pick": {"combos": ["1-2-3", "2-1-3", "1-3-2"], "at": f"{d[:4]}-{d[4:6]}-{d[6:]}T09:00:00+09:00"},
                 "ev_items": [{"combo": "1-2-3", "p": 0.1, "odds": 15.0, "ev": 1.5}, {"combo": "1-3-2", "p": 0.05, "odds": 30.0, "ev": 1.5}],
                 "ev_at": f"{d[:4]}-{d[4:6]}-{d[6:]}T{int(deadline[:2]):02d}:{int(deadline[3:]) - 2 if int(deadline[3:]) >= 2 else 0:02d}:00+09:00",
                 "ex_items": [{"combo": "2-1", "p": 0.3, "odds": 5.0, "ev": 1.5}]}
@@ -800,6 +811,9 @@ def test_live_check(tmp_path):
     assert "10/05    2R 的中  1R" in text
     # 合成オッズ配分：15倍と30倍（合成10倍）。1レース100の投資で、当たれば1,800×10÷15＝1,200。2本÷5R → 480%
     assert "3連単（合成オッズ配分" in text and "回収率 480.0%" in text and "1レース1,000円" in text
+    # TIME予想：3点×1点2,000円（保存は200）。当たり2本×5,400 ÷ 5R×600 → 360%。12点運用 3,600÷6,000 → 60%
+    assert "TIME予想（あなたの予想方法" in text and "平均3.0点" in text and "12点運用（1点1,000円）なら 回収率   60.0%" in text
+    assert "イン逃げレース" in text and "あと495Rで500R" in text
     # 決めた時刻：10:30→10:28、11:00→11:00（0分前）、11:30→11:28
     assert live_check.mins_before("20261003", "10:30", "2026-10-03T10:28:00+09:00") == 2.0
     assert live_check.mins_before("20261003", None, None) is None
@@ -830,3 +844,82 @@ def test_composite_odds_picks():
     assert store.co_picks(tri, {"1-2-3": 1.4}, 1.5) == [] and store.co_picks(tri, None) == []
     # オッズの無い組はとばす
     assert [x["combo"] for x in store.co_picks(tri, {"1-3-2": 6.0, "2-1-3": 10.0}, 2.0)] == ["1-3-2", "2-1-3"]
+
+
+# TIME予想のテスト用の設定（数字はテスト用の作り物。本当の設定はサーバーの var/state/time_v3.json だけにある）
+TIME_CFG = {
+    "version": "test",
+    "keyman": {"series_rank_max": 10, "race_rank_max": 2, "min_runs": 2, "w_cond": 500, "series_base": 100, "series_step": 5,
+               "race_base": 50, "race_step": 10, "runs_step": 1, "runs_cap": 5, "max": 2},
+    "head": {"sr_top": 10, "deep_top": 5, "normal_top": 5, "fav_top": 5, "w_eval": 0.1, "w_course": 0.1, "normal_rank": 1,
+             "deep_rank": 1, "n_candidates": 2},
+    "quota": {"head": 3, "km2_head": 1},
+    "ticket": {"axis_head": 100, "head_base": 40, "head_step": 5, "second_base": 40, "second_step": 5, "third_base": 30,
+               "third_step": 4, "km2_both": 50, "km2_one": 20, "km3_both": 50, "km3_one": 30, "km_pair": 40, "km_head": 20,
+               "rt_eval_w": 0.1, "normal_match_base": 100, "normal_match_step": 4, "deep_match_base": 10, "deep_match_step": 1,
+               "priority_base": 300, "priority_step": 5, "partner_top": 3, "deep_points": 6, "strong_conds": 2},
+    "points": {"narrow_normal": 6, "narrow": 6, "narrow_unit": 3000, "wide": 12, "wide_unit": 1500, "wide_main": 8,
+               "extra_escape_below": 0.5, "extra_max": 6},
+}
+
+
+def _time_boats(over=None):
+    base = [  # 艇番・コース・節内順位・6艇内順位・走数・平均ST順位・MINAMOの1着確率・統計モデル
+        dict(boat=1, course=1, series_rank=30, race_rank=4, runs=4, sr=2.5, p=0.50, deep_p=0.45),
+        dict(boat=2, course=2, series_rank=40, race_rank=5, runs=4, sr=3.5, p=0.15, deep_p=0.15),
+        dict(boat=3, course=3, series_rank=3, race_rank=1, runs=5, sr=3.0, p=0.12, deep_p=0.15),  # 両方を満たす
+        dict(boat=4, course=4, series_rank=8, race_rank=3, runs=3, sr=2.0, p=0.10, deep_p=0.10),  # 節内だけ・平均ST順位1位
+        dict(boat=5, course=5, series_rank=5, race_rank=2, runs=1, sr=4.0, p=0.08, deep_p=0.10),  # 集計1本：参考だけ
+        dict(boat=6, course=6, series_rank=50, race_rank=6, runs=4, sr=4.5, p=0.05, deep_p=0.05),
+    ]
+    for b in base:
+        b.update(toban=str(4000 + b["boat"]), name=f"選手{b['boat']}", rt_best=110000 + b["race_rank"] * 100, series_n=60,
+                 rt_eval=None, win_c=0.2)
+        b.update((over or {}).get(b["boat"], {}))
+    return base
+
+
+def test_time_predict_keymen_and_tickets():
+    from minamo import time_predict as tp
+
+    normal = ["1-2-3", "1-3-2", "1-2-4", "1-4-2", "1-3-4", "1-4-3"]
+    r = tp.predict(_time_boats(), True, normal, 1, 0.6, None, TIME_CFG)
+    assert r["status"] == "予想可能" and [k["boat"] for k in r["keymen"]] == [3, 4]
+    assert r["ref"] == [{"boat": 5, "name": "選手5", "runs": 1}]  # 集計1本はキーマンにしない
+    k1, k2 = r["keymen"]
+    assert k1["both"] and k1["role"].startswith("1着") and "平均ST順位1位" in k2["role"]
+    assert len(r["combos"]) == 6 and r["unit"] == 3000 and r["main"] == r["combos"] and len(r["combos12"]) == 12
+    assert all({3, 4} & set(map(int, c.split("-"))) for c in r["combos"] + r["combos12"])  # どの組にもキーマン
+    assert sum(c.startswith("3-") for c in r["combos"]) >= 3 and sum(c.startswith("4-") for c in r["combos"]) >= 1
+    assert not any(c[0] in "256" for c in r["combos"])  # キーマンでも本命でもない艇は、1着の候補の上位でなければ頭にしない
+    # 平均ST順位1位でないキーマン2は1着にしない
+    r2 = tp.predict(_time_boats({4: {"sr": 3.8}}), True, normal, 1, 0.6, None, TIME_CFG)
+    assert [k["boat"] for k in r2["keymen"]] == [3, 4] and r2["keymen"][1]["role"] == "2着・3着"
+    assert not any(c.startswith("4-") for c in r2["combos"] + r2["combos12"])
+    # 通常予想が6点でなければ12点（本線8・押さえ4）。イン逃げ指数50%未満なら、キーマン頭の追加候補（買い目には入れない）
+    r3 = tp.predict(_time_boats(), True, normal[:5], 1, 0.4, None, TIME_CFG)
+    assert len(r3["combos"]) == 12 and len(r3["main"]) == 8 and len(r3["sub"]) == 4 and r3["unit"] == 1500
+    assert r3["extra"] and not set(r3["extra"]) & set(r3["combos"]) and all(c[0] in "34" for c in r3["extra"])
+    # 進入未確定・タイム無し・キーマン無し
+    assert tp.predict(_time_boats(), False, normal, 1, 0.6, None, TIME_CFG)["status"] == "進入待ち"
+    assert tp.predict(_time_boats({i: {"rt_best": None} for i in range(1, 7)}), True, normal, 1, 0.6, None, TIME_CFG)["status"] == "データ不足"
+    none = {i: {"series_rank": 40, "race_rank": 5} for i in range(1, 7)}
+    assert tp.predict(_time_boats(none), True, normal, 1, 0.6, None, TIME_CFG)["status"] == "キーマン不成立"
+
+
+def test_time_settle_and_config(tmp_path):
+    from minamo import time_predict as tp
+
+    assert tp.config(tmp_path / "none.json") is None  # 設定が無ければ動かない
+    (tmp_path / "t.json").write_text(json.dumps(TIME_CFG))
+    assert tp.config(tmp_path / "t.json")["version"] == "test"
+    res = RaceResult(trifecta="3-1-4", trifecta_payout=2480,
+                     rows=[ResultRow(place=1, boat=3, course=3), ResultRow(place=2, boat=1, course=1)])
+    pick = {"status": "予想可能", "combos": ["3-1-4", "1-3-4"], "unit": 3000, "combos12": ["1-3-4"]}
+    st = store.settle({"picks": []}, res, None, None, None, None, pick)
+    # 1点3,000円（保存は300）×2点。的中は1番目、払戻 300×24.8＝7,440（表示は×10）
+    assert st["time_hit"] and st["time_rank"] == 1 and st["time_stake"] == 600 and st["time_return"] == 7440
+    assert st["time12_hit"] is False and st["time12_stake"] == 100 and st["time_in_escape"] is False
+    st = store.settle({"picks": []}, res, None, None, None, None, {"status": "キーマン不成立", "combos": []})
+    assert st["time_bought"] is False and st["time_stake"] == 0
+    assert "time_hit" not in store.settle({"picks": []}, res, None, None, None, None, None)
