@@ -629,12 +629,18 @@ function myCombos(f) {
   for (const a of f[0]) for (const b of f[1]) for (const c of f[2]) if (a !== b && b !== c && a !== c) out.push(`${a}-${b}-${c}`);
   return out;
 }
+// あなたの買い目：追加した組（list）＋いま選んでいるフォーメーション（重なりは1点）
+const myAll = (v) => [...new Set([...(v.list || []), ...myCombos(v.f || [[], [], []])])];
 function myPickHtml(race) {
   const v = myLoad(race);
   const P = race.tri_all || Object.fromEntries((race.prediction.trifecta || []).map((t) => [t.combo, t.p]));
   const O = race.odds_all || race.odds || {};
   const rank = Object.fromEntries(Object.keys(P).sort((a, b) => P[b] - P[a]).map((c, i) => [c, i + 1]));
-  const mine = myCombos(v.f);
+  const mine = myAll(v);
+  const pending = myCombos(v.f).filter((c) => !(v.list || []).includes(c));
+  const comp = mine.length && mine.every((c) => O[c]) ? compositeOf(mine.map((c) => ({ odds: O[c] }))) : null;
+  // 自動配分：合計金額 × 合成オッズ ÷ オッズ（100円単位、最低100円）＝どれが当たっても払戻がほぼ同じ
+  const stake = (c) => (v.budget && comp ? Math.max(100, Math.round((v.budget * comp) / O[c] / 100) * 100) : null);
   const minamo = new Set((race.ai?.picks || []).map((p) => p.combo));
   const trial = new Set(race.ev_pick || []);
   const won = race.result && !race.result.cancelled ? race.result.trifecta : null;
@@ -643,18 +649,26 @@ function myPickHtml(race) {
   const hitMine = won && mine.includes(won);
   const rows = mine.slice().sort((a, b) => (P[b] || 0) - (P[a] || 0)).map((c) => `<tr class="${c === won ? "on" : ""}">
     <td>${combo(c)}</td><td>${P[c] != null ? pct(P[c], 1) + "%" : "--"}</td><td>${rank[c] ? rank[c] + "位" : "--"}</td><td>${O[c] ?? "--"}</td>
-    <td>${P[c] != null && O[c] ? (P[c] * O[c]).toFixed(2) : "--"}</td><td>${minamo.has(c) ? "◎" : ""}${trial.has(c) ? "★" : ""}</td></tr>`).join("");
+    <td>${P[c] != null && O[c] ? (P[c] * O[c]).toFixed(2) : "--"}</td>${v.budget ? `<td>${stake(c) ? yen(stake(c)) : "--"}</td>` : ""}<td>${minamo.has(c) ? "◎" : ""}${trial.has(c) ? "★" : ""}</td>
+    <td><button type="button" class="btn ghost my-del" data-del="${c}" aria-label="${c}を削除">削除</button></td></tr>`).join("");
+  const pays = v.budget && comp ? mine.map((c) => Math.round(stake(c) * O[c])) : [];
+  const total = v.budget && comp ? mine.reduce((a, c) => a + stake(c), 0) : 0;
   const picker = ["1着", "2着", "3着"].map((lab, i) => `<div class="my-row"><span class="my-lab">${lab}</span>${[1, 2, 3, 4, 5, 6].map((b) => `<button type="button" class="my-b ${v.f[i].includes(b) ? "on" : ""}" data-pos="${i}" data-boat="${b}" aria-pressed="${v.f[i].includes(b)}">${boat(b, "sm")}</button>`).join("")}</div>`).join("");
   const sameN = mine.filter((c) => minamo.has(c)).length;
   return `<div class="panel my-panel">
-    <div class="my-pick">${picker}<button type="button" class="btn ghost my-clear">クリア</button></div>
+    <div class="my-pick">${picker}
+      <div class="my-acts"><button type="button" class="btn my-add" ${pending.length ? "" : "disabled"}>買い目に追加${pending.length ? `（${pending.length}点）` : ""}</button>
+        <button type="button" class="btn ghost my-clear">全部消す</button></div>
+      <p class="small muted" style="margin:0">艇を押してフォーメーションを作り、「買い目に追加」で下の表に入れます。続けて別のフォーメーション（例：1-234-5 のあとに 1-5-234）を作って追加できます。表の「削除」で1点ずつ外せます。</p>
+      <div class="my-acts"><label class="small">合計金額（自動配分）<input type="number" inputmode="numeric" class="my-budget" min="100" step="100" value="${v.budget || ""}" placeholder="例 10000">円</label></div></div>
     ${mine.length ? `<div class="calib my-sum">
       <div class="panel"><h4>点数</h4><div class="big">${mine.length}<small style="font-size:.45em">点</small></div><div class="small">1点1,000円で ${yen(mine.length * 1000)}</div></div>
       <div class="panel"><h4>MINAMOから見た的中率</h4><div class="big">${pct(sumP, 1)}<small style="font-size:.45em">%</small></div><div class="small">選んだ組の確率の合計</div></div>
-      <div class="panel"><h4>期待値の平均</h4><div class="big">${evs.length ? (evs.reduce((a, x) => a + x, 0) / evs.length).toFixed(2) : "--"}</div><div class="small">確率×オッズ（1.0より上なら割安）</div></div>
+      <div class="panel"><h4>合成オッズ</h4><div class="big">${comp ? comp.toFixed(2) : "--"}<small style="font-size:.45em">倍</small></div><div class="small">期待値の平均 ${evs.length ? (evs.reduce((a, x) => a + x, 0) / evs.length).toFixed(2) : "--"}（1.0より上なら割安）</div></div>
       <div class="panel"><h4>${won ? (hitMine ? "的中" : "はずれ") : "MINAMOと同じ組"}</h4><div class="big">${won ? (hitMine ? yen((race.result.payout || 0) * BET_UNIT) : "--") : `${sameN}<small style="font-size:.45em">/${mine.length}点</small>`}</div><div class="small">${won ? `結果 ${esc(won)}${race.settle ? ` · MINAMOは${race.settle.trifecta_hit ? "的中" : "はずれ"}` : ""}` : "◎＝MINAMOの推奨買い目にもある組"}</div></div>
     </div>
-    <div class="ledger-scroll"><table class="streak-t my-t"><thead><tr><th>3連単</th><th>MINAMOの確率</th><th>120通り中</th><th>オッズ</th><th>期待値</th><th>MINAMO</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<p class="small muted" style="margin:12px 2px 0">1着・2着・3着に入れる艇を押してください。押した艇で組み合わせを作ります（例：1着①、2着②③、3着②③④ → 4点）。</p>`}
+    <div class="ledger-scroll"><table class="streak-t my-t"><thead><tr><th>3連単</th><th>MINAMOの確率</th><th>120通り中</th><th>オッズ</th><th>期待値</th>${v.budget ? "<th>金額</th>" : ""}<th>MINAMO</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${v.budget && comp ? `<p class="small" style="margin:8px 2px 0">自動配分：合計 ${yen(total)}（100円単位なので入れた金額と少しずれます） · 当たれば ${Math.min(...pays) === Math.max(...pays) ? yen(pays[0]) : `${yen(Math.min(...pays))}〜${yen(Math.max(...pays))}`}${Math.min(...pays) < total ? ' · <b>トリガミの組があります</b>' : ""}</p>` : ""}` : `<p class="small muted" style="margin:12px 2px 0">1着・2着・3着に入れる艇を押してください。押した艇で組み合わせを作ります（例：1着①、2着②③、3着②③④ → 4点）。</p>`}
   </div>`;
 }
 function bindMyPick(race) {
@@ -662,12 +676,29 @@ function bindMyPick(race) {
   if (!box) return;
   box.addEventListener("click", (ev) => {
     const b = ev.target.closest(".my-b");
+    const del = ev.target.closest(".my-del");
     const v = myLoad(race);
     if (b) {
       const i = Number(b.dataset.pos), n = Number(b.dataset.boat);
       v.f[i] = v.f[i].includes(n) ? v.f[i].filter((x) => x !== n) : [...v.f[i], n].sort();
-    } else if (ev.target.closest(".my-clear")) v.f = [[], [], []];
-    else return;
+    } else if (ev.target.closest(".my-add")) {
+      v.list = myAll(v);  // いまのフォーメーションを買い目に入れて、選び直せるようにする
+      v.f = [[], [], []];
+    } else if (del) {
+      v.list = myAll(v).filter((c) => c !== del.dataset.del);
+      v.f = [[], [], []];
+    } else if (ev.target.closest(".my-clear")) {
+      v.f = [[], [], []];
+      v.list = [];
+    } else return;
+    mySave(race, v);
+    box.innerHTML = myPickHtml(race);
+  });
+  box.addEventListener("change", (ev) => {
+    if (!ev.target.classList.contains("my-budget")) return;
+    const v = myLoad(race);
+    const n = Math.round(Number(ev.target.value) / 100) * 100;
+    v.budget = n >= 100 ? n : null;
     mySave(race, v);
     box.innerHTML = myPickHtml(race);
   });
@@ -1099,9 +1130,8 @@ function myRecordHtml(days) {
   for (const k of keys) {
     const r = byKey[k];
     if (!r || !r.result || r.cancelled) continue;
-    let f;
-    try { f = JSON.parse(localStorage.getItem(k)).f; } catch { continue; }
-    const c = myCombos(f);
+    let c;
+    try { c = myAll(JSON.parse(localStorage.getItem(k)) || {}); } catch { continue; }
     if (!c.length) continue;
     n++; pts += c.length;
     if (c.includes(r.result)) { hits++; ret += r.payout || 0; }
