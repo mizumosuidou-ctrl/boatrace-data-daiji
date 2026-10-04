@@ -781,36 +781,45 @@ async function renderRace(r, refresh = false) {
 
 /* ------------------------------------------------------------ 今買う候補（試験中：オッズで絞った買い目） */
 const hhmm = (iso) => (iso ? iso.slice(11, 16) : "--:--");
-function pickCard(date, r, now) {
+const PICK_KIND = {
+  ev: { label: "3連単", rule: "MINAMOの確率を市場（オッズ）と合わせて補正し、期待値（確率×オッズ）が1.2以上の3連単を最大6点", check: "過去の検証（学習に使っていない約3,000レース）で回収率118%" },
+  ex: { label: "2連単", rule: "補正した確率を2連単にまとめ、2連単のオッズで期待値1.2以上の組を最大3点", check: "過去の検証（学習に使っていない約3,000レース）で回収率120%（幅109〜131%）" },
+};
+const pickRes = (r, k) => (k === "ev" ? r.result : r.result_ex);
+const pickPay = (r, k) => (k === "ev" ? r.payout : r.payout_ex);
+function pickCard(date, r, now, k = "ev") {
   const dl = deadlineMs(date, r.deadline);
-  const done = r.result && !r.cancelled;
-  const items = r.ev_items || (r.ev_pick || []).map((c) => ({ combo: c }));
-  const won = done && r.ev_hit;
+  const res = pickRes(r, k);
+  const done = res && !r.cancelled;
+  const items = r[`${k}_items`] || (r[`${k}_pick`] || []).map((c) => ({ combo: c }));
+  const won = done && r[`${k}_hit`];
   return `<a class="panel pick-card ${done ? (won ? "won" : "lost") : ""}" href="#/race/${date}/${r.v.jcd}/${r.rno}">
     <div class="pick-h"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span>
-      ${done ? `<span class="chip ${won ? "src-claude" : ""}">${won ? `的中 ${yen((r.payout || 0) * BET_UNIT)}` : "はずれ"}</span>`
+      ${done ? `<span class="chip ${won ? "src-claude" : ""}">${won ? `的中 ${yen((pickPay(r, k) || 0) * BET_UNIT)}` : "はずれ"}</span>`
         : r.cancelled ? `<span class="chip">中止</span>` : dl > now ? `<span class="cd" data-deadline="${dl}">${fmtCountdown(dl - now)}</span>` : `<span class="chip">締切</span>`}</div>
-    <table class="pick-t"><thead><tr><th>3連単</th><th>確率</th><th>オッズ</th><th>期待値</th></tr></thead><tbody>
-      ${items.map((x) => `<tr class="${done && x.combo === r.result ? "on" : ""}"><td>${combo(x.combo)}</td><td>${x.p != null ? pct(x.p, 1) + "%" : "--"}</td><td>${x.odds ?? "--"}</td><td>${x.ev != null ? x.ev.toFixed(2) : "--"}</td></tr>`).join("")}
+    <table class="pick-t"><thead><tr><th>${PICK_KIND[k].label}</th><th>確率</th><th>オッズ</th><th>期待値</th></tr></thead><tbody>
+      ${items.map((x) => `<tr class="${done && x.combo === res ? "on" : ""}"><td>${combo(x.combo)}</td><td>${x.p != null ? pct(x.p, 1) + "%" : "--"}</td><td>${x.odds ?? "--"}</td><td>${x.ev != null ? x.ev.toFixed(2) : "--"}</td></tr>`).join("")}
     </tbody></table>
-    <div class="small muted">${items.length}点 · 1点1,000円で ${yen(items.length * 1000)} · オッズ ${hhmm(r.ev_at)} 時点${done ? ` · 結果 ${esc(r.result)}` : ""}</div>
+    <div class="small muted">${items.length}点 · 1点1,000円で ${yen(items.length * 1000)} · オッズ ${hhmm(r[`${k}_at`])} 時点${done ? ` · 結果 ${esc(res)}` : ""}</div>
   </a>`;
 }
-async function renderPicks(refresh = false) {
+const getPickKind = () => { try { return localStorage.getItem("minamo-pick-kind") || "ev"; } catch { return "ev"; } };
+async function renderPicks(refresh = false, k = getPickKind()) {
   if (!state.day || state.day.date !== state.date || refresh) await loadDay();
   const date = state.date, now = nowMs();
-  const races = allRaces().filter((r) => Array.isArray(r.ev_pick));
-  const bought = races.filter((r) => r.ev_pick.length);
+  const races = allRaces().filter((r) => Array.isArray(r[`${k}_pick`]));
+  const bought = races.filter((r) => r[`${k}_pick`].length);
   const skipped = races.length - bought.length;
-  const open = bought.filter((r) => !r.result && !r.cancelled).sort((a, b) => a.deadline.localeCompare(b.deadline));
-  const done = bought.filter((r) => r.result || r.cancelled).sort((a, b) => b.deadline.localeCompare(a.deadline));
-  const settled = done.filter((r) => r.result && !r.cancelled && r.ev_stake != null);
-  const stake = settled.reduce((a, r) => a + r.ev_stake, 0), ret = settled.reduce((a, r) => a + (r.ev_return || 0), 0);
-  const hits = settled.filter((r) => r.ev_hit).length;
+  const open = bought.filter((r) => !pickRes(r, k) && !r.cancelled).sort((a, b) => a.deadline.localeCompare(b.deadline));
+  const done = bought.filter((r) => pickRes(r, k) || r.cancelled).sort((a, b) => b.deadline.localeCompare(a.deadline));
+  const settled = done.filter((r) => pickRes(r, k) && !r.cancelled && r[`${k}_stake`] != null);
+  const stake = settled.reduce((a, r) => a + r[`${k}_stake`], 0), ret = settled.reduce((a, r) => a + (r[`${k}_return`] || 0), 0);
+  const hits = settled.filter((r) => r[`${k}_hit`]).length;
   const y = scrollY;
   $("#main").innerHTML = `<div class="wrap"><section class="section">
     <span class="eyebrow">${fmtDate(date)}（${weekday(date)}）</span>
-    <h1 class="section-title" style="font-size:clamp(36px,5vw,72px)">今買う候補<small>試験中の選び方：MINAMOの確率を市場（オッズ）と合わせて補正し、期待値（確率×オッズ）が1.2以上の組を最大6点。無ければ見送り。過去の検証（学習に使っていない約3,000レース）では回収率118%でしたが、まだ試験中です</small></h1>
+    <h1 class="section-title" style="font-size:clamp(36px,5vw,72px)">今買う候補<small>試験中の選び方（${PICK_KIND[k].label}）：${PICK_KIND[k].rule}。無ければ見送り。${PICK_KIND[k].check}でしたが、まだ試験中です</small></h1>
+    <div class="seg" role="group" aria-label="券種" id="pickKind">${Object.entries(PICK_KIND).map(([kk, x]) => `<button type="button" data-kind="${kk}" class="${kk === k ? "on" : ""}">${x.label}</button>`).join("")}</div>
     <div class="calib">
       <div class="panel"><h4>今日の候補</h4><div class="big">${bought.length}<small style="font-size:.45em">R</small></div><div class="small">見送り ${skipped}R · 締切前 ${open.length}R</div></div>
       <div class="panel"><h4>的中</h4><div class="big">${hits}<small style="font-size:.45em">/${settled.length}R</small></div><div class="small">結果の出たレース</div></div>
@@ -818,11 +827,17 @@ async function renderPicks(refresh = false) {
       <div class="panel"><h4>今日の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${stake ? signedYen((ret - stake) * BET_UNIT) : "--"}</div><div class="small">1点1,000円</div></div>
     </div>
     <div class="section-head" style="margin-top:34px"><div><h2 class="section-title">締切前・結果待ち<small>締切の近い順。オッズが変わると、締切直前まで組が入れ替わることがあります（オッズは表示の時刻のもの）</small></h2></div></div>
-    ${open.length ? `<div class="pick-grid">${open.map((r) => pickCard(date, r, now)).join("")}</div>` : `<div class="panel" style="padding:20px">今は締切前の候補がありません。直前情報（展示）が出たレースから順に候補を決めます。</div>`}
-    ${done.length ? `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">結果<small>新しい順</small></h2></div></div><div class="pick-grid">${done.map((r) => pickCard(date, r, now)).join("")}</div>` : ""}
+    ${open.length ? `<div class="pick-grid">${open.map((r) => pickCard(date, r, now, k)).join("")}</div>` : `<div class="panel" style="padding:20px">今は締切前の候補がありません。直前情報（展示）が出たレースから順に候補を決めます。</div>`}
+    ${done.length ? `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">結果<small>新しい順</small></h2></div></div><div class="pick-grid">${done.map((r) => pickCard(date, r, now, k)).join("")}</div>` : ""}
     <p class="small muted" style="margin-top:22px;line-height:1.7">これまでの通算は<a href="#/record">成績</a>の「試験中：オッズで絞った買い目」にあります。舟券の購入はご自身の判断でお願いします。</p>
   </section></div>`;
   if (refresh) scrollTo({ top: y });
+  $("#pickKind").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-kind]");
+    if (!b) return;
+    try { localStorage.setItem("minamo-pick-kind", b.dataset.kind); } catch { /* 保存できなくても切替はする */ }
+    renderPicks(false, b.dataset.kind);
+  });
   document.title = "今買う候補 — MINAMO";
   tick();
 }
@@ -901,6 +916,14 @@ async function renderRecord() {
         <div class="panel rv" style="--i:3"><h4>1点1,000円の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.ev_return >= T.ev_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.ev_return - T.ev_stake) * 10)}</div><div class="small">投資 ${yen(T.ev_stake * 10)} · 払戻 ${yen(T.ev_return * 10)}</div></div>
       </div>
       ${evTrendHtml(rec.days)}` : ""}
+      ${T.ex_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：2連単の買い目<small>${PICK_KIND.ex.rule}（無ければ見送り）。実際の推奨買い目は変えず、成績だけを数えています</small></h2></div></div>
+      <div class="calib">
+        <div class="panel rv"><h4>的中率</h4><div class="big">${T.ex_bought ? ((T.ex_hits / T.ex_bought) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">的中 ${T.ex_hits}/${T.ex_bought}R（買ったレースのうち）</div></div>
+        <div class="panel rv" style="--i:1"><h4>回収率</h4><div class="big" style="color:var(--accent)">${T.ex_stake ? ((T.ex_return / T.ex_stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">払戻 ÷ 投資</div></div>
+        <div class="panel rv" style="--i:2"><h4>買ったレース</h4><div class="big">${T.ex_bought}<small style="font-size:.45em">R</small></div><div class="small">見送り ${T.ex_races - T.ex_bought}R · 平均 ${T.ex_bought ? (T.ex_stake / 100 / T.ex_bought).toFixed(1) : "--"}点</div></div>
+        <div class="panel rv" style="--i:3"><h4>1点1,000円の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.ex_return >= T.ex_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.ex_return - T.ex_stake) * 10)}</div><div class="small">投資 ${yen(T.ex_stake * 10)} · 払戻 ${yen(T.ex_return * 10)}</div></div>
+      </div>
+      ${evTrendHtml(rec.days, "ex", "試験中の2連単")}` : ""}
       ${T.ml_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">予想エンジンの比較<small>同じレースで、それぞれの本命（1着確率1位）が1着になった割合</small></h2></div></div>
       <div class="calib">
         <div class="panel rv"><h4>機械学習</h4><div class="big" style="color:var(--accent)">${((T.ml_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
@@ -950,13 +973,13 @@ function myRecordHtml(days) {
 }
 
 /* ------------------------------------------------------------ 試験中の買い目の回収率の推移（累計） */
-function evTrendHtml(days) {
-  const D = days.filter((d) => d.ev_stake > 0);
+function evTrendHtml(days, k = "ev", label = "試験中の買い目") {
+  const D = days.filter((d) => d[`${k}_stake`] > 0);
   if (!D.length) return "";
   let es = 0, er = 0, ps = 0, pr = 0;
   const pts = D.map((d) => {
-    es += d.ev_stake; er += d.ev_return || 0; ps += d.stake || 0; pr += d.return || 0;
-    return { date: d.date, ev: (er / es) * 100, pk: ps ? (pr / ps) * 100 : null, evDay: (d.ev_return / d.ev_stake) * 100, n: d.ev_bought };
+    es += d[`${k}_stake`]; er += d[`${k}_return`] || 0; ps += d.stake || 0; pr += d.return || 0;
+    return { date: d.date, ev: (er / es) * 100, pk: ps ? (pr / ps) * 100 : null, evDay: ((d[`${k}_return`] || 0) / d[`${k}_stake`]) * 100, n: d[`${k}_bought`] };
   });
   // 画面の幅に合わせて描く（スマホで文字が小さくならないように）
   const W = Math.round(Math.min(800, Math.max(300, ($("#main")?.clientWidth || 800) - 90))), H = 260, padL = 40, padR = 86, padT = 16, padB = 34;
@@ -970,17 +993,17 @@ function evTrendHtml(days) {
   const xl = pts.map((p, i) => (i % step === 0 || i === pts.length - 1 ? `<text x="${x(i)}" y="${H - padB + 16}" text-anchor="middle">${p.date.slice(4, 6)}/${p.date.slice(6)}</text>` : "")).join("");
   const last = pts[pts.length - 1];
   const bw = pts.length > 1 ? (W - padL - padR) / (pts.length - 1) : 40;
-  const hits = pts.map((p, i) => `<rect class="hit" x="${x(i) - bw / 2}" y="${padT}" width="${bw}" height="${H - padT - padB}"><title>${fmtDate(p.date)}  試験中 累計 ${p.ev.toFixed(1)}%（この日 ${p.evDay.toFixed(1)}%・${p.n}R）${p.pk != null ? ` ／ 推奨買い目 累計 ${p.pk.toFixed(1)}%` : ""}</title></rect>`).join("");
+  const hits = pts.map((p, i) => `<rect class="hit" x="${x(i) - bw / 2}" y="${padT}" width="${bw}" height="${H - padT - padB}"><title>${fmtDate(p.date)}  ${label} 累計 ${p.ev.toFixed(1)}%（この日 ${p.evDay.toFixed(1)}%・${p.n}R）${p.pk != null ? ` ／ 推奨買い目 累計 ${p.pk.toFixed(1)}%` : ""}</title></rect>`).join("");
   const rows = pts.map((p) => `<tr><td>${fmtDate(p.date)}</td><td>${p.n}R</td><td>${p.evDay.toFixed(1)}%</td><td>${p.ev.toFixed(1)}%</td><td>${p.pk != null ? p.pk.toFixed(1) + "%" : "--"}</td></tr>`).join("");
   return `<div class="panel chart trend rv">
     <div class="section-head" style="margin:0 0 8px"><span class="eyebrow">回収率の推移（はじめからの累計）</span>
-      <span class="legend"><span class="key ev"></span>試験中の買い目 <span class="key pk"></span>推奨買い目（確率上位）</span></div>
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="試験中の買い目と推奨買い目の、累計回収率の推移">
+      <span class="legend"><span class="key ev"></span>${label} <span class="key pk"></span>推奨買い目（3連単・確率上位）</span></div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${label}と推奨買い目の、累計回収率の推移">
       ${grid}${xl}
       <path class="ln pk" d="${path("pk")}"/><path class="ln ev" d="${path("ev")}"/>
       ${pts.map((p, i) => `<circle class="pt ev" cx="${x(i)}" cy="${y(p.ev)}" r="4"/>`).join("")}
       ${last.pk != null ? `<text class="lab" x="${x(pts.length - 1) + 8}" y="${y(last.pk) + 4}">推奨 ${last.pk.toFixed(0)}%</text>` : ""}
-      <text class="lab strong" x="${x(pts.length - 1) + 8}" y="${y(last.ev) + 4}">試験中 ${last.ev.toFixed(0)}%</text>
+      <text class="lab strong" x="${x(pts.length - 1) + 8}" y="${y(last.ev) + 4}">${k === "ex" ? "2連単" : "試験中"} ${last.ev.toFixed(0)}%</text>
       ${hits}
     </svg>
     <details class="small"><summary>数字の表で見る</summary><div class="ledger-scroll"><table class="streak-t"><thead><tr><th>日付</th><th>買ったレース</th><th>その日の回収率</th><th>試験中 累計</th><th>推奨買い目 累計</th></tr></thead><tbody>${rows}</tbody></table></div></details>

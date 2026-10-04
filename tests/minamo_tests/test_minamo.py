@@ -161,6 +161,16 @@ def test_ev_picks_keep_value_combos_by_probability():
     assert abs(sum(cal.values()) - 1) < 1e-9 and cal["2-1-3"] < 0.004 / sum(p for _, p in tri)
 
 
+def test_ex_picks_from_trifecta_probabilities():
+    """2連単：3連単の確率を足して2連単にし、2連単のオッズで期待値1.2以上を確率の高い順に最大3点。"""
+    tri = [("1-2-3", 0.20), ("1-2-4", 0.10), ("1-3-2", 0.10), ("2-1-3", 0.05), ("3-1-2", 0.01)]
+    odds2 = {"1-2": 4.5, "1-3": 15.0, "2-1": 30.0, "3-1": 300.0}
+    combos, items = store.ex_picks(tri, None, odds2)
+    # 1-2 は 0.30×4.5＝1.35、1-3 は 0.10×15＝1.5、2-1 は 0.05×30＝1.5、3-1 は確率1%で買わない
+    assert combos == ["1-2", "1-3", "2-1"] and items[0] == {"combo": "1-2", "p": 0.3, "odds": 4.5, "ev": 1.35}
+    assert store.ex_picks(tri, None, {}) == ([], [])
+
+
 def test_ev_calib_file(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "EV_CALIB", tmp_path / "ev_calib.json")
     assert store.ev_calib() is None
@@ -349,6 +359,10 @@ def test_pipeline_full_day(sandbox):
     # 「今買う候補」ページ用：決めたときの確率・オッズ・期待値と、一覧への写し
     assert [x["combo"] for x in race["ev_items"]] == race["ev_pick"] and race["ev_at"]
     # 自分の予想と比べる欄：120通りの確率（合計1）とオッズ
+    # 試験中の2連単：締切前に決めた組（見送りなら空）を、結果の2連単と配当で照合
+    assert isinstance(race["ex_pick"], list) and "ex_hit" in race["settle"]
+    assert race["settle"]["ex_stake"] == 100 * len(race["ex_pick"])
+    assert race["settle"]["ex_return"] == (1230 if "4-1" in race["ex_pick"] else 0)
     assert len(race["tri_all"]) == 120 and abs(sum(race["tri_all"].values()) - 1) < 1e-3 and len(race["odds_all"]) == 120
     assert all(x["ev"] >= store.EV_MIN for x in race["ev_items"])
     summ = json.loads((sandbox / "data" / date / "day.json").read_text())["venues"][0]["races"]
