@@ -99,6 +99,20 @@ def ev_picks(trifecta: list, odds: Optional[dict[str, float]], calib: Optional[t
     return out[:EV_MAX]
 
 
+# 試験中の買い目の見送り：②（2コースの艇）の平均スタート順位が①より SKIP_C2_GAP 以上速いレース
+# （10/5 ev-check「13-5.」：このレースだけだと3連単66.5%・2連単92.3%。見送ると3連単123.7→128.3%・2連単118.1→120.5%、前後どちらでも）
+SKIP_C2_GAP = 0.5
+
+
+def trial_skip(boats) -> Optional[str]:
+    """試し買いを見送る理由（無ければ None）。boats は予想の艇（course と stats["sr_model"] を使う）。"""
+    sr = {getattr(b, "course", None): (getattr(b, "stats", None) or {}).get("sr_model") for b in boats}
+    s1, s2 = sr.get(1), sr.get(2)
+    if s1 is None or s2 is None or s1 - s2 < SKIP_C2_GAP:
+        return None
+    return f"②が①より速い（平均スタート順位 ①{s1:.2f}・②{s2:.2f}）"
+
+
 # 試験中：2連単の買い目（10/4の検証：補正B・期待値1.2以上・最大3点で、後半3,013Rの回収率120%・幅109〜131%）
 EX_MIN = 1.2
 EX_MIN_P = 0.02
@@ -369,6 +383,7 @@ def race_summary(race: dict) -> dict:
         "ev_pick": race.get("ev_pick"),  # 試験中の買い目（None＝まだ決めていない、空＝見送り）
         "ev_items": race.get("ev_items"),
         "ev_at": race.get("ev_at"),
+        "trial_skip": race.get("trial_skip"),  # 試し買いを見送った理由（②が①より速いなど）
         "pick_fixed": race.get("pick_fixed"),
         # 合成オッズ配分（組は3連単の試し買いと同じ）
         "co_bought": st.get("co_bought"),

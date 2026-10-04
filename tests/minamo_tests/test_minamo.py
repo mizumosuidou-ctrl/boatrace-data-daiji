@@ -923,3 +923,14 @@ def test_time_settle_and_config(tmp_path):
     st = store.settle({"picks": []}, res, None, None, None, None, {"status": "キーマン不成立", "combos": []})
     assert st["time_bought"] is False and st["time_stake"] == 0
     assert "time_hit" not in store.settle({"picks": []}, res, None, None, None, None, None)
+
+
+def test_trial_skip_when_two_is_faster():
+    """②の平均スタート順位が①より0.5以上速ければ、試し買いを見送る（理由つき）。材料が無ければ見送らない。"""
+    from types import SimpleNamespace as B
+
+    boats = [B(course=1, stats={"sr_model": 3.6}), B(course=2, stats={"sr_model": 3.0}), B(course=3, stats={"sr_model": 2.5})]
+    assert store.trial_skip(boats) == "②が①より速い（平均スタート順位 ①3.60・②3.00）"
+    boats[1].stats["sr_model"] = 3.2  # 差 0.4
+    assert store.trial_skip(boats) is None
+    assert store.trial_skip([B(course=1, stats={}), B(course=2, stats={"sr_model": 1.0})]) is None

@@ -194,7 +194,7 @@ class MLPredictor:
                 "start_order": float(df[order].iloc[i]),
                 "motor_kp": _num_or_none(df["motor_kp_raw"].iloc[i]),
                 "n_c": int(df["n_c"].iloc[i]),
-                "stats": {**_stats(df.iloc[i]),
+                "stats": {**_stats(df.iloc[i]), "sr_model": _num_or_none(df["sr_c"].iloc[i], 3),  # 学習と同じ平均スタート順位（試し買いの見送りに使う）
                           "profile": self.profile.get((str(df["toban"].iloc[i]), int(df["course"].iloc[i])), {}),
                           "abilities": found.get(int(boat), [])},
             }
