@@ -969,3 +969,37 @@ def test_discover_compares_with_same_grade():
     out = dc.discover(facts, pd.DataFrame(columns=["toban", "date", "f_hold"]), pd.Series(0, index=facts.index),
                       start + pd.Timedelta(days=361))
     assert "7777" not in set(out["toban"])
+
+
+def test_ability_check_report(tmp_path, monkeypatch):
+    """アビリティの持ち主が1コースのレースで1-X-6を買い、持たないレースと比べる。"""
+    from itertools import permutations
+
+    from minamo.ml import ability_check as ac
+    from minamo.ml import dataset as ds
+    from minamo.ml import discover as dc
+    from minamo.ml import ev_check
+
+    races, rows = [], []
+    for i in range(20):
+        rid = f"202609{i + 1:02d}-24-01"
+        holder = i < 10
+        probs = {"-".join(map(str, c)): 1 / 120 for c in permutations(range(1, 7), 3)}
+        probs["1-2-6"], probs["1-3-6"] = 0.05, 0.04
+        hit = "1-2-6" if holder else "2-1-3"
+        races.append({"race": rid, "probs": probs, "t5": {c: 50.0 for c in probs}, "final": {c: 50.0 for c in probs}, "hit": hit})
+        for c in range(1, 7):
+            rows.append({"race_id": rid, "course": c, "lane": c, "toban": ("9000" if holder and c == 1 else f"1{c}{i:02d}"),
+                         "date": pd.Timestamp(rid[:8])})
+    facts = pd.DataFrame(rows)
+    monkeypatch.setattr(ev_check, "load", lambda m, r: races)
+    monkeypatch.setattr(ds, "load_facts", lambda p: facts)
+    monkeypatch.setattr(ds, "load_f_state", lambda p: pd.DataFrame(columns=["toban", "date", "f_hold"]))
+    monkeypatch.setattr(ds, "recent_f_counts", lambda f: pd.Series(0, index=f.index))
+    monkeypatch.setattr(dc, "discover", lambda *a: pd.DataFrame([{"toban": "9000", "course": 1, "name": "①のとき⑥残り",
+                                                                   "rank": "A", "detail": "", "z": 4.0}]))
+    assert ac._head_x_third(races[0], 1, 6) == ["1-2-6", "1-3-6"]
+    text = ac.build(tmp_path, tmp_path)
+    line = next(x for x in text.splitlines() if "①のとき⑥残り" in x)
+    # 持ち主のレース（10R）は1-2-6で全部的中、持たないレース（10R）は的中なし
+    assert "10R 2.0点 的中100.0% 回収率2500.0%" in line and "的中  0.0%" in line
