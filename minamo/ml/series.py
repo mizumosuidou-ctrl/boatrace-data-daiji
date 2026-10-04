@@ -23,6 +23,9 @@ COLUMNS = ["race_date", "venue", "title", "grade", "day_label"]
 
 def dates_to_fetch(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = None) -> list[str]:
     days = pd.read_csv(raw / "facts.csv", dtype=str, usecols=["race_date"])["race_date"]
+    extra = raw / "facts_backfill.csv"  # データベースが止まった後に公式サイトで足した日も
+    if extra.exists():
+        days = pd.concat([days, pd.read_csv(extra, dtype=str, usecols=["race_date"])["race_date"]])
     days = days.str.replace("-", "", regex=False).str[:8].dropna().unique()
     have: set = set()
     path = raw / OUT_NAME

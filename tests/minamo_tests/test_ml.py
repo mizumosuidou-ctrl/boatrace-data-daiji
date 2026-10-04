@@ -808,6 +808,10 @@ def test_ev_check_report(tmp_path):
     pd.DataFrame(rows).to_csv(ml / "test_preds.csv.gz", index=False)
     pd.DataFrame(snaps).to_csv(raw / "odds_hist.csv", index=False)
     pd.DataFrame(res).to_csv(raw / "odds_results.csv", index=False)
+    # 開催一覧：前半の日はマスターズ、後半の日は一般戦（レースの種類で分ける表のため）
+    pd.DataFrame([{"race_date": f"202609{d:02d}", "venue": "24", "title": "マスターズチャンピオン" if d <= 14 else "一般競走",
+                   "grade": "G1" if d <= 14 else "一般", "day_label": "初日"} for d in range(1, 29)]).to_csv(raw / "series.csv", index=False)
+    assert ev_check.race_categories(raw)["20260901-24"] == "マスターズ" and ev_check.race_categories(raw)["20260920-24"] == "一般"
     races = ev_check.load(ml, raw)
     assert len(races) == 40
     picks = ev_check.strategies()
@@ -853,6 +857,7 @@ def test_ev_check_report(tmp_path):
     (ret, pts, comp, flat), = ev_check.ev_dutch([[(0.2, 10.0, True, 10.0), (0.05, 30.0, False, 0.0)]])
     assert abs(ret - 7.5) < 1e-9 and pts == 2 and abs(comp - 7.5) < 1e-9 and abs(flat - 5.0) < 1e-9
     # 13. 当てに行く買い方：見送りの分析とマーチンゲール
+    assert "レースの種類" in text and "SG・G1・マスターズ・ルーキーズを見送り" in text and "13-3." in text
     assert "13. 当てに行く買い方" in text and "13-1. 見送るレースの分析" in text and "13-2. マーチンゲール" in text
     miss, win2 = {"hit": False, "ret": 0.0}, {"hit": True, "ret": 2.0}
     m = ev_check.martingale([miss, miss, win2])  # 1万・2万・4万 → 4万×2＝8万が戻り、＋1万
@@ -1047,3 +1052,13 @@ def test_ability_check_report(tmp_path, monkeypatch):
     # 持ち主のレース（10R）は1-2-6で全部的中、持たないレース（10R）は的中なし
     assert "10R 2.0点 的中100.0% 回収率2500.0%" in line and "的中  0.0%" in line
     assert "同じレースのふつうの上位6点" in text
+
+
+def test_series_dates_include_backfill(tmp_path):
+    """開催一覧は、データベースの日に加えて、公式サイトで足した日（facts_backfill.csv）も取りに行く。取った日はとばす。"""
+    from minamo.ml import series
+
+    pd.DataFrame({"race_date": ["2026-08-01", "2026-08-02"]}).to_csv(tmp_path / "facts.csv", index=False)
+    pd.DataFrame({"race_date": ["20260920", "20260921"]}).to_csv(tmp_path / "facts_backfill.csv", index=False)
+    pd.DataFrame({"race_date": ["20260802"], "venue": ["01"]}).to_csv(tmp_path / "series.csv", index=False)
+    assert series.dates_to_fetch(tmp_path) == ["20260801", "20260920", "20260921"]
