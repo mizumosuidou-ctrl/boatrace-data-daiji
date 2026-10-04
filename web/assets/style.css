@@ -852,3 +852,17 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .my-acts label { display: inline-flex; align-items: center; gap: 6px; }
 .my-budget { width: 7.5em; font: inherit; font-family: var(--f-mono); padding: 6px 8px; border: 1px solid var(--line-2); border-radius: 8px; background: transparent; color: inherit; text-align: right; }
 .my-del { padding: 3px 10px; font-size: 11px; }
+.hit-stamp small { display: block; font-size: .45em; letter-spacing: .05em; margin-top: 2px; }
+.trial-hits { margin: 8px 2px 0; line-height: 1.8; }
+/* 成績の早見表 */
+.rb-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.rb-tile { padding: 16px 18px; min-width: 0; }
+.rb-tile h4 { margin: 0; font-size: 15px; font-weight: 900; }
+.rb-big { font-family: var(--f-display); font-size: 38px; font-weight: 800; line-height: 1.1; margin: 8px 0 4px; }
+.rb-big small { font-size: .45em; }
+.rb-big.up { color: var(--hit); }
+.rb-tile .small { font-family: var(--f-mono); font-size: 11px; color: var(--muted); margin-top: 3px; }
+@media (max-width: 720px) { .rb-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .rb-big { font-size: clamp(24px, 8vw, 38px); } }
+@media (max-width: 480px) { #recKind { flex-wrap: wrap; border-radius: 14px; } #recKind button { flex: 1 1 30%; } }
+.rec-hero > .panel { min-width: 0; }
+@media (max-width: 720px) { .rec-kpi .v { font-size: clamp(28px, 9vw, 56px); } }

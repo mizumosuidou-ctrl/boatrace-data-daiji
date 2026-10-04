@@ -234,7 +234,7 @@ function cellHtml(v, r, now, isNext) {
   if (st.startsWith("finished")) {
     body = `<div class="t"><span>${r.rno}R</span><b>${esc(r.deadline)}</b></div>
       <div class="res">${esc(r.result || "")}</div>
-      <div class="pay">${yen(r.payout)}</div>${r.hit ? `<span class="stamp">的中</span>` : ""}`;
+      <div class="pay">${yen(r.payout)}</div>${r.hit ? `<span class="stamp">的中${r.pick_no ? ` ${r.pick_no}点目` : ""}</span>` : ""}`;
   } else if (st === "cancelled") {
     body = `<div class="t"><span>${r.rno}R</span><b>中止</b></div>`;
   } else {
@@ -631,10 +631,23 @@ function resultHtml(race) {
       ${r.exacta ? `<div><div class="lbl">2連単</div>${pay(combo(r.exacta, ""), r.exacta_payout, r.exacta_popularity)}</div>` : ""}
       ${r.kimarite ? `<div><div class="lbl">決まり手</div><div class="res-kima">${esc(r.kimarite)}</div></div>` : ""}
     </div>
-    <div>${s.trifecta_hit ? `<div class="hit-stamp">的中</div>` : `<div class="miss-stamp">${s.honmei_win ? "本命1着" : "はずれ"}</div>`}</div>
+    <div>${s.trifecta_hit ? `<div class="hit-stamp">的中${(() => { const n = (race.ai?.picks || []).findIndex((p) => p.combo === r.trifecta) + 1; return n ? `<small>${n}点目</small>` : ""; })()}</div>` : `<div class="miss-stamp">${s.honmei_win ? "本命1着" : "はずれ"}</div>`}</div>
   </div>
+  ${trialHitsHtml(race, s)}
   ${otherPayHtml(r.payouts)}
   ${rows ? `<div class="panel res-table"><div class="ledger-scroll"><table class="streak-t res-t"><thead><tr><th>着順</th><th>艇</th><th>選手</th><th>進入</th><th>ST</th><th>レースタイム</th></tr></thead><tbody>${rows}</tbody></table></div></div>` : ""}`;
+}
+
+// 試験中の買い方それぞれの結果（何点目で的中か）
+function trialHitsHtml(race, s) {
+  const r = race.result || {};
+  const items = [
+    ["3連単（試し）", s.ev_bought, s.ev_hit, rankIn(race.ev_pick, r.trifecta)],
+    ["2連単", s.ex_bought, s.ex_hit, rankIn(race.ex_pick, r.exacta)],
+    ["TIME", s.time_bought, s.time_hit, s.time_rank],
+  ].filter(([, b]) => b != null);
+  if (!items.length) return "";
+  return `<p class="small trial-hits">${items.map(([n, b, h, k]) => `<span class="nowrap">${n}：${!b ? "見送り" : h ? `<b class="pos">的中（${k}点目）</b>` : "はずれ"}</span>`).join(" · ")}</p>`;
 }
 
 // あなたの予想：1着・2着・3着に入れる艇を選ぶと、組み合わせ（フォーメーション）を作り、MINAMOの確率・オッズと並べる。
@@ -928,7 +941,7 @@ function pickCard(date, r, now, k = "ev", s = getStake(k)) {
   const hitStake = done ? stakes[items.findIndex((x) => x.combo === res)] : null;
   return `<a class="panel pick-card ${done ? (won ? "won" : "lost") : ""}" href="#/race/${date}/${r.v.jcd}/${r.rno}">
     <div class="pick-h"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span>${!done && !r.cancelled ? `<span class="chip fix ${r.pick_fixed ? "src-claude" : ""}">${r.pick_fixed ? "決定" : "仮"}</span>` : ""}
-      ${done ? `<span class="chip ${won ? "src-claude" : ""}">${won ? `的中 ${yen(k === "co" ? (r.co_return || 0) * BET_UNIT : (pickPay(r, k) || 0) * BET_UNIT)}` : "はずれ"}</span>`
+      ${done ? `<span class="chip ${won ? "src-claude" : ""}">${won ? `的中（${rankIn(r[`${k}_pick`], res) || "?"}点目） ${yen(k === "co" ? (r.co_return || 0) * BET_UNIT : (pickPay(r, k) || 0) * BET_UNIT)}` : "はずれ"}</span>`
         : r.cancelled ? `<span class="chip">中止</span>` : dl > now ? `<span class="cd" data-deadline="${dl}">${fmtCountdown(dl - now)}</span>` : `<span class="chip">締切</span>`}</div>
     <table class="pick-t"><thead><tr><th>${PICK_KIND[k].label}</th><th>確率</th><th>オッズ</th><th>${k === "co" ? "配分" : "期待値"}</th><th>1点</th></tr></thead><tbody>
       ${items.map((x, i) => `<tr class="${done && x.combo === res ? "on" : ""}"><td>${combo(x.combo)}</td><td>${x.p != null ? pct(x.p, 1) + "%" : "--"}</td><td>${x.odds ?? "--"}</td><td>${k === "co" ? (comp && x.odds ? Math.round((100 * comp) / x.odds) + "%" : "--") : x.ev != null ? x.ev.toFixed(2) : "--"}</td><td>${stakes[i] == null ? "--" : yen(stakes[i])}</td></tr>`).join("")}
@@ -1061,6 +1074,8 @@ async function renderRecord() {
     <section class="section">
       <span class="eyebrow">${rec.days.filter((d) => d.settled).length}日分</span>
       <h1 class="section-title" style="font-size:clamp(40px,6vw,90px)">成績<small>すべての予想は締切前に公開し、結果と自動照合しています。${rec.demo ? "（現在はデモデータ）" : ""}</small></h1>
+      <div id="recBoard"></div>
+      <div class="section-head" style="margin-top:40px"><div><h2 class="section-title">推奨買い目の通算<small>ここから下は推奨買い目（3連単）の成績と、試験中の買い方それぞれの通算です</small></h2></div></div>
       <div class="rec-hero">
         <div class="panel rec-kpi gold rv"><span class="eyebrow">3連単 的中率</span><div class="v">${hitRate.toFixed(1)}<small>%</small></div><p>${T.hits} / ${T.settled} レース</p></div>
         <div class="panel rec-kpi rv" style="--i:1"><span class="eyebrow">回収率</span><div class="v">${roi.toFixed(1)}<small>%</small></div><p>推奨買い目を各100円で購入した場合</p></div>
@@ -1129,14 +1144,14 @@ async function renderRecord() {
         <div class="panel rv"><h4>予想手順</h4><div class="big" style="color:var(--accent)">${((T.method_return / T.method_stake) * 100 || 0).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">回収率 · 的中 ${T.method_hits}/${T.alt_races}R</div></div>
         <div class="panel rv" style="--i:1"><h4>確率上位6点</h4><div class="big">${((T.alt_return / T.alt_stake) * 100 || 0).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">回収率 · 的中 ${T.alt_hits}/${T.alt_races}R</div></div>
       </div>` : ""}
-      <div class="section-head" style="margin-top:40px"><div><h2 class="section-title">日別・場別の収支<small>推奨買い目を1点1,000円で買った場合。日付を押すと、その日の場ごと・レースごとの成績が出ます</small></h2></div></div>
-      <div class="panel ledger rv">${ledgerDays(days)}</div>
+      <div class="section-head" style="margin-top:40px"><div><h2 class="section-title">日別・場別の収支<small><span id="ledgerKind"></span>で買った場合（いちばん上の切り替えに合わせます）。日付を押すと、その日の場ごと・レースごとの成績が出ます</small></h2></div></div>
+      <div class="panel ledger rv" id="ledgerDays"></div>
       <div id="ledger-day"></div>
       <div class="section-head" style="margin-top:40px"><div><h2 class="section-title">確信度別の成績<small>確信度の帯ごとの成績。数字が高いレースほど当たっているかを検証</small></h2></div></div>
       <div class="calib">${Object.entries(tiers).map(([k, [n, h1, h3]], i) => `<div class="panel rv" style="--i:${i}"><h4>${k}</h4><div class="big">${n ? ((h3 / n) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">3連単的中 · 本命1着 ${n ? ((h1 / n) * 100).toFixed(1) : "--"}% · ${n}R</div></div>`).join("")}</div>
     </section>
   </div>`;
-  bindLedger(days);
+  renderRecBoard(days, getRecKind());
 }
 
 /* ------------------------------------------------------------ あなたの予想の成績（このブラウザに保存した分） */
@@ -1233,14 +1248,29 @@ function streakHtml(st) {
 
 /* ------------------------------------------------------------ ledger（日別・場別の収支） */
 const BET_UNIT = 10;  // 保存は1点100円。サイトの表示は1点1,000円にそろえる
-function sumRaces(races) {
+// 成績で切り替える予想（どれも保存は×10で円）。rank＝何点目で当たったか
+const rankIn = (list, c) => { const i = (list || []).indexOf(c); return i >= 0 ? i + 1 : null; };
+const REC_KINDS = {
+  main: { label: "3連単（推奨）", note: "推奨買い目を1点1,000円", bought: (r) => r.stake != null && r.stake > 0, hit: (r) => r.hit, stake: (r) => r.stake, ret: (r) => r.return,
+    res: (r) => r.result, pay: (r) => r.payout, picks: (r) => r.picks, rank: (r) => r.pick_no },
+  ev: { label: "3連単（試し）", note: "期待値で絞った買い目を1点1,000円", bought: (r) => r.ev_bought, hit: (r) => r.ev_hit, stake: (r) => r.ev_stake, ret: (r) => r.ev_return,
+    res: (r) => r.result, pay: (r) => r.payout, picks: (r) => r.ev_pick, rank: (r) => rankIn(r.ev_pick, r.result) },
+  co: { label: "3連単 合成", note: "試しの3連単を合成オッズ配分・1レース1,000円", bought: (r) => r.co_bought, hit: (r) => r.co_hit, stake: (r) => r.co_stake, ret: (r) => r.co_return,
+    res: (r) => r.result, pay: (r) => r.payout, picks: (r) => r.co_pick, rank: (r) => rankIn(r.co_pick, r.result) },
+  ex: { label: "2連単", note: "期待値で絞った2連単を1点1,000円", bought: (r) => r.ex_bought, hit: (r) => r.ex_hit, stake: (r) => r.ex_stake, ret: (r) => r.ex_return,
+    res: (r) => r.result_ex, pay: (r) => r.payout_ex, picks: (r) => r.ex_pick, rank: (r) => rankIn(r.ex_pick, r.result_ex) },
+  time: { label: "TIME", note: "TIME予想を仮想資金で", bought: (r) => r.time_bought, hit: (r) => r.time_hit, stake: (r) => r.time_stake, ret: (r) => r.time_return,
+    res: (r) => r.result, pay: (r) => r.payout, picks: (r) => r.time_pick, rank: (r) => r.time_rank },
+};
+const getRecKind = () => { try { const k = localStorage.getItem("minamo-rec-kind"); return REC_KINDS[k] ? k : "main"; } catch { return "main"; } };
+function sumRaces(races, kind = "main") {
+  const K = REC_KINDS[kind];
   const t = { races: 0, hits: 0, stake: 0, ret: 0, known: true };
   for (const r of races) {
-    if (!r.result || r.cancelled) continue;
+    if (!r.result || r.cancelled || !K.bought(r) || K.stake(r) == null) continue;
     t.races++;
-    t.hits += r.hit ? 1 : 0;
-    if (r.stake == null) { t.known = false; continue; }
-    t.stake += r.stake * BET_UNIT; t.ret += (r.return || 0) * BET_UNIT;
+    t.hits += K.hit(r) ? 1 : 0;
+    t.stake += K.stake(r) * BET_UNIT; t.ret += (K.ret(r) || 0) * BET_UNIT;
   }
   return t;
 }
@@ -1251,51 +1281,93 @@ function ledgerRow(label, t, attrs = "") {
   return `<tr ${attrs}><th scope="row">${label}</th><td>${t.races}</td><td>${t.hits}</td><td>${rate(t.hits, t.races)}</td>${money}</tr>`;
 }
 const LEDGER_HEAD = `<tr><th></th><th>レース</th><th>的中</th><th>的中率</th><th>投資</th><th>払戻</th><th>収支</th><th>回収率</th></tr>`;
-function ledgerDays(days) {
+function ledgerDays(days, kind = "main") {
   const rows = days.slice().reverse().map((d) => {
-    const t = sumRaces(d.venues.flatMap((v) => v.races));
+    const t = sumRaces(d.venues.flatMap((v) => v.races), kind);
     return ledgerRow(`<button class="linkish" data-ledger="${d.date}">${fmtDate(d.date)}</button>`, t, `data-row="${d.date}"`);
   }).join("");
   return `<div class="ledger-scroll"><table class="ledger-t"><thead>${LEDGER_HEAD}</thead><tbody>${rows || `<tr><td colspan="8" class="muted">まだ結果がありません</td></tr>`}</tbody></table></div>`;
 }
-function ledgerDay(day) {
+function ledgerDay(day, kind = "main") {
+  const K = REC_KINDS[kind];
   const venues = day.venues.map((v, i) => {
-    const t = sumRaces(v.races);
+    const t = sumRaces(v.races, kind);
     const races = v.races.map((r) => {
       const done = r.result && !r.cancelled;
-      const profit = done && r.stake != null ? ((r.return || 0) - r.stake) * BET_UNIT : null;
-      return `<tr class="${r.hit ? "hitrow" : ""}">
+      const bought = done && K.bought(r) && K.stake(r) != null;
+      const profit = bought ? ((K.ret(r) || 0) - K.stake(r)) * BET_UNIT : null;
+      const res = K.res(r), rk = done ? K.rank(r) : null;
+      return `<tr class="${bought && K.hit(r) ? "hitrow" : ""}">
         <td><a href="#/race/${day.date}/${v.jcd}/${r.rno}">${r.rno}R</a></td>
-        <td class="num">${r.cancelled ? "中止" : esc(r.result || "--")}</td>
-        <td>${done ? yen(r.payout) : "--"}${r.popularity ? `<small class="muted"> ${r.popularity}人気</small>` : ""}</td>
-        <td class="num picks">${(r.picks || []).map((c) => `<span class="${c === r.result ? "on" : ""}">${esc(c)}</span>`).join(" ") || "--"}</td>
-        <td>${r.pick_no ? `<b class="pos">${r.pick_no}点目</b>` : done ? "×" : "--"}</td>
-        <td>${r.model_rank ? `${r.model_rank}番目` : done ? "41番目以下" : "--"}</td>
-        <td>${r.stake != null ? yen(r.stake * BET_UNIT) : "--"}</td>
-        <td>${done ? yen((r.return || 0) * BET_UNIT) : "--"}</td>
+        <td class="num">${r.cancelled ? "中止" : esc(res || "--")}</td>
+        <td>${done ? yen(K.pay(r)) : "--"}${kind !== "ex" && r.popularity ? `<small class="muted"> ${r.popularity}人気</small>` : ""}</td>
+        <td class="num picks">${(K.picks(r) || []).map((c) => `<span class="${c === res ? "on" : ""}">${esc(c)}</span>`).join(" ") || (done ? "見送り" : "--")}</td>
+        <td>${rk && bought ? `<b class="pos">${rk}点目</b>` : bought ? "×" : "--"}</td>
+        ${kind === "main" ? `<td>${r.model_rank ? `${r.model_rank}番目` : done ? "41番目以下" : "--"}</td>` : ""}
+        <td>${bought ? yen(K.stake(r) * BET_UNIT) : "--"}</td>
+        <td>${bought ? yen((K.ret(r) || 0) * BET_UNIT) : "--"}</td>
         <td>${profit == null ? "--" : plus(profit)}</td>
       </tr>`;
     }).join("");
     return `<details class="ledger-venue" ${i === 0 ? "open" : ""}>
       <summary><table class="ledger-t"><tbody>${ledgerRow(`${esc(v.name)}<small class="muted"> ${esc(v.day_label || "")}</small>`, t)}</tbody></table></summary>
-      <div class="ledger-scroll"><table class="ledger-t races"><thead><tr><th>R</th><th>結果</th><th>配当</th><th>買い目</th><th>何点目で的中</th><th>予想の順位</th><th>投資</th><th>払戻</th><th>収支</th></tr></thead><tbody>${races}</tbody></table></div>
+      <div class="ledger-scroll"><table class="ledger-t races"><thead><tr><th>R</th><th>結果</th><th>配当</th><th>買い目</th><th>何点目で的中</th>${kind === "main" ? "<th>予想の順位</th>" : ""}<th>投資</th><th>払戻</th><th>収支</th></tr></thead><tbody>${races}</tbody></table></div>
     </details>`;
   }).join("");
-  const all = sumRaces(day.venues.flatMap((v) => v.races));
-  return `<div class="section-head" style="margin-top:28px"><div><h3 class="ledger-title">${fmtDate(day.date)} の場別成績</h3><p class="muted small">「何点目で的中」は推奨買い目の何点目が当たったか、「予想の順位」は3連単120通りを確率の高い順に並べたとき何番目だったか</p></div></div>
+  const all = sumRaces(day.venues.flatMap((v) => v.races), kind);
+  return `<div class="section-head" style="margin-top:28px"><div><h3 class="ledger-title">${fmtDate(day.date)} の場別成績（${esc(K.label)}）</h3><p class="muted small">「何点目で的中」は買い目の何点目が当たったか${kind === "main" ? "、「予想の順位」は3連単120通りを確率の高い順に並べたとき何番目だったか" : ""}。見送りのレースは数えません</p></div></div>
     <div class="panel ledger"><div class="ledger-scroll"><table class="ledger-t"><thead>${LEDGER_HEAD}</thead><tbody>${ledgerRow("合計", all)}</tbody></table></div>${venues}</div>`;
 }
-function bindLedger(days) {
+// 成績の早見表：今日・昨日・直近7日・直近30日と、場別の総合成績（切り替えた予想で）
+function recBoardHtml(days, kind) {
+  const K = REC_KINDS[kind];
+  const settled = days.filter((d) => sumRaces(d.venues.flatMap((v) => v.races), kind).races > 0);
+  const today = todayJst();
+  const yday = (() => { const d = new Date(`${today.slice(0, 4)}-${today.slice(4, 6)}-${today.slice(6)}T12:00:00+09:00`); d.setDate(d.getDate() - 1); return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`; })();
+  const pick = (ds) => sumRaces(ds.flatMap((d) => d.venues.flatMap((v) => v.races)), kind);
+  const periods = [["今日", days.filter((d) => d.date === today)], ["昨日", days.filter((d) => d.date === yday)],
+    ["直近7日", days.slice(-7)], ["直近30日", days.slice(-30)]];
+  const tile = ([name, ds]) => {
+    const t = pick(ds);
+    return `<div class="panel rb-tile"><h4>${name}</h4>
+      <div class="rb-big ${t.stake && t.ret >= t.stake ? "up" : ""}">${t.stake ? ((t.ret / t.stake) * 100).toFixed(1) : "--"}<small>%</small></div>
+      <div class="small">回収率 · 的中 ${t.hits}/${t.races}R（${rate(t.hits, t.races)}）</div>
+      <div class="small">${t.stake ? `収支 ${plus(t.ret - t.stake)}` : "まだ結果がありません"}</div></div>`;
+  };
+  const byV = {};
+  for (const d of days.slice(-30)) for (const v of d.venues) (byV[v.jcd] = byV[v.jcd] || { name: v.name, races: [] }).races.push(...v.races);
+  const vrows = Object.values(byV).map((x) => ({ ...x, t: sumRaces(x.races, kind) })).filter((x) => x.t.races)
+    .sort((a, b) => b.t.ret / b.t.stake - a.t.ret / a.t.stake);
+  return `<div class="seg seg-big" role="group" aria-label="成績の予想" id="recKind">${Object.entries(REC_KINDS).map(([k, x]) => `<button type="button" data-kind="${k}" class="${k === kind ? "on" : ""}">${x.label}</button>`).join("")}</div>
+    <p class="small muted" style="margin:0 0 10px">${esc(K.note)}で買った場合。見送りのレースは数えません。${settled.length ? "" : "まだ結果のあるレースがありません。"}</p>
+    <div class="rb-tiles">${periods.map(tile).join("")}</div>
+    <div class="section-head" style="margin-top:22px"><div><h3 class="ledger-title">場別の総合成績（直近30日・${esc(K.label)}）</h3><p class="muted small">回収率の高い順。レースが少ない場は、たまたまの差が大きいので注意</p></div></div>
+    <div class="panel ledger"><div class="ledger-scroll"><table class="ledger-t"><thead>${LEDGER_HEAD}</thead><tbody>${vrows.map((x) => ledgerRow(esc(x.name), x.t)).join("") || `<tr><td colspan="8" class="muted">まだ結果がありません</td></tr>`}</tbody></table></div></div>`;
+}
+function bindLedger(days, kind = getRecKind()) {
   const byDate = Object.fromEntries(days.map((d) => [d.date, d]));
   const show = (date) => {
     const day = byDate[date];
     if (!day) return;
-    $("#ledger-day").innerHTML = ledgerDay(day);
+    $("#ledger-day").innerHTML = ledgerDay(day, kind);
     document.querySelectorAll("[data-row]").forEach((tr) => tr.classList.toggle("sel", tr.dataset.row === date));
   };
   document.querySelectorAll("[data-ledger]").forEach((b) => b.addEventListener("click", () => show(b.dataset.ledger)));
-  const settled = days.filter((d) => sumRaces(d.venues.flatMap((v) => v.races)).races > 0);
+  const settled = days.filter((d) => sumRaces(d.venues.flatMap((v) => v.races), kind).races > 0);
   if (settled.length) show(settled[settled.length - 1].date);
+}
+// 早見表と日別・場別の表を、切り替えた予想で描き直す
+function renderRecBoard(days, kind) {
+  $("#recBoard").innerHTML = recBoardHtml(days, kind);
+  $("#ledgerDays").innerHTML = ledgerDays(days, kind);
+  $("#ledgerKind").textContent = REC_KINDS[kind].note;
+  bindLedger(days, kind);
+  $("#recKind").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-kind]");
+    if (!b) return;
+    try { localStorage.setItem("minamo-rec-kind", b.dataset.kind); } catch { /* 保存できなくても切替はする */ }
+    renderRecBoard(days, b.dataset.kind);
+  });
 }
 
 /* ------------------------------------------------------------ about */
