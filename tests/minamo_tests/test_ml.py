@@ -870,6 +870,10 @@ def test_ev_check_report(tmp_path):
     assert "14-1. スタート隊形トゥエルブ" in text and "①〉④③②" in text and "②と③の間（③が速い）" in text
     sh = ev_check.start_shape(races[0])
     assert sh["shape"] == "①〉④③②" and abs(sh["gap"] - 0.5) < 1e-9 and 0 < sh["c1_market"] < 1
+    # 13-4／13-5：見送り条件を重ねる（このテストの①は平均スタート順位が一番速く、②は①より遅い）
+    assert "13-4. 見送り条件を重ねる" in text and "4種類＋②が速いを見送り" in text and "13-5." in text
+    assert ev_check._start_flags({"sr": {1: 3.0, 2: 2.4, 3: 3.5, 4: 2.8}}) == {"c1_top": False, "c2_fast": True}
+    assert ev_check._start_flags({}) == {"c1_top": None, "c2_fast": None}
     assert "13. 当てに行く買い方" in text and "13-1. 見送るレースの分析" in text and "13-2. マーチンゲール" in text
     miss, win2 = {"hit": False, "ret": 0.0}, {"hit": True, "ret": 2.0}
     m = ev_check.martingale([miss, miss, win2])  # 1万・2万・4万 → 4万×2＝8万が戻り、＋1万

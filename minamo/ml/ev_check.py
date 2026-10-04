@@ -714,6 +714,14 @@ def race_categories(raw: Path) -> dict[str, str]:
             for d, v, t, g in zip(days, ser["venue"], ser["title"], ser["grade"])}
 
 
+def _start_flags(r: dict) -> dict:
+    """進入コースの平均スタート順位から：①が②③④より速い（①〉）、②が①より0.5以上速い。材料が無ければ None。"""
+    sr = r.get("sr") or {}
+    if not all(c in sr for c in (1, 2, 3, 4)):
+        return {"c1_top": None, "c2_fast": None}
+    return {"c1_top": sr[1] <= min(sr[2], sr[3], sr[4]), "c2_fast": sr[1] - sr[2] >= GAP_MIN}
+
+
 def hit_rows(races: list[dict], th: float = HIT_TH, cats: dict | None = None) -> list[dict]:
     """補正B・後半の各レースで、確率の高い順に合成オッズ th 倍以上を保てる所まで買ったとき（store.co_picks）。
     ret は1レースの投資を1としたときの払戻（金額はオッズの逆数で配分、払戻は確定オッズ）。見送りのレースは入れない。"""
@@ -733,7 +741,7 @@ def hit_rows(races: list[dict], th: float = HIT_TH, cats: dict | None = None) ->
         out.append({"race": r["race"], "ret": ret, "hit": r["hit"] in combos, "n": len(items), "comp": comp,
                     "p_set": p_set, "p_raw": p_raw, "ev": p_set * comp, "ev_raw": p_raw * comp, "top": items[0]["odds"],
                     "p1": r["p1"], "jcd": r["race"].split("-")[1], "rno": int(r["race"].split("-")[2]),
-                    "cat": (cats or {}).get(r["race"][:11], "不明")})
+                    "cat": (cats or {}).get(r["race"][:11], "不明"), **_start_flags(r)})
     return sorted(out, key=lambda x: x["race"])
 
 
@@ -839,6 +847,60 @@ def hit_report(races: list[dict], cats: dict | None = None) -> list[str]:
                      f"  （投資 {m['spent']:,.0f}円）")
     lines.append("  ※ 見送る場は、この表で回収率が低かった場なので、たまたまの分も入っている（参考）")
     lines += trial_by_category(races, cats)
+    lines += combo_report(rows, races, cats, mid)
+    return lines
+
+
+def combo_report(rows: list[dict], races: list[dict], cats: dict | None, mid: str) -> list[str]:
+    """13-4. 見送り条件を重ねる（当てに行く買い方・マーチンゲール）と、13-5. 同じ見送りを今の試し買いに。前／後＝期間を日付で半分。"""
+    if not any(x["c1_top"] is not None for x in rows):
+        return [" 13-4. 見送り条件を重ねる：材料（進入コースと平均スタート順位）がまだありません。次の学習（ml-train）のあとに出ます"]
+    avoid = lambda x: x["cat"] not in AVOID  # noqa: E731
+    no2 = lambda x: x["c2_fast"] is False  # noqa: E731 — ②が①より0.5以上速いレースを見送り（材料の無いレースも見送り）
+    top1 = lambda x: x["c1_top"] is True  # noqa: E731
+    ev8 = lambda x: x["ev_raw"] >= 0.8  # noqa: E731
+    combos = [("全部", lambda x: True), ("4種類を見送り", avoid), ("②が速いを見送り", no2),
+              ("4種類＋②が速いを見送り", lambda x: avoid(x) and no2(x)),
+              ("4種類＋②が速い見送り＋①〉だけ", lambda x: avoid(x) and no2(x) and top1(x)),
+              ("4種類＋②が速い見送り＋期待値（補正前）0.8以上", lambda x: avoid(x) and no2(x) and ev8(x)),
+              ("4種類＋②見送り＋①〉＋期待値0.8以上", lambda x: avoid(x) and no2(x) and top1(x) and ev8(x)),
+              ("①〉だけ＋期待値（補正前）0.8以上", lambda x: top1(x) and ev8(x))]
+    lines = [" 13-4. 見送り条件を重ねる（当てに行く買い方。マーチンゲールは1万円から2倍・5連敗で振り出し。前／後＝期間を日付で半分）",
+             "  ※ 4種類＝SG・G1・マスターズ・ルーキーズ（あなたが避けていたレース）。②が速い＝②の平均スタート順位が①より0.5以上速い。"
+             "①〉＝①が②③④より速い"]
+    for name, f in combos:
+        g = [x for x in rows if f(x)]
+        if not g:
+            continue
+        a, b = [x for x in g if x["race"] < mid], [x for x in g if x["race"] >= mid]
+        m, ma, mb = martingale(g), martingale(a), martingale(b)
+        roi = lambda xs: f"{100 * np.mean([x['ret'] for x in xs]):5.1f}%" if xs else "  -- "  # noqa: E731
+        lines.append(f"    {_pad(name, 40)}{len(g):>5}R 的中{100 * np.mean([x['hit'] for x in g]):5.1f}% 回収率 {roi(g)}（前 {roi(a)} 後 {roi(b)}）"
+                     f"  マーチン {m['net']:>+11,.0f}円（前 {ma['net']:>+10,.0f} 後 {mb['net']:>+10,.0f}）5連敗{m['busts']:>3}回"
+                     f"  一番減ったとき −{m['dd']:,.0f}円")
+    # 13-5. 今の試し買い（平掛け）に同じ見送りを
+    cal = _test_cal(races)
+    tri, ex = _trial_rows(cal)
+    ex_i = iter(ex)
+    tr = []
+    for r, t in zip(cal, tri):
+        e = next(ex_i) if r.get("x5") and r.get("xfinal") else []
+        tr.append({"race": r["race"], "cat": (cats or {}).get(r["race"][:11], "不明"), **_start_flags(r),
+                   "tp": len(t), "tr": sum(of for _, _, h, of in t if h), "xp": len(e), "xr": sum(of for _, _, h, of in e if h)})
+    tmid = tr[len(tr) // 2]["race"] if tr else ""
+    lines.append(" 13-5. 今の試し買い（3連単 期待値1.2以上・最大9点／2連単 期待値1.2以上・最大3点、平掛け）に同じ見送りを")
+    for name, f in (("全部", lambda x: True), ("4種類を見送り", avoid), ("②が速いを見送り", no2),
+                    ("4種類＋②が速いを見送り", lambda x: avoid(x) and no2(x)), ("②が速いレースだけ", lambda x: x["c2_fast"] is True)):
+        g = [x for x in tr if f(x)]
+        if not g:
+            continue
+
+        def roi(xs, p, r):
+            n = sum(x[p] for x in xs)
+            return f"{100 * sum(x[r] for x in xs) / n:6.1f}%" if n else "   -- "
+        a, b = [x for x in g if x["race"] < tmid], [x for x in g if x["race"] >= tmid]
+        lines.append(f"    {_pad(name, 26)}{len(g):>5}R  3連単 {roi(g, 'tp', 'tr')}（前 {roi(a, 'tp', 'tr')} 後 {roi(b, 'tp', 'tr')}）"
+                     f"  2連単 {roi(g, 'xp', 'xr')}（前 {roi(a, 'xp', 'xr')} 後 {roi(b, 'xp', 'xr')}）")
     return lines
 
 
