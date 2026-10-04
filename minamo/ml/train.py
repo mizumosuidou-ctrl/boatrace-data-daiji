@@ -299,7 +299,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
 
     # 買い目の選び方を過去のレースで確かめる用（ev-check）に、検証期間（学習に使っていない）の1着確率を残す
     # 進入コースと、そのコースでの平均スタート順位（ev-check でスタート隊形・順位差の場所ごとに分けるため）
-    tp = te[["race_id", "lane", "finish"] + [c for c in ("course_i", "sr_c") if c in te.columns]].copy()
+    tp = te[["race_id", "lane", "finish"] + [c for c in ("course", "sr_c") if c in te.columns]].rename(columns={"course": "course_i"})
     tp["p_pre"] = normalize(te, pre.predict(te[pre_feats]))
     if post is not None and post_adopt:
         te_p = post_split[2]
