@@ -53,11 +53,16 @@ def load(ml_dir: Path, raw: Path) -> list[dict]:
     if "captured_at" in snaps:
         snaps = snaps.sort_values("captured_at", na_position="first")
     snaps = snaps[snaps["race"].isin(set(tp["race_id"]))].drop_duplicates(["race", "label"], keep="last")
-    odds = {}
+    odds, ex_odds = {}, {}
+    has_x = "exacta" in snaps
     for race, g in snaps.groupby("race"):
         by = {lab: odds_history._parse(t) for lab, t in zip(g["label"], g["trifecta"])}
         if by.get("T5") and by.get("FINAL") and len(by["FINAL"]) >= 60:
             odds[race] = (by["T5"], by["FINAL"], by.get("T1") or None)
+        if has_x:  # 2連単（データベースにあれば）
+            bx = {lab: odds_history._parse(t) for lab, t in zip(g["label"], g["exacta"])}
+            if len(bx.get("T5") or {}) >= 20 and len(bx.get("FINAL") or {}) >= 20:
+                ex_odds[race] = (bx["T5"], bx["FINAL"])
     winner = {}
     if (raw / "odds_results.csv").exists():
         res = pd.read_csv(raw / "odds_results.csv", dtype=str)
@@ -76,7 +81,8 @@ def load(ml_dir: Path, raw: Path) -> list[dict]:
             hit = _key(order["lane"].iloc[:3].astype(int))
         probs = {_key(c): v for c, v in trifecta_probs(dict(zip(g["lane"].astype(int), g["p"])), decay)}
         t5, final, t1 = odds[race]
-        out.append({"race": race, "probs": probs, "t5": t5, "final": final, "t1": t1, "hit": hit,
+        x5, xfinal = ex_odds.get(race, (None, None))
+        out.append({"race": race, "probs": probs, "t5": t5, "final": final, "t1": t1, "hit": hit, "x5": x5, "xfinal": xfinal,
                     "p1": float(g.loc[g["lane"] == 1, "p"].iloc[0]), "post": bool(g["post"].any())})
     return out
 
@@ -311,6 +317,69 @@ def flat_report(races: list[dict]) -> list[str]:
     return lines
 
 
+EX_MIN_P = 0.02  # 2連単：これより当たりにくい組は買わない
+
+
+def exacta_probs(probs: dict[str, float]) -> dict[str, float]:
+    """3連単の確率を足して2連単の確率に。"""
+    out: dict[str, float] = {}
+    for c, p in probs.items():
+        k = c.rsplit("-", 1)[0]
+        out[k] = out.get(k, 0.0) + p
+    return out
+
+
+def exacta_strategies() -> dict:
+    def top(k):
+        return lambda r, xp: sorted(xp, key=xp.get, reverse=True)[:k]
+
+    def ev(th, k):
+        return lambda r, xp: [c for c in sorted(xp, key=xp.get, reverse=True)
+                              if xp[c] >= EX_MIN_P and r["x5"].get(c) and xp[c] * r["x5"][c] >= th][:k]
+    return {"確率上位2点": top(2), "確率上位3点": top(3),
+            "期待値1.0以上・最大2点": ev(1.0, 2), "期待値1.0以上・最大3点": ev(1.0, 3),
+            "期待値1.2以上・最大2点": ev(1.2, 2), "期待値1.2以上・最大3点": ev(1.2, 3)}
+
+
+def _ex_rows(races: list[dict], pick) -> tuple[np.ndarray, np.ndarray]:
+    st, rt = [], []
+    for r in races:
+        xp = exacta_probs(r["probs"])
+        b = pick(r, xp)
+        if not b:
+            continue
+        hit = r["hit"].rsplit("-", 1)[0]
+        st.append(100 * len(b))
+        rt.append(100 * r["xfinal"].get(hit, 0) if hit in b else 0)
+    return np.array(st, dtype=float), np.array(rt, dtype=float)
+
+
+def exacta_report(races: list[dict]) -> list[str]:
+    """6. 2連単の2〜3点買い。補正前は全期間、補正Bは後半（前半で決めた値）で。"""
+    rs = sorted([r for r in races if r.get("x5") and r.get("xfinal")], key=lambda r: r["race"])
+    if len(rs) < 100:
+        return [f"\n6. 2連単：2連単のオッズがあるレースが少ない（{len(rs)}R）ので比べられません（odds_hist を書き出し直してください）"]
+    half = len(rs) // 2
+    fit, test = rs[:half], rs[half:]
+    cal = apply_calibration(test, *fit_calibration(fit))
+    lines = [f"\n6. 2連単の2〜3点買い（2連単のオッズがある {len(rs):,}R。期待値は2連単の5分前オッズ、払戻は確定オッズ。"
+             "幅はレースを入れ替えて1000回数え直した下5%〜上95%）"]
+    rng = np.random.default_rng(0)
+    for tag, group in (("補正前（全期間）", rs), ("補正前（後半）", test), ("補正B（後半）", cal)):
+        lines.append(f" {tag}")
+        for name, pick in exacta_strategies().items():
+            st, rt = _ex_rows(group, pick)
+            if not len(st):
+                lines.append(f"  {_pad(name, 26)}（買うレースなし）")
+                continue
+            idx = rng.integers(0, len(st), size=(1000, len(st)))
+            boot = 100 * rt[idx].sum(axis=1) / st[idx].sum(axis=1)
+            lines.append(f"  {_pad(name, 26)}{len(st):>5}R {st.sum() / 100 / len(st):3.1f}点 的中{100 * (rt > 0).mean():5.1f}%"
+                         f" 回収率{100 * rt.sum() / st.sum():6.1f}%  幅 {np.percentile(boot, 5):5.1f}〜{np.percentile(boot, 95):5.1f}%"
+                         f"  100%超え {100 * (boot > 100).mean():4.1f}%")
+    return lines
+
+
 def _summary(name: str, races: list[dict], pick) -> str:
     n = pts = hits = ret = big = huge = upset_hits = 0
     pays = []
@@ -360,4 +429,5 @@ def build(ml_dir: Path, raw: Path) -> str:
                          f"  MINAMOの見立て {100 * np.mean([r['p1'] for r in g]):5.1f}%")
     lines += calibration_report(races, ml_dir)
     lines += flat_report(races)
+    lines += exacta_report(races)
     return "\n".join(lines)
