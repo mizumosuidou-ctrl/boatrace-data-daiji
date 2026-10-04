@@ -48,8 +48,10 @@ def main() -> None:
     mlf = sub.add_parser("ml-facts", help="データベースの実績が止まった日の次の日から昨日まで、実績・展示・風を公式サイトで足す（1秒1件）")
     mlf.add_argument("--from", dest="date_from", default=None)
     mlf.add_argument("--to", dest="date_to", default=None)
-    mlk = sub.add_parser("ml-kimarite", help="公式サイトから足した日のうち、決まり手が無い日だけ結果ページで足す（1秒1件）")
+    mlk = sub.add_parser("ml-kimarite", help="決まり手を公式サイトの結果一覧（1場1日で1ページ、1秒1件）から足す。取り終えた日はとばす")
     mlk.add_argument("--raw", help="var/ml/raw の場所")
+    mlk.add_argument("--from", dest="date_from", help="YYYYMMDD（省くと facts.csv の最初の日）")
+    mlk.add_argument("--to", dest="date_to", help="YYYYMMDD（省くと昨日）")
     mlo = sub.add_parser("ml-original", help="過去のオリジナル展示（一周・まわり足・直線）をボートレース日和から取り寄せる（3〜5秒に1件）")
     mlo.add_argument("--days", type=int, default=183, help="さかのぼる日数（既定 183＝約6か月）")
     mlo.add_argument("--limit", type=int, default=None)
@@ -164,7 +166,8 @@ def main() -> None:
     elif args.cmd == "ml-kimarite":
         from .ml import facts_backfill, live
 
-        print(f"{facts_backfill.fill_kimarite(Path(args.raw) if args.raw else live.ML_DIR / 'raw')} days fetched")
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        print(f"{facts_backfill.fill_kimarite(raw, args.date_from, args.date_to)} days fetched")
     elif args.cmd == "live-check":
         from . import live_check
 

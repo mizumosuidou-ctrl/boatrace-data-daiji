@@ -1118,3 +1118,38 @@ def test_kimarite_stats():
     out["race_id"], out["course"], out["sr_c"] = "x", out["course_i"], [2.0, 3.0]
     out = ds.add_race_features(out.assign(venue="01", motor_2=np.nan), with_ex=False)
     assert out["race_c1_sasare"].nunique() == 1 and out["race_c1_sasare"].iloc[1] == out.loc[0, "km_sasare"]
+
+
+def test_kimarite_fill_from_result_list(tmp_path):
+    """結果一覧（1場1日で1ページ）から決まり手を足す。取り終えた日はとばす。"""
+    from pathlib import Path as P
+
+    from minamo import parsers
+    from minamo.ml import dataset as ds
+    from minamo.ml import facts_backfill as fb
+
+    sys_path = P(__file__).parent
+    import sys
+    sys.path.insert(0, str(sys_path))
+    from minamo_fixtures import INDEX_HTML
+
+    page = (sys_path / "fixtures_real" / "resultlist_20261004_02.html").read_text(encoding="utf-8")
+    km = parsers.parse_resultlist_kimarite(page)
+    assert len(km) == 12 and km[1] == "逃げ" and km[2] == "抜き" and km[3] == "まくり差し" and km[6] == "差し"
+
+    class F:
+        calls = 0
+
+        def index(self, hd):
+            return INDEX_HTML
+
+        def resultlist(self, hd, jcd):
+            F.calls += 1
+            return page
+
+    assert fb.fill_kimarite(tmp_path, "20261003", "20261004", F()) == 2 and F.calls == 4  # 2日×2場
+    k = pd.read_csv(tmp_path / fb.KIMARITE_NAME, dtype=str)
+    assert len(k) == 48 and set(k["venue"]) == {"12", "24"}
+    assert fb.fill_kimarite(tmp_path, "20261003", "20261004", F()) == 0 and F.calls == 4  # 取り終えた日はとばす
+    kim = ds.load_kimarite(tmp_path)
+    assert kim["20261004-12-03"] == "まくり差し" and len(kim) == 48

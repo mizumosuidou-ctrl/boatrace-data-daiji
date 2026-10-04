@@ -78,3 +78,7 @@ class Fetcher:
 
     def result(self, hd: str, jcd: str, rno: int) -> str:
         return self.get("raceresult", rno=rno, jcd=jcd, hd=hd)
+
+    def resultlist(self, hd: str, jcd: str) -> str:
+        """その場の1日分の結果一覧（12レースの着順・決まり手）。"""
+        return self.get("resultlist", jcd=jcd, hd=hd)
