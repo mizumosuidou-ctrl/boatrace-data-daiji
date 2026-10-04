@@ -827,3 +827,12 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .other-pay .op-c { display: inline-flex; align-items: center; gap: 2px; }
 .other-pay .eq { color: var(--muted); font-family: var(--f-mono); font-size: 12px; }
 .nowrap { white-space: nowrap; }
+
+/* 今買う候補：1点の金額の決め方 */
+.stake-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 14px 18px; margin: 4px 0 6px; }
+.stake-form .seg { margin: 0; }
+.stake-form label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
+.stake-form input { width: 7.5em; font: inherit; font-family: var(--f-mono); padding: 6px 8px; border: 1px solid var(--line-2); border-radius: 8px; background: transparent; color: inherit; text-align: right; }
+.stake-form p { flex-basis: 100%; margin: 0; line-height: 1.6; }
+.calib > .panel { min-width: 0; }
+@media (max-width: 720px) { .calib .big { font-size: clamp(24px, 8.5vw, 42px); } }
