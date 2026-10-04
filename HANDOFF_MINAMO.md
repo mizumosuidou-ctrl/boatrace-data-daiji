@@ -340,3 +340,12 @@ ev-check の「4.」で補正を試す。検証期間（8/24〜9/10、2,469R）�
     - 苦手（147R）：その艇を外した上位6点は、的中39.6%・回収率111.8%。同じレースのふつうの上位6点は41.5%・98.9%、×0.5は38.1%・100.2%。差はぶれの範囲。
     - 2・3着残し（150R）：その形は92.6%で、同じレースのふつうの上位6点（113.6%）より悪い。
     - 結論：どれも、今のMINAMOの上位6点より良いとは言えない（予想に織り込み済み）。自動発見は表示だけのまま。データがたまったら（1〜2か月ごとに）ability-check をやり直す。
+
+## 学習の自動実行（PR #84）
+
+- `deploy/install_cron.sh` が `/etc/cron.d/minamo` を書く。登録は `sudo bash /opt/minamo/deploy/install_cron.sh`、やめるときは `sudo rm /etc/cron.d/minamo`。
+- 火〜日の3時10分（daily）：ml-facts で前日分を足す → ml-train → ev-check（補正Bの値も更新）。
+  - 予想は meta.json が変わると読み直すので、worker を作り直さなくても新しいモデルになる。
+- 月曜の3時10分（weekly）：git pull → worker を作り直す → ml_refresh.sh（データベースからの書き出しから）→ worker を作り直す。
+- 2つが重なったら、あとの方は休む（/tmp/minamo-ml.lock）。
+- 記録は `/opt/minamo/var/cron_daily.log` と `cron_weekly.log`（2MBを超えたら .old に回す）。
