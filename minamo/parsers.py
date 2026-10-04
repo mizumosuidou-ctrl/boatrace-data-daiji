@@ -374,10 +374,11 @@ def parse_result(html: str) -> RaceResult:
                 result.trifecta_payout = int(m.group(4).replace(",", ""))
                 result.trifecta_popularity = int(m.group(5)) if m.group(5) else None
         if "2連単" in t and not result.exacta:
-            m = re.search(r"2連単\s*([1-6])\s*-\s*([1-6])\s*¥\s*([\d,]+)", t)
+            m = re.search(r"2連単\s*([1-6])\s*-\s*([1-6])\s*¥\s*([\d,]+)\s*(\d+)?", t)
             if m:
                 result.exacta = f"{m.group(1)}-{m.group(2)}"
                 result.exacta_payout = int(m.group(3).replace(",", ""))
+                result.exacta_popularity = int(m.group(4)) if m.group(4) else None
     km = re.search(r"決まり手\s*(逃げ|差し|まくり差し|まくり|抜き|恵まれ)", text_all)
     if km:
         result.kimarite = km.group(1)

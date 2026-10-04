@@ -225,6 +225,7 @@ def build_race(
             "popularity": result.trifecta_popularity,
             "exacta": result.exacta,
             "exacta_payout": result.exacta_payout,
+            "exacta_popularity": result.exacta_popularity,
             "kimarite": result.kimarite,
             "cancelled": result.cancelled,
             "rows": [asdict(r) for r in result.rows],

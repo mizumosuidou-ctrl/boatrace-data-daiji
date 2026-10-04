@@ -69,7 +69,7 @@ def test_parse_result():
     res = parsers.parse_result(RESULT_HTML)
     assert res.order == [4, 1, 2, 5, 6]
     assert res.trifecta == "4-1-2" and res.trifecta_payout == 4560 and res.trifecta_popularity == 15
-    assert res.exacta == "4-1" and res.exacta_payout == 1230
+    assert res.exacta == "4-1" and res.exacta_payout == 1230 and res.exacta_popularity == 5
     assert res.kimarite == "まくり"
     by = {r.boat: r for r in res.rows}
     assert by[3].place is None
