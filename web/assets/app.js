@@ -597,6 +597,60 @@ function resultHtml(race) {
   </div>`;
 }
 
+// あなたの予想：1着・2着・3着に入れる艇を選ぶと、組み合わせ（フォーメーション）を作り、MINAMOの確率・オッズと並べる。
+// このブラウザだけに保存する（ほかの人には見えない）
+const myKey = (race) => `minamo-my-${race.date}-${race.venue.jcd}-${race.rno}`;
+const myLoad = (race) => { try { return JSON.parse(localStorage.getItem(myKey(race)) || "null") || { f: [[], [], []] }; } catch { return { f: [[], [], []] }; } };
+const mySave = (race, v) => { try { localStorage.setItem(myKey(race), JSON.stringify(v)); } catch { /* 保存できなくても表示は続ける */ } };
+function myCombos(f) {
+  const out = [];
+  for (const a of f[0]) for (const b of f[1]) for (const c of f[2]) if (a !== b && b !== c && a !== c) out.push(`${a}-${b}-${c}`);
+  return out;
+}
+function myPickHtml(race) {
+  const v = myLoad(race);
+  const P = race.tri_all || Object.fromEntries((race.prediction.trifecta || []).map((t) => [t.combo, t.p]));
+  const O = race.odds_all || race.odds || {};
+  const rank = Object.fromEntries(Object.keys(P).sort((a, b) => P[b] - P[a]).map((c, i) => [c, i + 1]));
+  const mine = myCombos(v.f);
+  const minamo = new Set((race.ai?.picks || []).map((p) => p.combo));
+  const trial = new Set(race.ev_pick || []);
+  const won = race.result && !race.result.cancelled ? race.result.trifecta : null;
+  const sumP = mine.reduce((a, c) => a + (P[c] || 0), 0);
+  const evs = mine.filter((c) => P[c] != null && O[c]).map((c) => P[c] * O[c]);
+  const hitMine = won && mine.includes(won);
+  const rows = mine.slice().sort((a, b) => (P[b] || 0) - (P[a] || 0)).map((c) => `<tr class="${c === won ? "on" : ""}">
+    <td>${combo(c)}</td><td>${P[c] != null ? pct(P[c], 1) + "%" : "--"}</td><td>${rank[c] ? rank[c] + "位" : "--"}</td><td>${O[c] ?? "--"}</td>
+    <td>${P[c] != null && O[c] ? (P[c] * O[c]).toFixed(2) : "--"}</td><td>${minamo.has(c) ? "◎" : ""}${trial.has(c) ? "★" : ""}</td></tr>`).join("");
+  const picker = ["1着", "2着", "3着"].map((lab, i) => `<div class="my-row"><span class="my-lab">${lab}</span>${[1, 2, 3, 4, 5, 6].map((b) => `<button type="button" class="my-b ${v.f[i].includes(b) ? "on" : ""}" data-pos="${i}" data-boat="${b}" aria-pressed="${v.f[i].includes(b)}">${boat(b, "sm")}</button>`).join("")}</div>`).join("");
+  const sameN = mine.filter((c) => minamo.has(c)).length;
+  return `<div class="panel my-panel">
+    <div class="my-pick">${picker}<button type="button" class="btn ghost my-clear">クリア</button></div>
+    ${mine.length ? `<div class="calib my-sum">
+      <div class="panel"><h4>点数</h4><div class="big">${mine.length}<small style="font-size:.45em">点</small></div><div class="small">1点1,000円で ${yen(mine.length * 1000)}</div></div>
+      <div class="panel"><h4>MINAMOから見た的中率</h4><div class="big">${pct(sumP, 1)}<small style="font-size:.45em">%</small></div><div class="small">選んだ組の確率の合計</div></div>
+      <div class="panel"><h4>期待値の平均</h4><div class="big">${evs.length ? (evs.reduce((a, x) => a + x, 0) / evs.length).toFixed(2) : "--"}</div><div class="small">確率×オッズ（1.0より上なら割安）</div></div>
+      <div class="panel"><h4>${won ? (hitMine ? "的中" : "はずれ") : "MINAMOと同じ組"}</h4><div class="big">${won ? (hitMine ? yen((race.result.payout || 0) * BET_UNIT) : "--") : `${sameN}<small style="font-size:.45em">/${mine.length}点</small>`}</div><div class="small">${won ? `結果 ${esc(won)}${race.settle ? ` · MINAMOは${race.settle.trifecta_hit ? "的中" : "はずれ"}` : ""}` : "◎＝MINAMOの推奨買い目にもある組"}</div></div>
+    </div>
+    <div class="ledger-scroll"><table class="streak-t my-t"><thead><tr><th>3連単</th><th>MINAMOの確率</th><th>120通り中</th><th>オッズ</th><th>期待値</th><th>MINAMO</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<p class="small muted" style="margin:12px 2px 0">1着・2着・3着に入れる艇を押してください。押した艇で組み合わせを作ります（例：1着①、2着②③、3着②③④ → 4点）。</p>`}
+  </div>`;
+}
+function bindMyPick(race) {
+  const box = $("#mypick");
+  if (!box) return;
+  box.addEventListener("click", (ev) => {
+    const b = ev.target.closest(".my-b");
+    const v = myLoad(race);
+    if (b) {
+      const i = Number(b.dataset.pos), n = Number(b.dataset.boat);
+      v.f[i] = v.f[i].includes(n) ? v.f[i].filter((x) => x !== n) : [...v.f[i], n].sort();
+    } else if (ev.target.closest(".my-clear")) v.f = [[], [], []];
+    else return;
+    mySave(race, v);
+    box.innerHTML = myPickHtml(race);
+  });
+}
+
 const MARK_SYM = [["honmei", "◎", "本命"], ["taikou", "○", "対抗"], ["ana", "▲", "穴"]];
 
 async function renderRace(r, refresh = false) {
@@ -681,6 +735,11 @@ async function renderRace(r, refresh = false) {
     </section>
 
     <section class="section">
+      <div class="section-head"><div><h2 class="section-title">あなたの予想と比べる<small>1着・2着・3着の艇を選ぶと、MINAMOの確率・オッズ・期待値と並べます。◎はMINAMOの推奨買い目、★は試験中の買い目にもある組。このブラウザだけに保存されます</small></h2></div></div>
+      <div id="mypick">${myPickHtml(race)}</div>
+    </section>
+
+    <section class="section">
       <div class="section-head"><div><h2 class="section-title">出走表データ<small>出走表・直前情報（● はレース内1位）。${exEntry(race) ? "展示の進入コース順" : "枠なり想定のコース順"}</small></h2></div></div>
       ${sheetHtml(race, ins)}
       ${race.entries.some((e) => e.rt_best != null) ? `<p class="small muted" style="margin:10px 2px 0;line-height:1.7">ﾀｲﾑ6艇内＝節間ベストのレースタイムの、このレースの6艇の中での順位。選手別順位＝節間ベストの、その節に出ている選手の中での順位（順位/人数）。全走順位＝節間ベストの、その節の全部の走り（1走ずつ数える）の中での順位。前走順位＝いちばん新しい走りのタイムの、各選手のいちばん新しい走りの中での順位（数字に触れると前走のタイム）。ﾀｲﾑ評価＝この「6艇内の順位」と「節内の順位（上位10%・10〜30%・30〜60%・それより下）」だった選手の過去の3連対率が、同じコースの平均より何ポイント高いか${ins && ins.racetime && ins.racetime.n ? `（${ins.racetime.n.toLocaleString("ja-JP")}走から）` : ""}。</p>` : ""}
@@ -698,6 +757,7 @@ async function renderRace(r, refresh = false) {
   } else main.innerHTML = html;
   animateRings(main, refresh);
   bindAbility(race);
+  bindMyPick(race);
   const canvas = $("#sim");
   document.fonts.ready.then(() => {
     if (!canvas.isConnected) return;
@@ -820,6 +880,7 @@ async function renderRecord() {
         <div class="panel rv" style="--i:2"><h4>収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.return >= T.stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.return - T.stake) * 10)}</div><div class="small">払戻 − 投資</div></div>
         <div class="panel rv" style="--i:3"><h4>回収率</h4><div class="big">${roi.toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">払戻 ÷ 投資</div></div>
       </div>
+      ${myRecordHtml(days)}
       ${streakHtml(rec.streaks)}
       ${T.ev_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">試験中：オッズで絞った買い目<small>締切前のオッズで「MINAMOの確率×オッズ」が1.2以上の組だけを最大6点（無ければ見送り）。実際の推奨買い目は変えず、成績だけを数えています</small></h2></div></div>
       <div class="calib">
@@ -827,7 +888,8 @@ async function renderRecord() {
         <div class="panel rv" style="--i:1"><h4>回収率</h4><div class="big" style="color:var(--accent)">${T.ev_stake ? ((T.ev_return / T.ev_stake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">払戻 ÷ 投資</div></div>
         <div class="panel rv" style="--i:2"><h4>買ったレース</h4><div class="big">${T.ev_bought}<small style="font-size:.45em">R</small></div><div class="small">見送り ${T.ev_races - T.ev_bought}R · 平均 ${T.ev_bought ? (T.ev_stake / 100 / T.ev_bought).toFixed(1) : "--"}点</div></div>
         <div class="panel rv" style="--i:3"><h4>1点1,000円の収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px);color:${T.ev_return >= T.ev_stake ? "var(--hit)" : "var(--muted)"}">${signedYen((T.ev_return - T.ev_stake) * 10)}</div><div class="small">投資 ${yen(T.ev_stake * 10)} · 払戻 ${yen(T.ev_return * 10)}</div></div>
-      </div>` : ""}
+      </div>
+      ${evTrendHtml(rec.days)}` : ""}
       ${T.ml_races ? `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">予想エンジンの比較<small>同じレースで、それぞれの本命（1着確率1位）が1着になった割合</small></h2></div></div>
       <div class="calib">
         <div class="panel rv"><h4>機械学習</h4><div class="big" style="color:var(--accent)">${((T.ml_fav_hits / T.ml_races) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">本命1着 · ${T.ml_races}R</div></div>
@@ -846,6 +908,72 @@ async function renderRecord() {
     </section>
   </div>`;
   bindLedger(days);
+}
+
+/* ------------------------------------------------------------ あなたの予想の成績（このブラウザに保存した分） */
+function myRecordHtml(days) {
+  let keys = [];
+  try { keys = Object.keys(localStorage).filter((k) => k.startsWith("minamo-my-")); } catch { return ""; }
+  const byKey = {};
+  for (const d of days) for (const v of d.venues) for (const r of v.races) byKey[`minamo-my-${d.date}-${v.jcd}-${r.rno}`] = r;
+  let n = 0, pts = 0, hits = 0, ret = 0, mStake = 0, mRet = 0, mHits = 0;
+  for (const k of keys) {
+    const r = byKey[k];
+    if (!r || !r.result || r.cancelled) continue;
+    let f;
+    try { f = JSON.parse(localStorage.getItem(k)).f; } catch { continue; }
+    const c = myCombos(f);
+    if (!c.length) continue;
+    n++; pts += c.length;
+    if (c.includes(r.result)) { hits++; ret += r.payout || 0; }
+    if (r.stake != null) { mStake += r.stake; mRet += r.return || 0; mHits += r.hit ? 1 : 0; }
+  }
+  if (!n) return "";
+  return `<div class="section-head" style="margin-top:40px"><div><h2 class="section-title">あなたの予想<small>レース画面の「あなたの予想と比べる」で選んだ組（このブラウザに保存した分）を、同じレースのMINAMOの推奨買い目と比べた成績。1点1,000円</small></h2></div></div>
+    <div class="calib">
+      <div class="panel rv"><h4>あなた</h4><div class="big">${((ret * 100) / (pts * 100) * 100).toFixed(1)}<small style="font-size:.45em">%</small></div><div class="small">回収率 · 的中 ${hits}/${n}R · 平均${(pts / n).toFixed(1)}点</div></div>
+      <div class="panel rv" style="--i:1"><h4>あなたの収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${signedYen((ret - pts * 100) * BET_UNIT)}</div><div class="small">投資 ${yen(pts * 1000)}</div></div>
+      <div class="panel rv" style="--i:2"><h4>MINAMO（同じレース）</h4><div class="big">${mStake ? ((mRet / mStake) * 100).toFixed(1) : "--"}<small style="font-size:.45em">%</small></div><div class="small">回収率 · 的中 ${mHits}/${n}R</div></div>
+      <div class="panel rv" style="--i:3"><h4>MINAMOの収支</h4><div class="big" style="white-space:nowrap;font-size:clamp(22px,3vw,36px)">${mStake ? signedYen((mRet - mStake) * BET_UNIT) : "--"}</div><div class="small">推奨買い目</div></div>
+    </div>`;
+}
+
+/* ------------------------------------------------------------ 試験中の買い目の回収率の推移（累計） */
+function evTrendHtml(days) {
+  const D = days.filter((d) => d.ev_stake > 0);
+  if (!D.length) return "";
+  let es = 0, er = 0, ps = 0, pr = 0;
+  const pts = D.map((d) => {
+    es += d.ev_stake; er += d.ev_return || 0; ps += d.stake || 0; pr += d.return || 0;
+    return { date: d.date, ev: (er / es) * 100, pk: ps ? (pr / ps) * 100 : null, evDay: (d.ev_return / d.ev_stake) * 100, n: d.ev_bought };
+  });
+  // 画面の幅に合わせて描く（スマホで文字が小さくならないように）
+  const W = Math.round(Math.min(800, Math.max(300, ($("#main")?.clientWidth || 800) - 90))), H = 260, padL = 40, padR = 86, padT = 16, padB = 34;
+  const vals = pts.flatMap((p) => [p.ev, p.pk]).filter((v) => v != null);
+  const lo = Math.min(50, Math.floor(Math.min(...vals) / 10) * 10), hi = Math.max(150, Math.ceil(Math.max(...vals) / 10) * 10);
+  const x = (i) => padL + (pts.length === 1 ? (W - padL - padR) / 2 : (i * (W - padL - padR)) / (pts.length - 1));
+  const y = (v) => padT + ((hi - v) / (hi - lo)) * (H - padT - padB);
+  const path = (k) => pts.map((p, i) => (p[k] == null ? "" : `${i && pts[i - 1][k] != null ? "L" : "M"}${x(i).toFixed(1)} ${y(p[k]).toFixed(1)}`)).join(" ");
+  const grid = [lo, 100, hi].filter((v, i, a) => a.indexOf(v) === i).map((v) => `<line class="${v === 100 ? "ref100" : "gridl"}" x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}"/><text x="${padL - 6}" y="${y(v) + 3}" text-anchor="end">${v}%</text>`).join("");
+  const step = Math.max(1, Math.ceil(pts.length / Math.max(3, Math.floor(W / 100))));
+  const xl = pts.map((p, i) => (i % step === 0 || i === pts.length - 1 ? `<text x="${x(i)}" y="${H - padB + 16}" text-anchor="middle">${p.date.slice(4, 6)}/${p.date.slice(6)}</text>` : "")).join("");
+  const last = pts[pts.length - 1];
+  const bw = pts.length > 1 ? (W - padL - padR) / (pts.length - 1) : 40;
+  const hits = pts.map((p, i) => `<rect class="hit" x="${x(i) - bw / 2}" y="${padT}" width="${bw}" height="${H - padT - padB}"><title>${fmtDate(p.date)}  試験中 累計 ${p.ev.toFixed(1)}%（この日 ${p.evDay.toFixed(1)}%・${p.n}R）${p.pk != null ? ` ／ 推奨買い目 累計 ${p.pk.toFixed(1)}%` : ""}</title></rect>`).join("");
+  const rows = pts.map((p) => `<tr><td>${fmtDate(p.date)}</td><td>${p.n}R</td><td>${p.evDay.toFixed(1)}%</td><td>${p.ev.toFixed(1)}%</td><td>${p.pk != null ? p.pk.toFixed(1) + "%" : "--"}</td></tr>`).join("");
+  return `<div class="panel chart trend rv">
+    <div class="section-head" style="margin:0 0 8px"><span class="eyebrow">回収率の推移（はじめからの累計）</span>
+      <span class="legend"><span class="key ev"></span>試験中の買い目 <span class="key pk"></span>推奨買い目（確率上位）</span></div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="試験中の買い目と推奨買い目の、累計回収率の推移">
+      ${grid}${xl}
+      <path class="ln pk" d="${path("pk")}"/><path class="ln ev" d="${path("ev")}"/>
+      ${pts.map((p, i) => `<circle class="pt ev" cx="${x(i)}" cy="${y(p.ev)}" r="4"/>`).join("")}
+      ${last.pk != null ? `<text class="lab" x="${x(pts.length - 1) + 8}" y="${y(last.pk) + 4}">推奨 ${last.pk.toFixed(0)}%</text>` : ""}
+      <text class="lab strong" x="${x(pts.length - 1) + 8}" y="${y(last.ev) + 4}">試験中 ${last.ev.toFixed(0)}%</text>
+      ${hits}
+    </svg>
+    <details class="small"><summary>数字の表で見る</summary><div class="ledger-scroll"><table class="streak-t"><thead><tr><th>日付</th><th>買ったレース</th><th>その日の回収率</th><th>試験中 累計</th><th>推奨買い目 累計</th></tr></thead><tbody>${rows}</tbody></table></div></details>
+  </div>`;
 }
 
 /* ------------------------------------------------------------ 連敗の記録（締切順） */

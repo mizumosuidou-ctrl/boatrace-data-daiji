@@ -207,6 +207,9 @@ def build_race(
         "prediction": pred.to_dict(),
         "ai": ai,
         "odds": {c: odds[c] for c in top_combos if odds and c in odds},
+        # 自分の予想と比べる欄：120通り全部の確率とオッズ
+        "tri_all": {c: round(p, 5) for c, p in pred.trifecta},
+        "odds_all": dict(odds) if odds else {},
         "result": None,
         "settle": None,
         "history": history or [],
