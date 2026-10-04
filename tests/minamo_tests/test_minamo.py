@@ -299,6 +299,43 @@ class FakeFetcher:
         self.calls.append(("result", jcd, rno))
         return RESULT_HTML
 
+    def oddstf(self, hd, jcd, rno):
+        self.calls.append(("oddstf", jcd, rno))
+        return _real("oddstf")
+
+    def oddsk(self, hd, jcd, rno):
+        self.calls.append(("oddsk", jcd, rno))
+        return _real("oddsk")
+
+    def odds3f(self, hd, jcd, rno):
+        self.calls.append(("odds3f", jcd, rno))
+        return _real("odds3f")
+
+
+def _real(name: str) -> str:
+    """公式サイトの実物のページ（2026/10/4 戸田1R。表の部分だけ）。"""
+    from pathlib import Path
+
+    return (Path(__file__).parent / "fixtures_real" / f"{name}.html").read_text(encoding="utf-8")
+
+
+def test_parse_other_bet_types_from_real_pages():
+    """単勝・複勝・2連複・拡連複・3連複のオッズと、結果ページの全券種の払戻（実物のページで並びを確かめた）。"""
+    tf = parsers.parse_oddstf(_real("oddstf"))
+    assert tf["win"] == {"1": 3.8, "2": 2.7, "3": 3.6, "4": 3.9, "5": 7.8, "6": 19.0} and tf["place"]["1"] == (1.6, 1.9)
+    q = parsers.parse_odds2f(_real("odds2tf"))
+    assert len(q) == 15 and q["1=2"] == 4.4 and q["2=3"] == 7.5 and q["5=6"] == 23.9
+    assert len(parsers.parse_odds2t(_real("odds2tf"))) == 30
+    w = parsers.parse_oddsk(_real("oddsk"))
+    assert len(w) == 15 and w["1=2"] == (1.2, 1.3) and w["2=3"] == (2.1, 2.9)
+    t = parsers.parse_odds3f(_real("odds3f"))
+    assert len(t) == 20 and t["1=2=3"] == 4.0 and t["2=3=4"] == 25.0 and t["4=5=6"] == 31.4
+    r = parsers.parse_result(_real("raceresult"))
+    assert r.trifecta == "1-5-2" and r.exacta == "1-5" and r.exacta_popularity == 5
+    assert r.payouts["trio"] == {"1=2=5": 680} and r.payouts["quinella"] == {"1=5": 1000}
+    assert r.payouts["wide"] == {"1=5": 210, "1=2": 120, "2=5": 310} and r.payouts["win"] == {"1": 380}
+    assert r.payouts["place"] == {"1": 180, "5": 320} and r.payouts["trio_pop"] == {"1=2=5": 3}
+
 
 @pytest.fixture
 def sandbox(tmp_path, monkeypatch):
@@ -377,6 +414,8 @@ def test_pipeline_full_day(sandbox):
     # オッズ履歴：直前情報を取るたびに1行、確定後に「final」を1行
     hist = [json.loads(x) for x in (sandbox / "state" / "odds" / f"{date}.jsonl").read_text().splitlines()]
     assert [h["kind"] for h in hist] == ["pre", "pre", "final"] and [h["min"] for h in hist[:2]] == [20.0, 10.0]
+    # ほかの券種のオッズは締切12分前から（20分前は取らない、10分前は取る）
+    assert "more" not in hist[0] and {"win", "place", "wide", "trio"} <= set(hist[1]["more"])
     assert hist[0]["t2"]["1-2"] == pytest.approx(1.5) and len(hist[0]["t2"]) == 30 and len(hist[0]["t3"]) == 120
     assert race["odds2"]["2-1"] == pytest.approx(odds2_html()[1]["2-1"])
     # 確定後は取得しない

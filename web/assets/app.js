@@ -585,6 +585,16 @@ function weatherHtml(w) {
   </div>`;
 }
 
+// 3連単・2連単以外の払戻（3連複・2連複・拡連複・単勝・複勝）
+function otherPayHtml(P) {
+  if (!P || !Object.keys(P).length) return "";
+  const kinds = [["trio", "3連複"], ["quinella", "2連複"], ["wide", "拡連複"], ["win", "単勝"], ["place", "複勝"]];
+  const cmb = (c) => c.split("=").map((b) => boat(b, "sm")).join(`<span class="eq">=</span>`);
+  const cells = kinds.filter(([k]) => P[k]).map(([k, label]) => `<div class="op"><span class="lbl">${label}</span>${Object.entries(P[k]).map(([c, v]) =>
+    `<span class="op-i"><span class="op-c">${cmb(c)}</span><b>${yen(v)}</b>${P[`${k}_pop`] && P[`${k}_pop`][c] ? `<small>${P[`${k}_pop`][c]}番人気</small>` : ""}</span>`).join("")}</div>`).join("");
+  return `<div class="panel other-pay">${cells}</div>`;
+}
+
 function resultHtml(race) {
   const r = race.result;
   if (!r) return "";
@@ -605,6 +615,7 @@ function resultHtml(race) {
     </div>
     <div>${s.trifecta_hit ? `<div class="hit-stamp">的中</div>` : `<div class="miss-stamp">${s.honmei_win ? "本命1着" : "はずれ"}</div>`}</div>
   </div>
+  ${otherPayHtml(r.payouts)}
   ${rows ? `<div class="panel res-table"><div class="ledger-scroll"><table class="streak-t res-t"><thead><tr><th>着順</th><th>艇</th><th>選手</th><th>進入</th><th>ST</th><th>レースタイム</th></tr></thead><tbody>${rows}</tbody></table></div></div>` : ""}`;
 }
 

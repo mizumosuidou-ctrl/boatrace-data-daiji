@@ -316,7 +316,79 @@ def parse_odds2t(html: str) -> dict[str, float]:
     return odds
 
 
+QUINELLA_ORDER = [f"{a}={b}" for b in range(2, 7) for a in range(1, b)]  # 公式の2連複・拡連複の表の並び
+TRIO_ORDER = [f"{a}={b}={c}" for b in range(2, 6) for c in range(b + 1, 7) for a in range(1, b)]  # 3連複の表の並び
+
+
+def _range(text: str) -> Optional[tuple[float, float]]:
+    """「1.6-1.9」→ (1.6, 1.9)。1つだけなら同じ値2つ。"""
+    nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", clean(text).translate(ZEN))]
+    if not nums:
+        return None
+    return (nums[0], nums[-1])
+
+
+def parse_oddstf(html: str) -> dict:
+    """単勝（艇→オッズ）と複勝（艇→(下限, 上限)）。"""
+    cells = _soup(html).select("td.oddsPoint")
+    if len(cells) < 12:
+        return {}
+    win = {str(i + 1): v for i, c in enumerate(cells[:6]) if (v := _num(c.get_text())) is not None and v > 0}
+    place = {str(i + 1): r for i, c in enumerate(cells[6:12]) if (r := _range(c.get_text())) and r[0] > 0}
+    return {"win": win, "place": place}
+
+
+def parse_odds2f(html: str) -> dict[str, float]:
+    """2連複（2連単の表のあとの15）。"""
+    cells = _soup(html).select("td.oddsPoint")
+    if len(cells) < 45:
+        return {}
+    return {c: v for c, cell in zip(QUINELLA_ORDER, cells[30:45]) if (v := _num(cell.get_text())) is not None and v > 0}
+
+
+def parse_oddsk(html: str) -> dict[str, tuple[float, float]]:
+    """拡連複（組→(下限, 上限)）。"""
+    cells = _soup(html).select("td.oddsPoint")
+    if len(cells) < 15:
+        return {}
+    return {c: r for c, cell in zip(QUINELLA_ORDER, cells[:15]) if (r := _range(cell.get_text())) and r[0] > 0}
+
+
+def parse_odds3f(html: str) -> dict[str, float]:
+    """3連複（組→オッズ）。"""
+    cells = _soup(html).select("td.oddsPoint")
+    if len(cells) < 20:
+        return {}
+    return {c: v for c, cell in zip(TRIO_ORDER, cells[:20]) if (v := _num(cell.get_text())) is not None and v > 0}
+
+
 # ---------------------------------------------------------------- result
+
+_PAY_KIND = {"3連複": "trio", "2連複": "quinella", "拡連複": "wide", "単勝": "win", "複勝": "place"}
+
+
+def _payouts(soup) -> dict:
+    """結果ページの払戻の表から、3連単・2連単以外の券種（100円あたりの払戻と人気）。続きの行は前の券種のもの。"""
+    out: dict = {}
+    kind = None
+    for tr in soup.find_all("tr"):
+        t = clean(tr.get_text(" ", strip=True)).translate(ZEN)
+        if "¥" not in t:
+            continue
+        head = next((k for k in ("3連単", "3連複", "2連単", "2連複", "拡連複", "単勝", "複勝") if t.startswith(k)), None)
+        if head:
+            kind = _PAY_KIND.get(head)
+            t = t[len(head):]
+        if not kind:
+            continue
+        m = re.match(r"\s*([1-6](?:\s*=\s*[1-6]){0,2})\s*¥\s*([\d,]+)\s*(\d+)?", t)
+        if not m:
+            continue
+        combo = re.sub(r"\s+", "", m.group(1))
+        out.setdefault(kind, {})[combo] = int(m.group(2).replace(",", ""))
+        if m.group(3):
+            out.setdefault(kind + "_pop", {})[combo] = int(m.group(3))
+    return out
 
 PLACE_MAP = {str(i): i for i in range(1, 7)}
 
@@ -379,6 +451,7 @@ def parse_result(html: str) -> RaceResult:
                 result.exacta = f"{m.group(1)}-{m.group(2)}"
                 result.exacta_payout = int(m.group(3).replace(",", ""))
                 result.exacta_popularity = int(m.group(4)) if m.group(4) else None
+    result.payouts = _payouts(soup)
     km = re.search(r"決まり手\s*(逃げ|差し|まくり差し|まくり|抜き|恵まれ)", text_all)
     if km:
         result.kimarite = km.group(1)
