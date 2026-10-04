@@ -423,10 +423,11 @@ def exacta_detail(races: list[dict]) -> list[str]:
 
 
 def _simulate(rows: list[tuple[list[tuple[float, float, bool, float]]]], how: str, start: float = 100_000.0,
-              unit: float = 1_000.0, kelly: float = 0.25) -> dict:
+              unit: float = 1_000.0, kelly: float = 0.25, cap: float | None = None) -> dict:
     """レースを日付順に買っていく。rows はレースごとの [(確率, 5分前オッズ, 当たり, 確定オッズ), …]。
-    how: flat（1点 unit 円）・ev（unit×期待値、最大3倍）・kelly（資金×ケリー×kelly、1点100円単位・最低100円・最大で資金の5%）。"""
-    bank, peak, worst, stake_sum, ret_sum = start, start, 0.0, 0.0, 0.0
+    how: flat（1点 unit 円）・ev（unit×期待値、最大3倍）・kelly（資金×ケリー×kelly、1点100円単位・最低100円・最大で資金の5%）。
+    cap: ケリーの1点の上限（円）。low は途中でいちばん少なくなった資金。"""
+    bank, peak, worst, stake_sum, ret_sum, low = start, start, 0.0, 0.0, 0.0, start
     for picks in rows:
         bets = []
         for p, o5, hit, of in picks:
@@ -436,7 +437,7 @@ def _simulate(rows: list[tuple[list[tuple[float, float, bool, float]]]], how: st
                 b = unit * min(3.0, max(0.5, p * o5))
             else:
                 f = (p * o5 - 1) / (o5 - 1) if o5 > 1 else 0.0
-                b = max(0.0, min(bank * 0.05, bank * f * kelly))
+                b = max(0.0, min(bank * 0.05, bank * f * kelly, cap or float("inf")))
                 b = round(b / 100) * 100
                 if 0 < b < 100:
                     b = 100.0
@@ -449,18 +450,14 @@ def _simulate(rows: list[tuple[list[tuple[float, float, bool, float]]]], how: st
         stake_sum += total
         ret_sum += ret
         peak = max(peak, bank)
+        low = min(low, bank)
         worst = max(worst, (peak - bank) / peak)
-    return {"bank": bank, "roi": 100 * ret_sum / stake_sum if stake_sum else float("nan"), "stake": stake_sum, "dd": 100 * worst}
+    return {"bank": bank, "roi": 100 * ret_sum / stake_sum if stake_sum else float("nan"), "stake": stake_sum, "dd": 100 * worst,
+            "low": low}
 
 
-def bankroll_report(races: list[dict]) -> list[str]:
-    """9. 1点の金額の決め方（補正B・後半。資金10万円から日付順に買う）。"""
-    races = sorted(races, key=lambda r: r["race"])
-    half = len(races) // 2
-    fit, test = races[:half], races[half:]
-    if len(fit) < 20 or len(test) < 20:
-        return []
-    cal = apply_calibration(test, *fit_calibration(fit))
+def _trial_rows(cal: list[dict]) -> tuple[list, list]:
+    """今の試し買い（3連単 期待値1.2以上・最大9点、2連単 期待値1.2以上・最大3点）を、レースごとの [(確率, 5分前オッズ, 当たり, 確定オッズ)] に。"""
     tri_rows, ex_rows = [], []
     for r in cal:
         cs = [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True)
@@ -472,6 +469,25 @@ def bankroll_report(races: list[dict]) -> list[str]:
             xs = [c for c in sorted(xp, key=xp.get, reverse=True)
                   if xp[c] >= EX_MIN_P and r["x5"].get(c) and xp[c] * r["x5"][c] >= 1.2][:3]
             ex_rows.append([(xp[c], r["x5"][c], c == hit, r["xfinal"].get(c, 0)) for c in xs])
+    return tri_rows, ex_rows
+
+
+def _test_cal(races: list[dict]) -> list[dict]:
+    """補正Bを前半で決めて、後半に当てたもの（少なすぎれば空）。"""
+    races = sorted(races, key=lambda r: r["race"])
+    half = len(races) // 2
+    fit, test = races[:half], races[half:]
+    if len(fit) < 20 or len(test) < 20:
+        return []
+    return apply_calibration(test, *fit_calibration(fit))
+
+
+def bankroll_report(races: list[dict]) -> list[str]:
+    """9. 1点の金額の決め方（補正B・後半。資金10万円から日付順に買う）。"""
+    cal = _test_cal(races)
+    if not cal:
+        return []
+    tri_rows, ex_rows = _trial_rows(cal)
     lines = [f"\n9. 1点の金額の決め方（補正B・後半 {len(cal):,}R。資金10万円から日付順に買う。"
              "平掛け＝1点1,000円、期待値に合わせる＝1,000円×期待値（0.5〜3倍）、ケリー1/4＝資金×ケリーの1/4（1点は資金の5%まで、100円単位））"]
     for tag, rows in (("3連単（期待値1.2以上・最大9点）", tri_rows), ("2連単（期待値1.2以上・最大3点）", ex_rows)):
@@ -482,6 +498,50 @@ def bankroll_report(races: list[dict]) -> list[str]:
             r = _simulate(rows, how)
             lines.append(f"  {_pad(name, 18)}最後の資金 {r['bank']:>12,.0f}円  回収率 {r['roi']:6.1f}%  投資の合計 {r['stake']:>12,.0f}円"
                          f"  一番減ったとき −{r['dd']:4.1f}%")
+    return lines
+
+
+SHUFFLES = 200
+
+
+def _risk(rows: list, how: str, unit: float = 1_000.0, cap: float | None = None, n: int = SHUFFLES,
+          start: float = 100_000.0) -> dict:
+    """同じレースを順番だけ入れ替えて n 回買い直し、運の悪い並びでも資金が持つかを数える。
+    bust＝途中で資金が1割（1万円）を割った、half＝半分を割った、up＝最後に増えていた（どれも %）。"""
+    rng = np.random.default_rng(0)
+    bust = half = up = 0
+    order = list(rows)
+    for _ in range(n):
+        rng.shuffle(order)
+        r = _simulate(order, how, start=start, unit=unit, cap=cap)
+        bust += r["low"] < start * 0.1
+        half += r["low"] < start * 0.5
+        up += r["bank"] > start
+    return {"bust": 100 * bust / n, "half": 100 * half / n, "up": 100 * up / n}
+
+
+def stake_report(races: list[dict], shuffles: int = SHUFFLES) -> list[str]:
+    """10. 資金10万円で持つ1点の金額（平掛けの金額を変える・ケリーに1点の上限を付ける）。
+    日付順の結果に加えて、レースの順番を入れ替えて買い直したとき、資金が尽きる・半分を割る割合を出す。"""
+    cal = _test_cal(races)
+    if not cal:
+        return []
+    tri_rows, ex_rows = _trial_rows(cal)
+    lines = [f"\n10. 資金10万円で持つ1点の金額（補正B・後半 {len(cal):,}R。左は日付順、右はレースの順番を{shuffles}回入れ替えて買い直したとき"
+             "の、途中で1万円を割った（尽きた）・5万円を割った・最後に増えていた割合。ケリーは1/4で1点の上限つき）"]
+    plans = (("3連単（期待値1.2以上・最大9点）", tri_rows, (100, 200, 300, 500, 1000), (1000, 3000, 10000)),
+             ("2連単（期待値1.2以上・最大3点）", ex_rows, (300, 500, 1000, 2000), (3000, 10000, 30000)))
+    for tag, rows, units, caps in plans:
+        if not rows:
+            continue
+        lines.append(f" {tag}")
+        cases = [(f"平掛け 1点{u:,}円", "flat", u, None) for u in units]
+        cases += [(f"ケリー1/4 1点{c:,}円まで", "kelly", 1_000.0, c) for c in caps]
+        for name, how, unit, cap in cases:
+            r = _simulate(rows, how, unit=unit, cap=cap)
+            k = _risk(rows, how, unit=unit, cap=cap, n=shuffles)
+            lines.append(f"  {_pad(name, 24)}最後の資金 {r['bank']:>11,.0f}円  回収率 {r['roi']:6.1f}%  一番少ないとき {r['low']:>9,.0f}円"
+                         f"  一番減ったとき −{r['dd']:4.1f}%  ｜ 尽きた {k['bust']:5.1f}%  半分割れ {k['half']:5.1f}%  増えた {k['up']:5.1f}%")
     return lines
 
 
@@ -597,4 +657,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += points_report(races)
     lines += exacta_detail(races)
     lines += bankroll_report(races)
+    lines += stake_report(races)
     return "\n".join(lines)

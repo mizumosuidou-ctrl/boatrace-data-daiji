@@ -845,6 +845,16 @@ def test_ev_check_report(tmp_path):
     assert sim["bank"] == 100_000 + 9_000 - 1_000 and abs(sim["roi"] - 500.0) < 1e-9
     # ケリー：期待値1以下の組には賭けない
     assert ev_check._simulate([[(0.05, 10.0, True, 10.0)]], "kelly")["stake"] == 0
+    # 10. 1点の金額を変える・ケリーに上限：外れ2回のあと当たり → 一番少ないときは 98,000円
+    assert "10. 資金10万円で持つ1点の金額" in text and "平掛け 1点100円" in text and "1点10,000円まで" in text
+    sim = ev_check._simulate([[(0.2, 10.0, False, 10.0)], [(0.2, 10.0, False, 10.0)], [(0.2, 10.0, True, 10.0)]], "flat")
+    assert sim["low"] == 98_000 and sim["bank"] == 107_000
+    # ケリーの上限：資金10万円・ケリー1/4なら1点 2,800円ほどだが、上限1,000円なら1,000円
+    assert ev_check._simulate([[(0.2, 10.0, False, 10.0)]], "kelly", cap=1_000)["stake"] == 1_000
+    # 順番を入れ替えても、外れしかなければいつも減る
+    k = ev_check._risk([[(0.2, 10.0, False, 10.0)]] * 40, "flat", n=5)
+    assert k["up"] == 0 and k["half"] == 0 and k["bust"] == 0
+    assert ev_check._risk([[(0.2, 10.0, False, 10.0)]] * 95, "flat", n=5)["bust"] == 100
     xp = ev_check.exacta_probs(races[0]["probs"])
     assert len(xp) == 30 and abs(sum(xp.values()) - 1) < 1e-9
     r = {**races[0], "x5": {c: 10.0 for c in xp}, "xfinal": {c: 10.0 for c in xp}}
