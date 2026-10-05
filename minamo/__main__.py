@@ -81,6 +81,8 @@ def main() -> None:
     mlr = sub.add_parser("rtm-compare", help="レースタイムモニターの予想（DEEP・NORMAL・裏の予想）とMINAMOを同じレースで比べる")
     mlr.add_argument("--raw", default=None)
     mlr.add_argument("--data", default=None, help="MINAMOのレースのJSONの場所（既定 web/data）")
+    mrl = sub.add_parser("rtm-learn", help="レースタイムモニターの艇ごとの評価に、MINAMOに無い情報があるかを検証期間で確かめる")
+    mrl.add_argument("--raw", default=None)
     sub.add_parser("rebuild", help="保存済みのレースから日ごとの一覧と成績を作り直す")
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8000)
@@ -181,6 +183,10 @@ def main() -> None:
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
         print(rtm_compare.build(raw, Path(args.data) if args.data else store.DATA_DIR))
+    elif args.cmd == "rtm-learn":
+        from .ml import live, rtm_learn
+
+        print(rtm_learn.build(live.ML_DIR, Path(args.raw) if args.raw else live.ML_DIR / "raw"))
     elif args.cmd == "rebuild":
         print(f"作り直した日数: {store.rebuild_days()}")
     elif args.cmd == "serve":

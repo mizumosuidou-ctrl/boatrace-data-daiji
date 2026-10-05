@@ -107,6 +107,11 @@
   江戸川（10/2）：隊形の1位・11位・12位がユーザーの手集計と一致。初日②・速い①の残り・3連対率70%は◯。
   強い追い風でダッシュが届かない・初日は外が届かない は✕（実際は①が弱くなる）。④攻め→⑤は少しプラス、③攻め→④はマイナス。
 - `python -m minamo odds-check`：オッズの動き（15分前→5分前→確定）と結果。`db_export.sh` の odds_hist・odds_results が材料。
+- `python -m minamo rtm-learn`（PR #129）：RTMの予想（prediction_mode_runs の prediction_json.ranking）の艇ごとの点数
+  （総合・スタート・レースタイム・モーター・コース成績・1番手）を `db_export.sh rtm_rank` で書き出し、MINAMOの検証期間の確率と同じレースで比べる。
+  1着の当たり（イン逃げ／以外／RTMが①以外を1番手）、MINAMOの確率の帯ごとのRTMの並びと実際の1着率、
+  条件付きロジット（log p ＋ 重み×点数、前半で重み・後半で対数損失）。良ければ学習の材料（または確率の補正）に入れる候補。
+  ユーザーの「イン逃げ以外が下手」への答えを探すもの。RTMの予想方法の中身はサーバーの中だけで使う（GitHubに置かない）。
 - `python -m minamo rtm-compare`：レースタイムモニターの DEEP（場別・全国）・NORMAL・time（shadow）とMINAMOを同じレースで比べる。
   10/1〜10/2：MINAMOは3千〜9千円台 2本/94R・万舟 0本/53R、DEEP場別は21本・time12点は25本。回収率は time12点 85.5%・DEEP場別＋追加 86.0%。
 - 10/3〜 公開の推奨買い目を「確率上位6点」に変更（model._picks。Claude の見解も買い目だけは上位6点にそろえ、Claude の組は ai.claude_picks に残す）。
