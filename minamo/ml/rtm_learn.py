@@ -11,6 +11,7 @@
   2. MINAMOの確率が同じくらいの艇（1コース以外）で、RTMの並びが上の艇は、実際によく勝つか（＝RTMにMINAMOに無い情報があるか）。
   3. MINAMOの確率にRTMの点数を足すと、1着の当たり方がよくなるか。前半の期間で重みを決め、後半の期間で確かめる
      （条件付きロジット：レースの6艇の中で、log(MINAMOの確率)＋重み×RTMの点数 の大きい艇ほど勝ちやすい、とする）。
+  4. RTMの1番手が①以外で、MINAMOもその艇を高く見たレース：その艇を1着にして買ったら（オッズ。レース前に出た予想だけで前半・後半）。
 """
 from __future__ import annotations
 
@@ -180,6 +181,58 @@ def group_report(rs: list[dict], group: str) -> list[str]:
     return lines
 
 
+def agree_report(rs: list[dict], odds_races: dict[str, dict], group: str) -> list[str]:
+    """4. RTMの1番手が①以外の艇で、MINAMOもその艇を高く見たレース：その艇を1着にして買ったら（5分前オッズのあるレース、払戻は確定オッズ）。
+    レース前に出た予想（LIVE）だけを前半・後半に分け、後から計算し直した予想（HISTORICAL_BACKFILL）を足した全部も並べる。"""
+    from .ev_check import _pat_cell
+
+    rows = []
+    for r in rs:
+        o = odds_races.get(r["race"])
+        one = next((l for l in r["lanes"] if r["course"][l] == 1), None)
+        if not o or one is None:
+            continue
+        i_rtm = int(np.nanargmin(r["pos"]))
+        i_mm = int(np.argmax(r["p"]))
+        rows.append({"race": r["race"], "live": r["capture"] == "LIVE", "one": one, "rtm": r["lanes"][i_rtm], "p_rtm": r["p"][i_rtm],
+                     "mm": r["lanes"][i_mm], "hit": o["hit"], "final": o["final"],
+                     "xhit": "-".join(o["hit"].split("-")[:2]), "xfinal": o.get("xfinal") or {}})
+    if len(rows) < 100:
+        return [f" 4. オッズのあるレースが少ない（{len(rows)}R）ので、買ったらどうなるかは出せません"]
+
+    def plans(key):
+        def mk(f):
+            return lambda r: f(r[key], r["one"])
+        rest = lambda a, b: [x for x in range(1, 7) if x not in (a, b)]
+        return [("2連単 推した艇-①（1点）", mk(lambda a, b: [f"{a}-{b}"]), "xfinal"),
+                ("2連単 推した艇-全（5点）", mk(lambda a, b: [f"{a}-{x}" for x in range(1, 7) if x != a]), "xfinal"),
+                ("3連単 推した艇-①-全（4点）", mk(lambda a, b: [f"{a}-{b}-{x}" for x in rest(a, b)]), "final"),
+                ("3連単 推した艇-①-全・推した艇-全-①（8点）",
+                 mk(lambda a, b: [f"{a}-{b}-{x}" for x in rest(a, b)] + [f"{a}-{x}-{b}" for x in rest(a, b)]), "final"),
+                ("3連単 推した艇-全-全（20点）",
+                 mk(lambda a, b: [f"{a}-{x}-{y}" for x in range(1, 7) for y in range(1, 7) if len({a, x, y}) == 3]), "final")]
+
+    groups = [("両方が①以外の同じ艇：MINAMO 35%以上", "rtm", lambda r: r["rtm"] != r["one"] and r["p_rtm"] >= 0.35),
+              ("両方が①以外の同じ艇：MINAMO 20〜35%", "rtm", lambda r: r["rtm"] != r["one"] and 0.2 <= r["p_rtm"] < 0.35),
+              ("RTMだけ①以外（MINAMO 20%未満）", "rtm", lambda r: r["rtm"] != r["one"] and r["p_rtm"] < 0.2),
+              ("MINAMOだけ①以外が本命（RTMは別の艇）", "mm", lambda r: r["mm"] != r["one"] and r["rtm"] != r["mm"])]
+    live = [r for r in rows if r["live"]]
+    mid = live[len(live) // 2]["race"] if live else ""
+    lines = [f" 4. 推した艇を1着にして買ったら（{len(rows):,}R、うちレース前に出た予想 {len(live):,}R。5分前オッズのあるレース。1点100円）",
+             f"    {_pad('レース・買い方', 44)}{_pad('レース前の予想・前半', 48)}{_pad('レース前の予想・後半', 48)}"
+             f"{_pad('レース前の予想・全部', 48)}後から計算し直した予想も入れた全部"]
+    for gname, key, cond in groups:
+        g_all = [r for r in rows if cond(r)]
+        g = [r for r in live if cond(r)]
+        lines.append(f"  ■ {gname}（レース前 {len(g)}R・全部 {len(g_all)}R）")
+        for name, pick, odds in plans(key):
+            sel = lambda xs: [r for r in xs if r[odds]] if odds == "xfinal" else xs
+            lines.append(f"    {_pad(name, 44)}{_pat_cell(sel([r for r in g if r['race'] < mid]), pick, odds)}  "
+                         f"{_pat_cell(sel([r for r in g if r['race'] >= mid]), pick, odds)}  {_pat_cell(sel(g), pick, odds)}  "
+                         f"{_pat_cell(sel(g_all), pick, odds)}")
+    return lines
+
+
 def samples(rank: pd.DataFrame) -> list[str]:
     """逃げ指数・着順予想・根拠の数の中身の見本（次の分析で使う形を知るため）。"""
     lines = ["\n参考：RTMの予想に入っている逃げ指数・着順予想・根拠の数の見本（直近2件）"]
@@ -198,6 +251,9 @@ def build(ml_dir: Path, raw: Path) -> str:
     mm = load_minamo(ml_dir)
     if mm.empty:
         return "MINAMOの検証期間の確率（test_preds.csv.gz）がありません。ml-train のあとに実行してください"
+    from .ev_check import load as load_odds
+
+    odds_races = {r["race"]: r for r in load_odds(ml_dir, raw)}
     lines = ["RTM（レースタイムモニター）の艇ごとの評価から、MINAMOに足りないものを探す（学習に使っていない検証期間のMINAMOと比べる）"]
     for group in ("DEEP（場別）", "NORMAL（全国）"):
         rs = races(rank, mm, group)
@@ -205,5 +261,6 @@ def build(ml_dir: Path, raw: Path) -> str:
             lines.append(f"\n■ {group}：MINAMOの検証期間と重なるレースが少ない（{len(rs)}R）")
             continue
         lines += group_report(rs, group)
+        lines += agree_report(rs, odds_races, group)
     lines += samples(rank)
     return "\n".join(lines)
