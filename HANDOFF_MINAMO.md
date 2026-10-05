@@ -131,7 +131,10 @@
 - store.ag_pick(boats, rtm)：RTMの1番手が①以外で、MINAMOの1着確率（BoatScore.win。検証の test_preds の p と同じもの）が AG_MIN_P=0.35 以上なら
   2連単「その艇-①」1点。RTMの予想が無ければ None（記録しない）。pipeline は5.5分前の固定と同じ流れで st["ag_pick"]。
 - settle の ag_*・race_summary・totals・record・Discord・live-check（130.2% と比べる）・画面（買い候補「一致」、成績ボード、レース画面の一言）。
-- サーバーで install_cron.sh をもう一度実行して cron を登録する必要がある。
+- cron は 10/5 に登録済み。rtm_live.sql の速さ（PR #133〜#137）：site_archive.records の列は全部 text（source_updated_at・race_date も文字）。
+  payload->>'race_date' で絞る・prediction_json を jsonb として読むと30秒かかる → 索引のある source_updated_at と列の race_date で今日に絞り、
+  payload は jsonb_to_record で1回だけ開き、1番手の艇番は prediction_json の先頭 "ranking":[{"lane":N を文字で探す → 1.5秒（472件、全部読めた）。
+  rtm_live.sh は PGOPTIONS で statement_timeout=40s（呼び出し側の timeout だけだと問い合わせが残り続けた）。
 - `python -m minamo rtm-compare`：レースタイムモニターの DEEP（場別・全国）・NORMAL・time（shadow）とMINAMOを同じレースで比べる。
   10/1〜10/2：MINAMOは3千〜9千円台 2本/94R・万舟 0本/53R、DEEP場別は21本・time12点は25本。回収率は time12点 85.5%・DEEP場別＋追加 86.0%。
 - 10/3〜 公開の推奨買い目を「確率上位6点」に変更（model._picks。Claude の見解も買い目だけは上位6点にそろえ、Claude の組は ai.claude_picks に残す）。
