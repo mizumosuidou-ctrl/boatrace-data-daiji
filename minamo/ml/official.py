@@ -283,10 +283,38 @@ def day_rows(k_text: str, b_text: Optional[str], date: str) -> dict[str, list[di
     return out
 
 
+LOCK_NAME = ".official.lock"
+
+
+def _lock(raw: Path):
+    """同じ場所への取り込みは1つだけ（昔の分の取り込み中に、毎朝の取り込みが重ならないように）。取れなければ None。"""
+    import fcntl
+
+    fh = (raw / LOCK_NAME).open("w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
 def run(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = None, dl: Optional[Downloader] = None) -> int:
-    """取り込んだ日数を返す。date_from を省くと取り終えた最後の日の翌日（無ければ昨日）から、date_to を省くと昨日まで。"""
+    """取り込んだ日数を返す。date_from を省くと取り終えた最後の日の翌日（無ければ昨日）から、date_to を省くと昨日まで。
+    ほかの取り込みが動いていれば、何もしないで 0 を返す。"""
     raw = Path(raw)
     raw.mkdir(parents=True, exist_ok=True)
+    lock = _lock(raw)
+    if lock is None:
+        log.warning("official: ほかの取り込みが動いているので、今回は休みます")
+        return 0
+    try:
+        return _run(raw, date_from, date_to, dl)
+    finally:
+        lock.close()
+
+
+def _run(raw: Path, date_from: Optional[str], date_to: Optional[str], dl: Optional[Downloader]) -> int:
     days_path = raw / DAYS_NAME
     done = set(days_path.read_text(encoding="utf-8").split()) if days_path.exists() else set()
     yesterday = (datetime.now(ZoneInfo("Asia/Tokyo")) - timedelta(days=1)).strftime("%Y%m%d")
@@ -302,6 +330,7 @@ def run(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = Non
     dl = dl or Downloader()
     writers = {k: _writer(raw / name, cols) for k, (name, cols) in FILES.items()}
     n = 0
+    t0 = time.monotonic()
     try:
         for i, date in enumerate(dates):
             ym, ymd = date[:6], date[2:]
@@ -324,7 +353,9 @@ def run(raw: Path, date_from: Optional[str] = None, date_to: Optional[str] = Non
                 f.write(date + "\n")
             n += 1
             if i % 30 == 0:
-                log.info("%s：%d 艇・%d レース（%d/%d 日）", date, len(rows["facts"]), len(rows["weather"]), i + 1, len(dates))
+                per = (time.monotonic() - t0) / (i + 1)
+                log.info("%s：%d 艇・%d レース（%d/%d 日、1日 %.1f 秒、のこり約 %.0f 分）", date, len(rows["facts"]), len(rows["weather"]),
+                         i + 1, len(dates), per, per * (len(dates) - i - 1) / 60)
     finally:
         for fh, _ in writers.values():
             fh.close()

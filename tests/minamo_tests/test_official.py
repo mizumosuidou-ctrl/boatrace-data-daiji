@@ -196,3 +196,13 @@ def test_years_check_compares_windows(tmp_path, monkeypatch):
     # どの始まりも同じ成績なら「今のまま」
     text = train.years_check(raw, tmp_path, starts=("20250201",), test_days=30, valid_days=20)
     assert "今の期間" in text and not (tmp_path / ds.WINDOW_NAME).exists()
+
+
+def test_run_skips_when_another_import_holds_the_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(official, "unlzh", lambda data: data.decode("utf-8"))
+    held = official._lock(tmp_path)
+    assert held is not None
+    dl = FakeDL({"k261004.lzh": K_TEXT.encode()})
+    assert official.run(tmp_path, "20261004", "20261004", dl) == 0 and dl.calls == []
+    held.close()
+    assert official.run(tmp_path, "20261004", "20261004", dl) == 1
