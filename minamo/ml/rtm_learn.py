@@ -28,8 +28,9 @@ NUM = ("pos", "lane", "course", "score", "st_score", "rt_score", "rt_rank", "mot
        "st_cmp_rank", "course_win", "revision")
 
 
-def load_rank(raw: Path) -> pd.DataFrame:
-    """RTMの評価（方式ごと・レースごとに最後の版だけ）。group は DEEP（場別）か NORMAL（全国）。"""
+def load_rank(raw: Path, cutoff: dict | None = None) -> pd.DataFrame:
+    """RTMの評価（方式ごと・レースごとに最後の版だけ）。group は DEEP（場別）か NORMAL（全国）。
+    cutoff（{レースID: 時刻}）を渡すと、レース前に出た予想（LIVE）のうち、その時刻までに出ていた版の最後を使う。"""
     path = Path(raw) / "rtm_rank.csv"
     if not path.exists():
         return pd.DataFrame()
@@ -42,10 +43,58 @@ def load_rank(raw: Path) -> pd.DataFrame:
     d["race_id"] = (d["race_date"].str.replace("-", "").str[:8] + "-" + d["venue"].str.zfill(2) + "-"
                     + d["race_no"].astype(float).astype(int).astype(str).str.zfill(2))
     d["group"] = np.where(d["mode"] == "DEEP", "DEEP（場別）", "NORMAL（全国）")
+    if cutoff is not None:
+        t = _times(d["created_at"])
+        lim = d["race_id"].map(cutoff)
+        d = d[(d["capture_mode"] == "LIVE") & lim.notna() & t.notna() & (t <= lim)]
     last = (d.drop_duplicates(["method_id", "race_id", "revision", "created_at"])
             .sort_values(["revision", "created_at"], na_position="first")
             .drop_duplicates(["method_id", "race_id"], keep="last")[["method_id", "race_id", "revision", "created_at"]])
     return d.merge(last, on=["method_id", "race_id", "revision", "created_at"])
+
+
+def _times(s: pd.Series) -> pd.Series:
+    return pd.to_datetime(s, utc=True, errors="coerce", format="mixed").dt.tz_convert("Asia/Tokyo")
+
+
+def deadlines(data_dir: Path) -> dict[str, pd.Timestamp]:
+    """MINAMOのレースのファイル（web/data/日付/場-R.json）から、レースIDごとの締切の時刻。"""
+    import json
+
+    out = {}
+    for path in Path(data_dir).glob("*/[0-9][0-9]-[0-9][0-9].json"):
+        try:
+            race = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        d, dl = race.get("date") or path.parent.name, race.get("deadline")
+        if race.get("demo") or not dl or ":" not in dl:
+            continue
+        out[f"{d}-{path.stem[:2]}-{path.stem[3:]}"] = pd.Timestamp(f"{d[:4]}-{d[4:6]}-{d[6:]} {dl}", tz="Asia/Tokyo")
+    return out
+
+
+def timing_report(raw: Path, dl: dict, fix_min: float) -> list[str]:
+    """5. レース前に出た予想（LIVE）は、締切の何分前に出ているか（方式・レースごとの最初と最後の版）。"""
+    path = Path(raw) / "rtm_rank.csv"
+    d = pd.read_csv(path, dtype=str, usecols=["race_date", "venue", "race_no", "mode", "method_id", "created_at", "capture_mode", "pos"])
+    d = d[(d["capture_mode"] == "LIVE") & (d["pos"] == "1")]
+    d["race_id"] = (d["race_date"].str.replace("-", "").str[:8] + "-" + d["venue"].str.zfill(2) + "-"
+                    + d["race_no"].astype(float).astype(int).astype(str).str.zfill(2))
+    d["t"] = _times(d["created_at"])
+    d["dl"] = d["race_id"].map(dl)
+    d = d.dropna(subset=["t", "dl"])
+    if d.empty:
+        return ["\n5. 締切の時刻と合わせられる予想がありません（web/data のレースと重なる日が無い）"]
+    d["before"] = (d["dl"] - d["t"]).dt.total_seconds() / 60
+    lines = [f"\n5. レースタイムモニターの予想（レース前）は締切の何分前に出ているか（方式・レースごとの最初と最後の版。締切は MINAMO のレースのファイル）"]
+    for mode in ("DEEP", "NORMAL"):
+        g = d[d["mode"] == mode].groupby(["method_id", "race_id"])["before"].agg(["max", "min"])
+        if g.empty:
+            continue
+        lines.append(f"  {mode}  {len(g):,}レース  最初の版：締切の真ん中 {g['max'].median():.1f}分前（{fix_min}分前までに出ていた {100 * (g['max'] >= fix_min).mean():.0f}%）"
+                     f"  最後の版：真ん中 {g['min'].median():.1f}分前（締切より後 {100 * (g['min'] < 0).mean():.0f}%）")
+    return lines
 
 
 def load_minamo(ml_dir: Path) -> pd.DataFrame:
@@ -181,7 +230,7 @@ def group_report(rs: list[dict], group: str) -> list[str]:
     return lines
 
 
-def agree_report(rs: list[dict], odds_races: dict[str, dict], group: str) -> list[str]:
+def agree_report(rs: list[dict], odds_races: dict[str, dict], group: str, short: bool = False) -> list[str]:
     """4. RTMの1番手が①以外の艇で、MINAMOもその艇を高く見たレース：その艇を1着にして買ったら（5分前オッズのあるレース、払戻は確定オッズ）。
     レース前に出た予想（LIVE）だけを前半・後半に分け、後から計算し直した予想（HISTORICAL_BACKFILL）を足した全部も並べる。"""
     from .ev_check import _pat_cell
@@ -213,6 +262,7 @@ def agree_report(rs: list[dict], odds_races: dict[str, dict], group: str) -> lis
                  mk(lambda a, b: [f"{a}-{x}-{y}" for x in range(1, 7) for y in range(1, 7) if len({a, x, y}) == 3]), "final")]
 
     groups = [("両方が①以外の同じ艇：MINAMO 35%以上", "rtm", lambda r: r["rtm"] != r["one"] and r["p_rtm"] >= 0.35),
+              ("両方が①以外の同じ艇：MINAMO 30%以上", "rtm", lambda r: r["rtm"] != r["one"] and r["p_rtm"] >= 0.30),
               ("両方が①以外の同じ艇：MINAMO 20〜35%", "rtm", lambda r: r["rtm"] != r["one"] and 0.2 <= r["p_rtm"] < 0.35),
               ("RTMだけ①以外（MINAMO 20%未満）", "rtm", lambda r: r["rtm"] != r["one"] and r["p_rtm"] < 0.2),
               ("MINAMOだけ①以外が本命（RTMは別の艇）", "mm", lambda r: r["mm"] != r["one"] and r["rtm"] != r["mm"])]
@@ -221,11 +271,13 @@ def agree_report(rs: list[dict], odds_races: dict[str, dict], group: str) -> lis
     lines = [f" 4. 推した艇を1着にして買ったら（{len(rows):,}R、うちレース前に出た予想 {len(live):,}R。5分前オッズのあるレース。1点100円）",
              f"    {_pad('レース・買い方', 44)}{_pad('レース前の予想・前半', 48)}{_pad('レース前の予想・後半', 48)}"
              f"{_pad('レース前の予想・全部', 48)}後から計算し直した予想も入れた全部"]
+    if short:  # 5. 用：35%以上・30%以上の2連単 推した艇-① だけ
+        groups = groups[:2]
     for gname, key, cond in groups:
         g_all = [r for r in rows if cond(r)]
         g = [r for r in live if cond(r)]
         lines.append(f"  ■ {gname}（レース前 {len(g)}R・全部 {len(g_all)}R）")
-        for name, pick, odds in plans(key):
+        for name, pick, odds in plans(key)[:1] if short else plans(key):
             sel = lambda xs: [r for r in xs if r[odds]] if odds == "xfinal" else xs
             lines.append(f"    {_pad(name, 44)}{_pat_cell(sel([r for r in g if r['race'] < mid]), pick, odds)}  "
                          f"{_pat_cell(sel([r for r in g if r['race'] >= mid]), pick, odds)}  {_pat_cell(sel(g), pick, odds)}  "
@@ -244,7 +296,10 @@ def samples(rank: pd.DataFrame) -> list[str]:
     return lines
 
 
-def build(ml_dir: Path, raw: Path) -> str:
+FIX_MIN = 5.5  # 試し買いを決める時刻（締切の何分前。pipeline.PICK_FIX_MIN）
+
+
+def build(ml_dir: Path, raw: Path, data_dir: Path | None = None) -> str:
     rank = load_rank(raw)
     if rank.empty:
         return "RTMの評価がありません（sudo bash deploy/db_export.sh rtm_rank で書き出してください）"
@@ -262,5 +317,18 @@ def build(ml_dir: Path, raw: Path) -> str:
             continue
         lines += group_report(rs, group)
         lines += agree_report(rs, odds_races, group)
+    dl = deadlines(data_dir) if data_dir else {}
+    if dl:
+        lines += timing_report(raw, dl, FIX_MIN)
+        cut = {k: v - pd.Timedelta(minutes=FIX_MIN) for k, v in dl.items()}
+        rank_cut = load_rank(raw, cutoff=cut)
+        lines.append(f"  締切の{FIX_MIN}分前までに出ていた版だけで「4.」をやり直すと（本番の試し買いと同じ条件）")
+        for group in ("DEEP（場別）", "NORMAL（全国）"):
+            rs = races(rank_cut, mm, group) if not rank_cut.empty else []
+            if len(rs) < 50:
+                lines.append(f"  ■ {group}：レースが少ない（{len(rs)}R）")
+                continue
+            lines.append(f"  ■ {group}  {len(rs):,}R")
+            lines += agree_report(rs, odds_races, group, short=True)[1:]
     lines += samples(rank)
     return "\n".join(lines)

@@ -118,6 +118,20 @@
   ①以外の艇で MINAMO 20〜35% かつ RTM 1番手 → 実際32.8%（MINAMO平均25.2%）、35%以上 → 56.8%（40.1%）。両方が推すとMINAMOより勝つ。
   点数を足す：モーター点（−0.002）・レースタイム点が少し効く。スタート点・コース成績点は効かない（MINAMOが同じものを見ている）。
 - rtm-learn「4.」：両方が①以外の同じ艇を推したレースで、その艇の頭の2連単・3連単をオッズで（レース前の予想 LIVE だけを前半・後半に、BACKFILL も入れた全部も）。
+  10/5 の結果：両方が①以外の同じ艇・MINAMO 35%以上 → 2連単「その艇-①」1点が DEEP 138.9/130.8%（89R・最大除く114.7%）、
+  NORMAL 105.5/150.2%（85R・109.8%）。20〜35%・RTMだけ・MINAMOだけ、頭の3連単はどれも前後どちらかで割れる。
+- rtm-learn「5.」（PR #131）：RTMの予想（LIVE）が締切の何分前に出ているか（web/data の締切と合わせる）と、
+  締切5.5分前までに出ていた版だけで「4.」の35%以上・30%以上をやり直す（本番の試し買いと同じ条件）。
+
+## 試験中：一致（PR #131）
+
+- deploy/rtm_live.sh（cron 8〜21時台の毎分、install_cron.sh）：sql/rtm_live.sql で今日の RTM の予想の1番手（ranking[0].lane）を
+  var/state/rtm_live.csv に書き出す（データベースは読むだけ）。minamo/rtm_live.top：その時刻までの版で DEEP を優先、無ければ NORMAL。
+  ファイルが10分より古ければ使わない。
+- store.ag_pick(boats, rtm)：RTMの1番手が①以外で、MINAMOの1着確率（BoatScore.win。検証の test_preds の p と同じもの）が AG_MIN_P=0.35 以上なら
+  2連単「その艇-①」1点。RTMの予想が無ければ None（記録しない）。pipeline は5.5分前の固定と同じ流れで st["ag_pick"]。
+- settle の ag_*・race_summary・totals・record・Discord・live-check（130.2% と比べる）・画面（買い候補「一致」、成績ボード、レース画面の一言）。
+- サーバーで install_cron.sh をもう一度実行して cron を登録する必要がある。
 - `python -m minamo rtm-compare`：レースタイムモニターの DEEP（場別・全国）・NORMAL・time（shadow）とMINAMOを同じレースで比べる。
   10/1〜10/2：MINAMOは3千〜9千円台 2本/94R・万舟 0本/53R、DEEP場別は21本・time12点は25本。回収率は time12点 85.5%・DEEP場別＋追加 86.0%。
 - 10/3〜 公開の推奨買い目を「確率上位6点」に変更（model._picks。Claude の見解も買い目だけは上位6点にそろえ、Claude の組は ai.claude_picks に残す）。

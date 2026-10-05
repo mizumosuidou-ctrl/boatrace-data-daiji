@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 学習の自動実行を登録する（/etc/cron.d/minamo を書く）。もう一度実行しても同じ内容で上書きするだけ。
+# 学習の自動実行と、レースタイムモニターの予想の書き出しを登録する（/etc/cron.d/minamo を書く）。もう一度実行しても同じ内容で上書きするだけ。
 #   使い方:  sudo bash /opt/minamo/deploy/install_cron.sh
 #   やめる:  sudo rm /etc/cron.d/minamo
 set -euo pipefail
-chmod +x /opt/minamo/deploy/cron_ml.sh /opt/minamo/deploy/backup.sh
+chmod +x /opt/minamo/deploy/cron_ml.sh /opt/minamo/deploy/backup.sh /opt/minamo/deploy/rtm_live.sh
 cat > /etc/cron.d/minamo <<'CRON'
 # MINAMO の学習の自動実行（deploy/install_cron.sh が書いたもの）。時刻はサーバーの時計（日本時間）
 SHELL=/bin/bash
@@ -14,6 +14,8 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 10 3 * * 1 root /opt/minamo/deploy/cron_ml.sh weekly
 # 月曜の2時40分：作り直せない記録のバックアップ（/opt/minamo/backup、直近4週）
 40 2 * * 1 root /opt/minamo/deploy/backup.sh >> /opt/minamo/var/cron_backup.log 2>&1
+# 8時〜21時台の毎分：レースタイムモニターの今日の予想（1番手）を書き出す（試し買い「一致」が締切前に読む。データベースは読むだけ）
+* 8-21 * * * root /opt/minamo/deploy/rtm_live.sh >> /opt/minamo/var/cron_rtm_live.log 2>&1
 CRON
 chmod 644 /etc/cron.d/minamo
 echo "登録しました（サーバーの時刻 $(date '+%F %H:%M %Z')）:"

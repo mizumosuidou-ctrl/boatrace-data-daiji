@@ -989,3 +989,39 @@ def test_fm_notify_and_live_check(tmp_path, monkeypatch):
     text = live_check.build(tmp_path)
     assert "■ 隊形①-②（①〈③②④ → 2連単①-②）" in text and "回収率 320.0%" in text and "過去の検証 115.2%" in text
     assert "記録だけ" in text and "回収率 640.0%" in text
+
+
+def test_rtm_live_top_and_ag_pick(tmp_path, monkeypatch):
+    """一致：RTMの今日の予想の1番手（その時刻までの版。DEEP があれば DEEP）が①以外で、MINAMO も35%以上なら2連単「その艇-①」。
+    ファイルが古いときは使わない。照合は2連単の結果で ag_*。"""
+    import os
+    from types import SimpleNamespace as B
+
+    from minamo import notify, rtm_live
+
+    now = datetime(2026, 10, 6, 11, 0, tzinfo=store.JST)
+    rows = ["race_date,venue,race_no,mode,method_id,revision,created_at,capture_mode,top_lane",
+            "20261006,02,3,NORMAL,nationwide-normal,1,2026-10-06T01:50:00+00:00,LIVE,4",
+            "20261006,02,3,DEEP,toda-deep-test,1,2026-10-06T01:40:00+00:00,LIVE,2",
+            "20261006,02,3,DEEP,toda-deep-test,2,2026-10-06T01:55:00+00:00,LIVE,3",
+            "20261006,02,3,DEEP,toda-deep-test,3,2026-10-06T02:10:00+00:00,LIVE,1"]  # 11:10 は まだ先の版
+    (tmp_path / "rtm_live.csv").write_text("\n".join(rows) + "\n")
+    os.utime(tmp_path / "rtm_live.csv", (now.timestamp() - 30, now.timestamp() - 30))  # 30秒前に書いた
+    top = rtm_live.top(tmp_path, "20261006", "02", 3, now)
+    assert top["lane"] == 3 and top["mode"] == "DEEP" and top["method"] == "toda-deep-test"
+    assert rtm_live.top(tmp_path, "20261006", "02", 4, now) is None
+    old = now.timestamp() - 3600
+    os.utime(tmp_path / "rtm_live.csv", (old, old))
+    assert rtm_live.top(tmp_path, "20261006", "02", 3, now) is None  # 書き出しが止まっている
+
+    boats = [B(boat=b, course=b, win=w) for b, w in zip(range(1, 7), (0.3, 0.1, 0.4, 0.1, 0.05, 0.05))]
+    ag = store.ag_pick(boats, top)
+    assert ag["combos"] == ["3-1"] and ag["rule"] == "一致" and ag["p"] == 0.4
+    assert store.ag_pick(boats, {**top, "lane": 2})["combos"] == []  # MINAMO 10%
+    assert store.ag_pick(boats, {**top, "lane": 1})["rule"] == "RTMの1番手が①"
+    assert store.ag_pick(boats, None) is None
+    res = RaceResult(trifecta="3-1-2", trifecta_payout=4200, exacta="3-1", exacta_payout=1460)
+    st = store.settle({"picks": []}, res, ag_pick=ag)
+    assert st["ag_bought"] and st["ag_hit"] and st["ag_stake"] == 100 and st["ag_return"] == 1460
+    text = notify.pick_message("20261006", "02", 3, "11:05", 5, {}, {}, None, {**ag, "odds": {"3-1": 14.6}})
+    assert "一致（RTMの1番手・MINAMO 40%）2連単：3-1（14.6倍）" in text

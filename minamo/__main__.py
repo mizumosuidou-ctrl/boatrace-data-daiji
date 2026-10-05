@@ -186,7 +186,7 @@ def main() -> None:
     elif args.cmd == "rtm-learn":
         from .ml import live, rtm_learn
 
-        print(rtm_learn.build(live.ML_DIR, Path(args.raw) if args.raw else live.ML_DIR / "raw"))
+        print(rtm_learn.build(live.ML_DIR, Path(args.raw) if args.raw else live.ML_DIR / "raw", store.DATA_DIR))
     elif args.cmd == "rebuild":
         print(f"作り直した日数: {store.rebuild_days()}")
     elif args.cmd == "serve":
