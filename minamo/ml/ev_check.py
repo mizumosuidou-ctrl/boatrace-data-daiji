@@ -1269,6 +1269,77 @@ def formation_one_report(races: list[dict]) -> list[str]:
     return lines
 
 
+CHERRY_GAP = 0.4  # 🍒穴狙い🍒：隣のコースより外の艇の方が、平均スタート順位でこれ以上速い所がある
+CHERRY_N = 12
+
+
+def cherry_gap(r: dict) -> tuple[int, float] | None:
+    """①〈②・②〈③・③〈④・④〈⑤ のうち、外の艇の方が CHERRY_GAP 以上速い所で一番差の大きい所（内のコース k, 差）。無ければ None。"""
+    sr = r.get("sr") or {}
+    gaps = [(k, sr[k] - sr[k + 1]) for k in range(1, 5) if k in sr and k + 1 in sr]
+    gaps = [g for g in gaps if g[1] >= CHERRY_GAP]
+    return max(gaps, key=lambda g: g[1]) if gaps else None
+
+
+def cherry_picks(r: dict, how: str) -> list[str]:
+    """🍒穴狙い🍒の12点（どれも①頭以外）。how="A"：MINAMOの確率の高い順に①頭以外の12点。
+    how="B"：差のある所の外の艇（攻める艇＝k+1コース）と、その外（まくり差し＝k+2コース）の頭で、確率の高い順に12点。"""
+    lane = {c: l for l, c in (r.get("course_of") or {}).items()}
+    if 1 not in lane:
+        return []
+    if how == "A":
+        heads = {l for c, l in lane.items() if c != 1}
+    else:
+        g = cherry_gap(r)
+        if not g:
+            return []
+        heads = {lane[c] for c in (g[0] + 1, g[0] + 2) if c in lane and c != 1}
+    return [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True) if int(c.split("-")[0]) in heads][:CHERRY_N]
+
+
+def cherry_report(races: list[dict]) -> list[str]:
+    """16. 🍒穴狙い🍒：展示の並び（進入コース順）で、隣より外の艇の方が平均スタート順位で0.4以上速い所があるレースを、
+    イン逃し（①頭以外）だけの12点で買う。A＝MINAMOの確率の上位12点、B＝攻める艇とその外の艇の頭で上位12点。
+    決まった選び方なので補正は使わず、検証期間の全部を前半・後半に分ける。5分前のオッズのあるレース、払戻は確定オッズ。"""
+    from .. import formation
+
+    rs = sorted([r for r in races if r.get("sr") and r.get("course_of") and all(c in r["sr"] for c in range(1, 6))],
+                key=lambda r: r["race"])
+    if len(rs) < 200:
+        return []
+    mid = rs[len(rs) // 2]["race"]
+    c = formation.CIRCLED
+
+    def one_win(r):
+        return r["course_of"].get(int(r["hit"].split("-")[0])) == 1
+
+    def mkt1(r):
+        one = {cc: l for l, cc in r["course_of"].items()}.get(1)
+        inv = {k: 1 / o for k, o in r["t5"].items() if o}
+        tot = sum(inv.values())
+        return sum(v for k, v in inv.items() if k.startswith(f"{one}-")) / tot if tot else float("nan")
+
+    groups = [("差あり（どこか0.4以上）", lambda r: cherry_gap(r) is not None)]
+    groups += [(f"一番差の大きい所が {c[k - 1]}〈{c[k]}", lambda r, k=k: (cherry_gap(r) or (0,))[0] == k) for k in range(1, 5)]
+    groups += [("差なし（比べ）", lambda r: cherry_gap(r) is None), ("全部のレース（比べ）", lambda r: True)]
+    lines = [f"\n16. 🍒穴狙い🍒：展示の並びで隣より外が平均スタート順位で{CHERRY_GAP}以上速い所があるレースを、イン逃しだけの{CHERRY_N}点で"
+             f"（検証期間 {len(rs):,}R を前半・後半に。5分前オッズのあるレース、払戻は確定オッズ。1点100円）",
+             "  A＝MINAMOの確率の高い順に①頭以外の12点、B＝攻める艇（差のある所の外）とその外の艇の頭で12点。①1着＝実際／市場の見立て",
+             f"    {_pad('レース', 30)}{_pad('①1着', 16)}{_pad('買い方', 8)}{_pad('前半', 48)}{_pad('後半', 48)}全部"]
+    for name, cond in groups:
+        g = [r for r in rs if cond(r)]
+        if len(g) < 30:
+            continue
+        head = f"    {_pad(name, 30)}{len(g):>5}R {100 * np.mean([one_win(r) for r in g]):4.1f}%／{100 * np.nanmean([mkt1(r) for r in g]):4.1f}%"
+        for i, how in enumerate(("A", "B")):
+            if how == "B" and "比べ" in name:
+                continue
+            pick = lambda r, how=how: cherry_picks(r, how)
+            a, b = [r for r in g if r["race"] < mid], [r for r in g if r["race"] >= mid]
+            lines.append(f"{head if i == 0 else ' ' * len(head)}  {how}  {_pat_cell(a, pick)}  {_pat_cell(b, pick)}  {_pat_cell(g, pick)}")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -1391,4 +1462,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += two_head_report(races, ds.load_kimarite(raw))
     lines += one_two_report(races)
     lines += formation_one_report(races)
+    lines += cherry_report(races)
     return "\n".join(lines)
