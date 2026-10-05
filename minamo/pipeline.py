@@ -17,7 +17,7 @@ from typing import Optional
 
 import requests
 
-from . import notify, parsers, racetime, store, time_predict, venue_original
+from . import notify, parsers, racetime, rtm_live, store, time_predict, venue_original
 from .analyst import analyze, fallback_analysis
 from .fetcher import Fetcher
 from .model import predict
@@ -108,7 +108,8 @@ class Pipeline:
         ex_pick = st.get("ex_pick") or {}
         payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev_pick.get("combos"),
                                    ex=ex_pick.get("combos") if "ex_pick" in st else None, ev_items=ev_pick.get("items"),
-                                   time_pick=st.get("time_pick"), fm_pick=st.get("fm_pick"))
+                                   time_pick=st.get("time_pick"), fm_pick=st.get("fm_pick"),
+                                   ag_pick=st.get("ag_pick"))
         payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
         payload["ev_at"] = ev_pick.get("at")
         payload["pick_fixed"] = st.get("pick_fixed")  # 試験中の買い目を固定した時刻（それまでは仮）
@@ -119,6 +120,9 @@ class Pipeline:
         payload["fm_pick"] = st.get("fm_pick")  # 試験中：隊形①-②（隊形・A/B/C・2連単）
         fm = st.get("fm_pick") or {}
         payload["fm_items"] = [{"combo": c, "odds": (fm.get("odds") or {}).get(c)} for c in fm.get("combos") or []] if fm else None
+        payload["ag_pick"] = st.get("ag_pick")  # 試験中：一致（RTMの1番手・MINAMOの見立て・2連単）
+        ag = st.get("ag_pick") or {}
+        payload["ag_items"] = [{"combo": c, "p": ag.get("p"), "odds": (ag.get("odds") or {}).get(c)} for c in ag.get("combos") or []] if ag else None
         payload["odds2"] = st.get("odds2") or {}
         payload["formation"] = self._formation(card, pred, vday)
         store.write_json(store.race_path(date, jcd, rno), payload)
@@ -259,6 +263,10 @@ class Pipeline:
                 if fm is not None:
                     st["fm_pick"] = {**fm, "at": now.isoformat(),
                                      "odds": {c: odds2.get(c) for c in fm["combos"] + fm["ref"] if odds2 and odds2.get(c)}}
+                ag = store.ag_pick(pr.boats, rtm_live.top(STATE_DIR, date, vd.jcd, rno, now))  # 試験中：一致（RTMの予想があるときだけ）
+                if ag is not None:
+                    st["ag_pick"] = {**ag, "at": now.isoformat(),
+                                     "odds": {c: odds2.get(c) for c in ag["combos"] if odds2 and odds2.get(c)}}
                 tp = self._time_pick(card, before, odds, pr, st)  # TIME予想（サーバーに設定があるときだけ）
                 if tp:
                     st["time_pick"] = {**tp, "at": now.isoformat()}

@@ -1271,3 +1271,30 @@ def test_rtm_agree_report():
     # 2連単 2-1 の1点：4レースに1回 600円 → 150%
     line = next(l for l in out.splitlines() if "2連単 推した艇-①（1点）" in l)
     assert "回収率 150.0%" in line
+
+
+def test_rtm_learn_cutoff_and_timing(tmp_path):
+    """5. 締切の5.5分前までに出ていた版（レース前の予想だけ）を使い、予想が締切の何分前に出たかを数える。"""
+    import json as js
+
+    import pandas as pd
+    from minamo.ml import rtm_learn
+
+    raw, data = tmp_path / "raw", tmp_path / "data"
+    raw.mkdir()
+    (data / "20261005").mkdir(parents=True)
+    (data / "20261005" / "02-03.json").write_text(js.dumps({"date": "20261005", "deadline": "11:00"}))
+    rows = []
+    for rev, t, cap in ((1, "2026-10-05T01:40:00+00:00", "LIVE"), (2, "2026-10-05T01:58:00+00:00", "LIVE"),
+                        (3, "2026-10-05T03:00:00+00:00", "HISTORICAL_BACKFILL")):
+        for pos in range(1, 7):
+            rows.append({"race_date": "2026-10-05", "venue": "2", "race_no": "3", "mode": "DEEP", "method_id": "toda-deep-test",
+                         "revision": rev, "created_at": t, "capture_mode": cap, "pos": pos, "lane": pos, "course": pos})
+    pd.DataFrame(rows).to_csv(raw / "rtm_rank.csv", index=False)
+    dl = rtm_learn.deadlines(data)
+    assert str(dl["20261005-02-03"]) == "2026-10-05 11:00:00+09:00"
+    cut = {k: v - pd.Timedelta(minutes=5.5) for k, v in dl.items()}
+    assert set(rtm_learn.load_rank(raw, cutoff=cut)["revision"]) == {1}  # 10:40 の版（10:58 は5.5分前より後）
+    assert set(rtm_learn.load_rank(raw)["revision"]) == {3}
+    out = "\n".join(rtm_learn.timing_report(raw, dl, 5.5))
+    assert "最初の版：締切の真ん中 20.0分前（5.5分前までに出ていた 100%）" in out and "最後の版：真ん中 2.0分前" in out

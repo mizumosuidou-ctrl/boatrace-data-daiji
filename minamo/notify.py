@@ -3,7 +3,7 @@
 - Webhook の URL は鍵と同じ。サーバーの deploy/.env の MINAMO_DISCORD_WEBHOOK にだけ置く（GitHub には置かない）。
   未設定なら何もしない。
 - 買い目を固定したとき（締切の約5分前。pipeline.PICK_FIX_MIN）に1回だけ送る。固定した組は締切まで変わらない。
-- 3連単・2連単・隊形①-②とも見送りのレースは送らない。
+- 3連単・2連単・隊形①-②・一致とも見送りのレースは送らない。
 """
 from __future__ import annotations
 
@@ -32,12 +32,13 @@ def _fmt(items: Optional[list], combos: Optional[list]) -> str:
 
 
 def pick_message(date: str, jcd: str, rno: int, deadline: str, mins_left: float,
-                 ev: Optional[dict], ex: Optional[dict], fm: Optional[dict] = None) -> Optional[str]:
-    """送る文。3連単・2連単・隊形①-②とも空なら None。"""
+                 ev: Optional[dict], ex: Optional[dict], fm: Optional[dict] = None, ag: Optional[dict] = None) -> Optional[str]:
+    """送る文。3連単・2連単・隊形①-②・一致とも空なら None。"""
     tri = (ev or {}).get("combos") or []
     exa = (ex or {}).get("combos") or []
     fmc = (fm or {}).get("combos") or []
-    if not tri and not exa and not fmc:
+    agc = (ag or {}).get("combos") or []
+    if not tri and not exa and not fmc and not agc:
         return None
     head = f"🚤 {venue(jcd).name} {rno}R　締切 {deadline}（あと{max(0, int(mins_left))}分）"
     lines = [head]
@@ -53,6 +54,10 @@ def pick_message(date: str, jcd: str, rno: int, deadline: str, mins_left: float,
     if fmc:
         fo = (fm or {}).get("odds") or {}
         lines.append(f"隊形①-②（{fm.get('label')}）2連単：" + "  ".join(f"{c}（{fo[c]}倍）" if fo.get(c) else c for c in fmc))
+    if agc:
+        ao = (ag or {}).get("odds") or {}
+        lines.append(f"一致（RTMの1番手・MINAMO {100 * (ag.get('p') or 0):.0f}%）2連単："
+                     + "  ".join(f"{c}（{ao[c]}倍）" if ao.get(c) else c for c in agc))
     lines.append(f"{SITE_URL}#/race/{date}/{jcd}/{rno}")
     return "\n".join(lines)
 
@@ -76,8 +81,8 @@ def maybe_notify(st: dict, date: str, jcd: str, rno: int, deadline: Optional[str
     """固定した買い目を、締切前にまだ送っていなければ1回だけ送る（見送りは送らない）。"""
     if not webhook() or not deadline or mins_left <= 0 or st.get("notified") is not None:
         return
-    ev, ex, fm = st.get("ev_pick"), st.get("ex_pick"), st.get("fm_pick")
-    st["notified"] = {"key": [(ev or {}).get("combos") or [], (ex or {}).get("combos") or [], (fm or {}).get("combos") or []]}
-    text = pick_message(date, jcd, rno, deadline, mins_left, ev, ex, fm)
+    ev, ex, fm, ag = st.get("ev_pick"), st.get("ex_pick"), st.get("fm_pick"), st.get("ag_pick")
+    st["notified"] = {"key": [(x or {}).get("combos") or [] for x in (ev, ex, fm, ag)]}
+    text = pick_message(date, jcd, rno, deadline, mins_left, ev, ex, fm, ag)
     if text:
         send(text)
