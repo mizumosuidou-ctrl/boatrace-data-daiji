@@ -59,6 +59,13 @@ B_TEXT = """STARTB
 2 3740山田太郎40埼玉53B1 5.01 30.00 4.80 28.00 12 28.50 21 31.00
 3 4344新田雄史38三重51A2 6.10 40.00 6.00 41.00 37 40.10 13 33.00
 02BEND
+22BBGN
+ボートレース福　岡   １０月　４日  テスト杯　　　　　　  第　５日
+　１Ｒ  カタメン１予          Ｈ１８００ｍ  電話投票締切予定１１：００ 
+1 5068前田　滉26愛知51A1 7.97 67.59 7.20 50.00 46 26.57102 23.21 62114        9
+2 5369岡崎凪汰24長崎52B1 3.16 13.51 1.65  0.00 50 28.77146 31.09 5 625        8
+3 4299中島浩哉43長崎56B1 4.56 26.98 4.41 18.18166 28.69134 39.50 432 23        
+22BEND
 FINALB
 """
 
@@ -83,8 +90,11 @@ def test_parse_k_rows_weather_kimarite():
 
 def test_parse_b_and_day_rows_join_grade():
     b = official.parse_b(B_TEXT, "20261004")
-    assert b["grade"][("02", 1, 1)] == "A1" and b["grade"][("02", 1, 2)] == "B1" and len(b["motors"]) == 3
+    assert b["grade"][("02", 1, 1)] == "A1" and b["grade"][("02", 1, 2)] == "B1" and len(b["motors"]) == 6
     assert b["motors"][0]["motor_no"] == "66" and b["motors"][0]["motor_2"] == "35.21"
+    # 3桁のボート番号・モーター番号が前の列とくっついていても読める（福岡）
+    assert b["grade"][("22", 1, 1)] == "A1" and b["motors"][3]["motor_2"] == "26.57"
+    assert b["motors"][5]["motor_no"] == "166" and b["motors"][5]["motor_2"] == "28.69"
     rows = official.day_rows(K_TEXT, B_TEXT, "20261004")
     g = {(r["race_no"], r["lane"]): r["grade"] for r in rows["facts"]}
     assert g[(1, 1)] == "A1" and g[(1, 3)] == "A2" and g[(2, 4)] == "" and rows["motors"]
@@ -128,7 +138,7 @@ def test_run_writes_csvs_and_skips_done_days(tmp_path, monkeypatch):
     assert official.run(tmp_path, "20261003", "20261004", dl) == 1  # 10/3 はファイルが無い（開催なし）
     facts = pd.read_csv(tmp_path / "facts_kb.csv", dtype=str)
     assert len(facts) == 9 and facts["updated_at"].eq(official.STAMP).all() and facts["grade"].iloc[0] == "A1"
-    assert len(pd.read_csv(tmp_path / "kimarite_kb.csv")) == 2 and len(pd.read_csv(tmp_path / "motors_kb.csv")) == 3
+    assert len(pd.read_csv(tmp_path / "kimarite_kb.csv")) == 2 and len(pd.read_csv(tmp_path / "motors_kb.csv")) == 6
     assert (tmp_path / official.DAYS_NAME).read_text().split() == ["20261003", "20261004"]
     n_calls = len(dl.calls)
     assert official.run(tmp_path, "20261003", "20261004", dl) == 0 and len(dl.calls) == n_calls  # 取り終えた日はとばす
@@ -159,7 +169,7 @@ def test_official_rows_reach_the_training_loaders(tmp_path, monkeypatch):
     ex = ds.load_exhibition(raw / "exhibition.csv")
     assert len(ex) == 16 and ex["ex_time"].between(6.0, 7.6).all()
     mo = ds.load_motors(raw / "motors.csv")
-    assert len(mo) == 3 and mo["motor_2"].iloc[0] == 35.21
+    assert len(mo) == 6 and 35.21 in set(mo["motor_2"])
     w = ds.load_weather(raw / "weather.csv")
     assert len(w) == 4 and w["wave_cm"].notna().all()
 

@@ -178,9 +178,11 @@ def parse_k(text: str, date: str) -> dict[str, list[dict]]:
 # ------------------------------------------------------------------ 番組表（B）
 
 B_RACE = re.compile(r"^\s*(\d{1,2})\s*R\s")
+# 数字の列は幅が決まっていて、3桁のモーター・ボート番号は前の列とくっつくことがある（例 '26.57102 23.21'）。数字の形で区切る
+_RATE = r"\d{1,3}\.\d{2}"
 B_ROW = re.compile(r"^(?P<boat>[1-6])\s(?P<toban>\d{4})(?P<name>.{4})(?P<age>\d{2})(?P<branch>.{2})(?P<weight>\d{2})(?P<cls>[AB][12])"
-                   r"\s+(?P<nw>[\d.]+)\s+(?P<n2>[\d.]+)\s+(?P<lw>[\d.]+)\s+(?P<l2>[\d.]+)\s+(?P<mno>\d+)\s+(?P<m2>[\d.]+)"
-                   r"\s+(?P<bno>\d+)\s+(?P<b2>[\d.]+)")
+                   rf"\s*(?P<nw>{_RATE})\s*(?P<n2>{_RATE})\s*(?P<lw>{_RATE})\s*(?P<l2>{_RATE})\s*(?P<mno>\d{{1,3}})\s*(?P<m2>{_RATE})"
+                   rf"\s*(?P<bno>\d{{1,3}})\s*(?P<b2>{_RATE})")
 
 
 def parse_b(text: str, date: str) -> dict[str, dict]:
