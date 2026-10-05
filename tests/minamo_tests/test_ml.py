@@ -1191,3 +1191,20 @@ def test_course_combos_and_one_two_report():
     assert "15-4." in out and "前半・新しい期間（20R）" in out and "後半・見つけた期間（20R）" in out
     # ②が速いレースの半分が 1-2-3（i%4==0）→ 2点で 1200円×10回/4000円 = 300%
     assert "回収率 300.0%" in out and "①-②の決着 50.0%" in out
+
+
+def test_formation_one_report():
+    """15-5：隊形（①〈②③④ と ①〈②④③）ごとに、①頭の形の回収率を分けて出す。"""
+    from minamo.ml import ev_check
+
+    races = []
+    for i in range(120):
+        a = i % 2 == 0  # 偶数：①〈②③④（③が④より速い）、奇数：①〈②④③
+        races.append({"race": f"2026{i:04d}-01-01", "course_of": {l: l for l in range(1, 7)},
+                      "sr": {1: 4.0, 2: 2.0, 3: 3.0 if a else 3.5, 4: 3.5 if a else 3.0},
+                      "p_lane": {l: 1 / 6 for l in range(1, 7)}, "t5": {"1-2-3": 10.0},
+                      "final": {"1-2-3": 20.0, "1-4-2": 30.0}, "hit": "1-2-3" if a else "4-1-2",
+                      "xfinal": {"1-2": 5.0, "4-1": 9.0}})
+    out = "\n".join(ev_check.formation_one_report(races))
+    assert "15-5." in out and "①〈②③④  60R  ①1着 100.0%" in out and "①〈②④③  60R  ①1着 0.0%" in out
+    assert "回収率 333.3%" in out  # 1-234-234 の6点で 2000円/600円
