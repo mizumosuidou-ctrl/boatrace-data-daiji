@@ -1251,3 +1251,23 @@ def test_rtm_learn(tmp_path):
     assert "■ DEEP（場別）" in text and "レースタイム点" in text and "RTMが①以外を1番手にしたレース" in text
     line = next(l for l in text.splitlines() if l.strip().startswith("レースタイム点"))
     assert "（-0." in line  # 対数損失が下がる
+
+
+def test_rtm_agree_report():
+    """4. RTMの1番手が①以外で MINAMO も高く見たレース：その艇の頭で買った回収率（レース前の予想だけを前半・後半に）。"""
+    from minamo.ml import rtm_learn
+
+    rs, odds = [], {}
+    for i in range(200):
+        rid = f"202609{1 + i % 28:02d}-{1 + i // 28:02d}-01"
+        p = np.array([0.3, 0.4, 0.1, 0.1, 0.05, 0.05])
+        pos = np.array([2, 1, 3, 4, 5, 6], dtype=float)  # RTMは2号艇（2コース）を1番手
+        rs.append({"race": rid, "lanes": [1, 2, 3, 4, 5, 6], "course": {l: l for l in range(1, 7)}, "p": p, "pos": pos,
+                   "capture": "LIVE" if i % 2 else "HISTORICAL_BACKFILL"})
+        hit = "2-1-3" if i % 4 == 0 else "1-2-3"
+        odds[rid] = {"hit": hit, "final": {"2-1-3": 20.0, "1-2-3": 8.0}, "xfinal": {"2-1": 6.0, "1-2": 3.0}}
+    out = "\n".join(rtm_learn.agree_report(sorted(rs, key=lambda r: r["race"]), odds, "DEEP（場別）"))
+    assert "両方が①以外の同じ艇：MINAMO 35%以上（レース前 100R・全部 200R）" in out
+    # 2連単 2-1 の1点：4レースに1回 600円 → 150%
+    line = next(l for l in out.splitlines() if "2連単 推した艇-①（1点）" in l)
+    assert "回収率 150.0%" in line
