@@ -31,10 +31,14 @@ RULES = {"ev": [("", "補正なし・最大6点", (94.9, None, None)), ("2026100
          # 組は3連単と同じ。金額を合成オッズ配分に（ev-check「12-2.」：121.9%・幅98.7〜149.3%）
          "co": [("", "3連単と同じ組・合成オッズ配分", (121.9, 98.7, 149.3))],
          # TIME予想（ユーザーの予想方法）：過去の検証は無い。500レースまでは判断しない
-         "time": [("", "TIME予想", (None, None, None))]}
+         "time": [("", "TIME予想", (None, None, None))],
+         # 隊形①-②（ev-check「15-5.」）：A＝①〈③②④で2連単①-②（609R・115.2%）、B＝②が速く①〈②④③（102R・164.8%、記録だけ）
+         "fm": [("", "①〈③②④ → 2連単①-②", (115.2, None, None))],
+         "fmb": [("", "②が速い＋①〈②④③（記録だけ）", (164.8, None, None))]}
 TIME_MIN_RACES = 500
 LABEL = {"ev": "3連単（期待値1.2以上）", "ex": "2連単（期待値1.2以上）", "co": "3連単（合成オッズ配分。1レースの投資は同じ）",
-         "time": "TIME予想（あなたの予想方法・仮想資金）"}
+         "time": "TIME予想（あなたの予想方法・仮想資金）", "fm": "隊形①-②（①〈③②④ → 2連単①-②）",
+         "fmb": "隊形①-② B（②が速い＋①〈②④③ → 2連単①-②。記録だけ）"}
 # ev-check「10.」の目安：資金10万円・平掛けの1点・ケリー1/4の1点の上限
 PLANS = {"ev": (100, 1_000), "ex": (300, 3_000)}
 Z90 = 1.645
@@ -43,22 +47,24 @@ Z90 = 1.645
 def rows(data_dir: Path, k: str) -> list[dict]:
     """試験中の買い目を買って結果の出たレースを、締切順に。stake・ret は1点100円で数えた円。
     レースごとのファイル（日付/場-R.json）の settle を読む（day.json の一覧は、古い日だと払戻の欄が無いことがある）。"""
-    out, src = [], "ev" if k == "co" else k  # 合成オッズ配分の組・オッズ・時刻は3連単のもの
+    out, src = [], {"co": "ev", "fmb": "fm"}.get(k, k)  # 合成オッズ配分の組・オッズ・時刻は3連単のもの
+    exa = k in ("ex", "fm", "fmb")  # 2連単
     for path in sorted(Path(data_dir).glob("*/[0-9][0-9]-[0-9][0-9].json")):
         race = store.read_json(path) or {}
         st, res = race.get("settle") or {}, race.get("result") or {}
         if race.get("demo") or res.get("cancelled") or not st.get(f"{k}_bought") or st.get(f"{k}_stake") is None:
             continue
-        date, combo = race.get("date") or path.parent.name, res.get("exacta" if k == "ex" else "trifecta")
+        date, combo = race.get("date") or path.parent.name, res.get("exacta" if exa else "trifecta")
         tp = race.get("time_pick") or {}
         if not combo:
             continue
         out.append({"key": (date, race.get("deadline") or "99:99", race.get("jcd", ""), race.get("rno", 0)),
                     "date": date, "label": f"{date[4:6]}/{date[6:]} {(race.get('venue') or {}).get('name', '')}{race.get('rno', '')}R",
                     "stake": float(st[f"{k}_stake"]), "ret": float(st.get(f"{k}_return") or 0), "hit": bool(st.get(f"{k}_hit")),
-                    "result": combo, "pay": (res.get("exacta_payout" if k == "ex" else "payout") or 0),
-                    "items": [] if k == "time" else race.get(f"{src}_items") or [],
-                    "mins": mins_before(date, race.get("deadline"), tp.get("at") if k == "time" else race.get(f"{src}_at")),
+                    "result": combo, "pay": (res.get("exacta_payout" if exa else "payout") or 0),
+                    "items": [] if k in ("time", "fmb") else race.get(f"{src}_items") or [],
+                    "mins": mins_before(date, race.get("deadline"), tp.get("at") if k == "time" else
+                                        (race.get("fm_pick") or {}).get("at") if src == "fm" else race.get(f"{src}_at")),
                     "n": len(tp.get("combos") or []) if k == "time" else None,
                     "s12": float(st.get("time12_stake") or 0), "r12": float(st.get("time12_return") or 0),
                     "in_escape": st.get("time_in_escape")})
@@ -212,6 +218,6 @@ def daily(rs: list[dict]) -> list[str]:
 
 def build(data_dir: Path = store.DATA_DIR) -> str:
     lines = ["実戦の成績（試験中の買い目。締切前に決めた組を、その時のオッズで。幅はレースを入れ替えて1000回数え直した下5%〜上95%）"]
-    for k in ("ev", "co", "ex", "time"):
+    for k in ("ev", "co", "ex", "time", "fm", "fmb"):
         lines += section(rows(data_dir, k), k)
     return "\n".join(lines)

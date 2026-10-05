@@ -113,6 +113,32 @@ def trial_skip(boats) -> Optional[str]:
     return f"②が①より速い（平均スタート順位 ①{s1:.2f}・②{s2:.2f}）"
 
 
+# 試験中：隊形①-②（10/5 ev-check「15-5.」）。①〜④の平均スタート順位（sr_model）の並び＝スタート隊形で：
+#   A：①〈③②④ → 2連単 ①-②（609R：前半115.5%・後半114.9%・全期間115.2%、一番大きな払戻を除いて108.2%）
+#   B：②が①より SKIP_C2_GAP 以上速く、①〈②④③ → 2連単 ①-②（102R・164.8%。数が少ないので記録だけ）
+#   C：①〈④②③ は①の1着が少ない（23.6%）ので①頭は買わない（表示だけ）
+FM_A, FM_B, FM_C = "①〈③②④", "①〈②④③", "①〈④②③"
+
+
+def fm_pick(boats) -> Optional[dict]:
+    """隊形①-②の買い目。boats は予想の艇（boat・course・stats["sr_model"]）。①〜④の材料が無ければ None。
+    combos＝A の2連単（買い目）、ref＝B の2連単（記録だけ）。組は艇番（進入が変わればそのコースの艇）。"""
+    from . import formation
+
+    lane = {getattr(b, "course", None): getattr(b, "boat", None) for b in boats}
+    sr = {c: (getattr(b, "stats", None) or {}).get("sr_model") for b in boats for c in [getattr(b, "course", None)]}
+    if not all(lane.get(c) and sr.get(c) is not None for c in (1, 2, 3, 4)):
+        return None
+    f = formation.formation(sr)
+    if not f:
+        return None
+    combo = f"{lane[1]}-{lane[2]}"
+    fast = sr[1] - sr[2] >= SKIP_C2_GAP
+    rule = "A" if f["label"] == FM_A else "B" if fast and f["label"] == FM_B else "C" if f["label"] == FM_C else ""
+    return {"label": f["label"], "rule": rule, "combos": [combo] if rule == "A" else [], "ref": [combo] if rule == "B" else [],
+            "sr": {str(c): round(sr[c], 2) for c in (1, 2, 3, 4)}}
+
+
 # 試験中：2連単の買い目（10/4の検証：補正B・期待値1.2以上・最大3点で、後半3,013Rの回収率120%・幅109〜131%）
 EX_MIN = 1.2
 EX_MIN_P = 0.02
@@ -171,7 +197,8 @@ def co_picks(trifecta: list, odds: Optional[dict[str, float]], th: float = CO_MI
 
 
 def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Optional[list] = None,
-           ex: Optional[list] = None, ev_items: Optional[list] = None, time_pick: Optional[dict] = None) -> dict:
+           ex: Optional[list] = None, ev_items: Optional[list] = None, time_pick: Optional[dict] = None,
+           fm_pick: Optional[dict] = None) -> dict:
     picks = [p["combo"] for p in ai.get("picks", [])]
     order = result.order
     hit = result.trifecta if result.trifecta in picks else None
@@ -231,6 +258,14 @@ def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Option
         out["ex_hit"] = result.exacta in ex
         out["ex_stake"] = 100 * len(ex)
         out["ex_return"] = (result.exacta_payout or 0) if result.exacta in ex else 0
+    # 試験中：隊形①-②（A＝買い目、B＝記録だけ。どちらも2連単1点）
+    if fm_pick is not None and result.exacta:
+        for k, key in (("fm", "combos"), ("fmb", "ref")):
+            cs = fm_pick.get(key) or []
+            out[f"{k}_bought"] = bool(cs)
+            out[f"{k}_hit"] = result.exacta in cs
+            out[f"{k}_stake"] = 100 * len(cs)
+            out[f"{k}_return"] = (result.exacta_payout or 0) if result.exacta in cs else 0
     # LightGBMと統計モデルの本命（1着確率1位）を比べる
     if pred and order and pred.get("shadow_win"):
         fav = max(pred["boats"], key=lambda b: b["win"])["boat"]
@@ -256,6 +291,7 @@ def build_race(
     ex: Optional[list] = None,
     ev_items: Optional[list] = None,
     time_pick: Optional[dict] = None,
+    fm_pick: Optional[dict] = None,
 ) -> dict:
     be = {b.boat: b for b in (before.entries if before else [])}
     rt = (getattr(card, "racetime", None) or {}).get("racers") or {}
@@ -338,7 +374,7 @@ def build_race(
             "rows": [asdict(r) for r in result.rows],
         }
         if not result.cancelled and result.trifecta:
-            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick)
+            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick, fm_pick)
     return payload
 
 
@@ -410,6 +446,14 @@ def race_summary(race: dict) -> dict:
         "ex_pick": race.get("ex_pick"),  # 試験中の2連単（None＝まだ、空＝見送り）
         "ex_items": race.get("ex_items"),
         "ex_at": race.get("ex_at"),
+        # 隊形①-②（A＝買い目、B＝記録だけ）
+        **{f"{k}_{f}": st.get(f"{k}_{f}") for k in ("fm", "fmb") for f in ("bought", "hit", "stake", "return")},
+        "fm_pick": (race.get("fm_pick") or {}).get("combos") if race.get("fm_pick") else None,
+        "fmb_pick": (race.get("fm_pick") or {}).get("ref") if race.get("fm_pick") else None,
+        "fm_items": race.get("fm_items"),
+        "fm_at": (race.get("fm_pick") or {}).get("at"),
+        "fm_label": (race.get("fm_pick") or {}).get("label"),
+        "fm_rule": (race.get("fm_pick") or {}).get("rule"),
         "result_ex": res.get("exacta"),
         "payout_ex": res.get("exacta_payout"),
     }
@@ -493,7 +537,9 @@ def streak_rows(days: list[dict], ev: bool = False) -> list[dict]:
 
 def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
     venues = []
-    totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0, "ml_races": 0, "ml_fav_hits": 0, "shadow_fav_hits": 0, "alt_races": 0, "alt_hits": 0, "alt_stake": 0, "alt_return": 0, "method_hits": 0, "method_stake": 0, "method_return": 0, "ev_races": 0, "ev_bought": 0, "ev_hits": 0, "ev_stake": 0, "ev_return": 0, "ex_races": 0, "ex_bought": 0, "ex_hits": 0, "ex_stake": 0, "ex_return": 0, "co_races": 0, "co_bought": 0, "co_hits": 0, "co_stake": 0, "co_return": 0, "time_races": 0, "time_bought": 0, "time_hits": 0, "time_stake": 0, "time_return": 0, "time12_hits": 0, "time12_stake": 0, "time12_return": 0}
+    totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0, "ml_races": 0, "ml_fav_hits": 0, "shadow_fav_hits": 0, "alt_races": 0, "alt_hits": 0, "alt_stake": 0, "alt_return": 0, "method_hits": 0, "method_stake": 0, "method_return": 0, "ev_races": 0, "ev_bought": 0, "ev_hits": 0, "ev_stake": 0, "ev_return": 0, "ex_races": 0, "ex_bought": 0, "ex_hits": 0, "ex_stake": 0, "ex_return": 0, "co_races": 0, "co_bought": 0, "co_hits": 0, "co_stake": 0, "co_return": 0, "time_races": 0, "time_bought": 0, "time_hits": 0, "time_stake": 0, "time_return": 0, "time12_hits": 0, "time12_stake": 0, "time12_return": 0,
+              "fm_races": 0, "fm_bought": 0, "fm_hits": 0, "fm_stake": 0, "fm_return": 0,
+              "fmb_bought": 0, "fmb_hits": 0, "fmb_stake": 0, "fmb_return": 0}
     for vd in sorted(vdays, key=lambda v: v.jcd):
         races = []
         for rno in range(1, 13):
@@ -549,6 +595,13 @@ def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
                     totals["ex_hits"] += int(st["ex_hit"])
                     totals["ex_stake"] += st["ex_stake"]
                     totals["ex_return"] += st["ex_return"]
+                if "fm_hit" in st:
+                    totals["fm_races"] += 1
+                    for k in ("fm", "fmb"):
+                        totals[f"{k}_bought"] += int(st[f"{k}_bought"])
+                        totals[f"{k}_hits"] += int(st[f"{k}_hit"])
+                        totals[f"{k}_stake"] += st[f"{k}_stake"]
+                        totals[f"{k}_return"] += st[f"{k}_return"]
                 if "fav_win" in st:
                     totals["ml_races"] += 1
                     totals["ml_fav_hits"] += int(st["fav_win"])
@@ -576,7 +629,9 @@ def update_record(date: str, totals: dict, demo: bool) -> None:
                                                     "ex_races", "ex_bought", "ex_hits", "ex_stake", "ex_return",
                                                     "co_races", "co_bought", "co_hits", "co_stake", "co_return",
                                                     "time_races", "time_bought", "time_hits", "time_stake", "time_return",
-                                                    "time12_hits", "time12_stake", "time12_return")}
+                                                    "time12_hits", "time12_stake", "time12_return",
+                                                    "fm_races", "fm_bought", "fm_hits", "fm_stake", "fm_return",
+                                                    "fmb_bought", "fmb_hits", "fmb_stake", "fmb_return")}
     day_files = [read_json(DATA_DIR / d["date"] / "day.json") for d in days]
     day_files = [x for x in day_files if x]
     streaks = {"picks": losing_streaks(streak_rows(day_files)), "ev": losing_streaks(streak_rows(day_files, ev=True))}

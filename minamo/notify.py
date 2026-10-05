@@ -3,7 +3,7 @@
 - Webhook の URL は鍵と同じ。サーバーの deploy/.env の MINAMO_DISCORD_WEBHOOK にだけ置く（GitHub には置かない）。
   未設定なら何もしない。
 - 買い目を固定したとき（締切の約5分前。pipeline.PICK_FIX_MIN）に1回だけ送る。固定した組は締切まで変わらない。
-- 3連単・2連単とも見送りのレースは送らない。
+- 3連単・2連単・隊形①-②とも見送りのレースは送らない。
 """
 from __future__ import annotations
 
@@ -32,11 +32,12 @@ def _fmt(items: Optional[list], combos: Optional[list]) -> str:
 
 
 def pick_message(date: str, jcd: str, rno: int, deadline: str, mins_left: float,
-                 ev: Optional[dict], ex: Optional[dict]) -> Optional[str]:
-    """送る文。3連単・2連単とも空なら None。"""
+                 ev: Optional[dict], ex: Optional[dict], fm: Optional[dict] = None) -> Optional[str]:
+    """送る文。3連単・2連単・隊形①-②とも空なら None。"""
     tri = (ev or {}).get("combos") or []
     exa = (ex or {}).get("combos") or []
-    if not tri and not exa:
+    fmc = (fm or {}).get("combos") or []
+    if not tri and not exa and not fmc:
         return None
     head = f"🚤 {venue(jcd).name} {rno}R　締切 {deadline}（あと{max(0, int(mins_left))}分）"
     lines = [head]
@@ -49,6 +50,9 @@ def pick_message(date: str, jcd: str, rno: int, deadline: str, mins_left: float,
         if odds and all(odds):  # 合成オッズ配分（どれが当たっても払戻が同じ）
             comp = composite(odds)
             lines.append(f"　合成 {comp:.1f}倍・配分 " + " ".join(f"{x['combo']} {100 * comp / x['odds']:.0f}%" for x in items))
+    if fmc:
+        fo = (fm or {}).get("odds") or {}
+        lines.append(f"隊形①-②（{fm.get('label')}）2連単：" + "  ".join(f"{c}（{fo[c]}倍）" if fo.get(c) else c for c in fmc))
     lines.append(f"{SITE_URL}#/race/{date}/{jcd}/{rno}")
     return "\n".join(lines)
 
@@ -72,8 +76,8 @@ def maybe_notify(st: dict, date: str, jcd: str, rno: int, deadline: Optional[str
     """固定した買い目を、締切前にまだ送っていなければ1回だけ送る（見送りは送らない）。"""
     if not webhook() or not deadline or mins_left <= 0 or st.get("notified") is not None:
         return
-    ev, ex = st.get("ev_pick"), st.get("ex_pick")
-    st["notified"] = {"key": [(ev or {}).get("combos") or [], (ex or {}).get("combos") or []]}
-    text = pick_message(date, jcd, rno, deadline, mins_left, ev, ex)
+    ev, ex, fm = st.get("ev_pick"), st.get("ex_pick"), st.get("fm_pick")
+    st["notified"] = {"key": [(ev or {}).get("combos") or [], (ex or {}).get("combos") or [], (fm or {}).get("combos") or []]}
+    text = pick_message(date, jcd, rno, deadline, mins_left, ev, ex, fm)
     if text:
         send(text)

@@ -934,3 +934,58 @@ def test_trial_skip_when_two_is_faster():
     boats[1].stats["sr_model"] = 3.2  # 差 0.4
     assert store.trial_skip(boats) is None
     assert store.trial_skip([B(course=1, stats={}), B(course=2, stats={"sr_model": 1.0})]) is None
+
+
+def test_fm_pick_and_settle(tmp_path):
+    """隊形①-②：①〈③②④なら2連単①-②（A）、②が0.5以上速く①〈②④③なら記録だけ（B）、①〈④②③は C（買わない）。
+    進入が変われば、そのコースにいる艇番で。照合は2連単の結果で、A は fm_*、B は fmb_*。"""
+    from types import SimpleNamespace as B
+
+    def boats(srs, courses=(1, 2, 3, 4, 5, 6)):
+        return [B(boat=i + 1, course=c, stats={"sr_model": srs[c - 1]} if c <= 4 else {}) for i, c in enumerate(courses)]
+
+    a = store.fm_pick(boats([3.6, 3.3, 3.0, 3.5]))  # ③が一番速く、②、④の順 → ①〈③②④
+    assert a["label"] == "①〈③②④" and a["rule"] == "A" and a["combos"] == ["1-2"] and a["ref"] == []
+    a2 = store.fm_pick(boats([3.6, 3.3, 3.0, 3.5], courses=(1, 3, 2, 4, 5, 6)))  # 3号艇が2コース
+    assert a2["combos"] == ["1-3"]
+    b = store.fm_pick(boats([3.8, 3.0, 3.6, 3.4]))  # ②が0.8速い、①〈②④③
+    assert b["rule"] == "B" and b["combos"] == [] and b["ref"] == ["1-2"]
+    assert store.fm_pick(boats([3.5, 3.2, 3.6, 3.4]))["rule"] == ""  # ①〈②④③でも差が0.3なら B ではない
+    assert store.fm_pick(boats([3.6, 3.3, 3.4, 3.0]))["rule"] == "C"  # ①〈④②③
+    assert store.fm_pick(boats([3.0, 3.3, 3.4, 3.5]))["rule"] == ""  # ①〉
+    assert store.fm_pick([B(boat=1, course=1, stats={})]) is None
+    res = RaceResult(trifecta="1-2-3", trifecta_payout=1800, exacta="1-2", exacta_payout=640)
+    st = store.settle({"picks": []}, res, fm_pick=a)
+    assert st["fm_bought"] and st["fm_hit"] and st["fm_stake"] == 100 and st["fm_return"] == 640
+    assert st["fmb_bought"] is False and st["fmb_stake"] == 0
+    st = store.settle({"picks": []}, res, fm_pick=b)
+    assert st["fm_bought"] is False and st["fmb_hit"] and st["fmb_return"] == 640
+    assert "fm_hit" not in store.settle({"picks": []}, res)
+
+
+def test_fm_notify_and_live_check(tmp_path, monkeypatch):
+    """隊形①-②の A は Discord に載せ、live-check では A と B を別々に数える（2連単の結果と払戻で）。"""
+    from minamo import live_check, notify
+
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda text: sent.append(text) or True)
+    monkeypatch.setenv("MINAMO_DISCORD_WEBHOOK", "https://example.invalid/hook")
+    st = {"ev_pick": {"combos": []}, "ex_pick": {"combos": []},
+          "fm_pick": {"label": "①〈③②④", "rule": "A", "combos": ["1-2"], "ref": [], "odds": {"1-2": 6.4}}}
+    notify.maybe_notify(st, "20261006", "02", 3, "11:00", 5)
+    assert len(sent) == 1 and "隊形①-②（①〈③②④）2連単：1-2（6.4倍）" in sent[0]
+    for rno, (k, hit) in enumerate((("fm", True), ("fm", False), ("fmb", True)), 1):
+        race = {"date": "20261006", "jcd": "02", "rno": rno, "deadline": f"1{rno}:00", "venue": {"name": "戸田"},
+                "result": {"trifecta": "1-2-3", "payout": 1800, "exacta": "1-2" if hit else "2-1", "exacta_payout": 640},
+                "fm_pick": {"at": f"2026-10-06T1{rno - 1}:55:00+09:00"},
+                "fm_items": [{"combo": "1-2", "odds": 6.0}] if k == "fm" else [],
+                "settle": {f"{x}_{f}": v for x in ("fm", "fmb") for f, v in
+                           (("bought", x == k), ("hit", x == k and hit), ("stake", 100 if x == k else 0),
+                            ("return", 640 if x == k and hit else 0))}}
+        (tmp_path / "20261006").mkdir(exist_ok=True)
+        (tmp_path / "20261006" / f"02-{rno:02d}.json").write_text(json.dumps(race))
+    fm, fmb = live_check.rows(tmp_path, "fm"), live_check.rows(tmp_path, "fmb")
+    assert len(fm) == 2 and fm[0]["pay"] == 640 and fm[0]["mins"] == 5.0 and len(fmb) == 1
+    text = live_check.build(tmp_path)
+    assert "■ 隊形①-②（①〈③②④ → 2連単①-②）" in text and "回収率 320.0%" in text and "過去の検証 115.2%" in text
+    assert "記録だけ" in text and "回収率 640.0%" in text
