@@ -58,6 +58,12 @@ def venue_info(jcd: str) -> dict:
 EV_MIN = 1.2  # 期待値（MINAMOの確率×オッズ）がこれ以上
 EV_MIN_P = 0.005  # 確率0.5%未満は期待値が高くても買わない（オッズのぶれが大きい）
 EV_MAX = 9  # 最大の点数（10/4：最大6点 118% → 最大9点 124%、補正B・学習に使っていない後半3,014R。10/5 から9点）
+# オッズの帯（10/7 から）：選んだ組（最大 EV_MAX 点）のうち、決めたときのオッズがこの帯の組だけ買う
+# （10/6 ev-check「19.」：帯は前の期間で選び後の期間で確かめた。3連単 15〜120倍 115.7→120.0%・最大除く 102.5→113.9%、
+#  2連単 10〜80倍 109.9→113.1%・最大除く 107.0→109.2%。前後どちらでも今より良い）
+EV_ODDS = (15.0, 120.0)
+EX_ODDS = (10.0, 80.0)
+BAND_FROM = "20261007"
 
 
 # 確率の補正（ev-check が検証期間で決めて、良くなったときだけ書く）：p^a × 市場の確率^b をレースごとに合計1へ
@@ -84,9 +90,10 @@ def calibrate(trifecta: list, odds: dict[str, float], a: float, b: float) -> lis
     return sorted(((c, v / s) for c, v in w.items()), key=lambda kv: -kv[1])
 
 
-def ev_picks(trifecta: list, odds: Optional[dict[str, float]], calib: Optional[tuple[float, float]] = None) -> list[str]:
+def ev_picks(trifecta: list, odds: Optional[dict[str, float]], calib: Optional[tuple[float, float]] = None,
+             band: bool = False) -> list[str]:
     """確率上位40組のうち、期待値 EV_MIN 以上の組を確率の高い順に最大 EV_MAX 点。無ければ空（見送り）。
-    calib=(a, b) があれば、補正した確率で選ぶ。"""
+    calib=(a, b) があれば、補正した確率で選ぶ。band なら、選んだ組のうちオッズが EV_ODDS の帯の組だけ。"""
     if not odds:
         return []
     if calib:
@@ -96,7 +103,8 @@ def ev_picks(trifecta: list, odds: Optional[dict[str, float]], calib: Optional[t
         o = odds.get(c)
         if o and p >= EV_MIN_P and p * o >= EV_MIN:
             out.append(c)
-    return out[:EV_MAX]
+    out = out[:EV_MAX]
+    return [c for c in out if EV_ODDS[0] <= odds[c] < EV_ODDS[1]] if band else out
 
 
 # 試験中の買い目の見送り：②（2コースの艇）の平均スタート順位が①より SKIP_C2_GAP 以上速いレース
@@ -201,7 +209,7 @@ EX_MAX = 3
 
 
 def ex_picks(trifecta: list, odds3: Optional[dict[str, float]], odds2: Optional[dict[str, float]],
-             calib: Optional[tuple[float, float]] = None) -> tuple[list[str], list[dict]]:
+             calib: Optional[tuple[float, float]] = None, band: bool = False) -> tuple[list[str], list[dict]]:
     """3連単の確率（補正があれば3連単のオッズで補正）を足して2連単の確率にし、2連単のオッズで期待値 EX_MIN 以上の組を
     確率の高い順に最大 EX_MAX 点。返り値は（組, 組ごとの確率・オッズ・期待値）。2連単のオッズが無ければ空。"""
     if not odds2:
@@ -217,6 +225,8 @@ def ex_picks(trifecta: list, odds3: Optional[dict[str, float]], odds2: Optional[
         if o and xp[c] >= EX_MIN_P and xp[c] * o >= EX_MIN:
             out.append({"combo": c, "p": round(xp[c], 4), "odds": o, "ev": round(xp[c] * o, 2)})
     out = out[:EX_MAX]
+    if band:  # 選んだ組（最大 EX_MAX 点）のうち、オッズが EX_ODDS の帯の組だけ
+        out = [x for x in out if EX_ODDS[0] <= x["odds"] < EX_ODDS[1]]
     return [x["combo"] for x in out], out
 
 

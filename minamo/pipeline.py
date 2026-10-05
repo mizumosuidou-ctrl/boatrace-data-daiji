@@ -255,14 +255,15 @@ class Pipeline:
                 pr = predict(card, before, odds)
                 tri = pr.trifecta
                 skip = store.trial_skip(pr.boats)  # ②が①より速いレースは、試し買い（3連単・合成・2連単）を見送る
-                combos = [] if skip else store.ev_picks(tri, odds, cal)
+                band = date >= store.BAND_FROM  # オッズの帯で絞る（10/7 から）
+                combos = [] if skip else store.ev_picks(tri, odds, cal, band=band)
                 prob = dict(store.calibrate(tri, odds, *cal) if cal else tri)
                 st["trial_skip"] = skip
                 st["ev_pick"] = {"combos": combos, "at": now.isoformat(), "cal": list(cal) if cal else None, "skip": skip,
                                  "items": [{"combo": c, "p": round(prob[c], 4), "odds": odds[c], "ev": round(prob[c] * odds[c], 2)}
                                            for c in combos]}
                 if odds2:  # 試験中：2連単（補正した3連単の確率を足して2連単に。2連単のオッズで期待値1.2以上・最大3点）
-                    xc, xi = ([], []) if skip else store.ex_picks(tri, odds, odds2, cal)
+                    xc, xi = ([], []) if skip else store.ex_picks(tri, odds, odds2, cal, band=band)
                     st["ex_pick"] = {"combos": xc, "items": xi, "at": now.isoformat(), "skip": skip}
                 fm = store.fm_pick(pr.boats)  # 試験中：隊形①-②（②が速い見送りとは別。A の隊形で2連単①-②）
                 if fm is not None:
