@@ -1418,6 +1418,105 @@ def survive_report(races: list[dict]) -> list[str]:
     return lines
 
 
+FLOW_UP, FLOW_DOWN = 1.15, 0.87  # 1着の人気（市場の見立て）が15分前からこれ以上上がった・下がった艇
+
+
+def market_win(odds: dict | None) -> dict[int, float]:
+    """3連単のオッズ → 艇ごとの1着の見立て（オッズの逆数を合計1にして、頭ごとに足す）。"""
+    inv = {c: 1 / o for c, o in (odds or {}).items() if o and o > 0}
+    tot = sum(inv.values())
+    out: dict[int, float] = {}
+    for c, v in inv.items():
+        h = int(c.split("-")[0])
+        out[h] = out.get(h, 0.0) + v / tot
+    return out
+
+
+def odds_flow_report(races: list[dict]) -> list[str]:
+    """18. オッズの動き（締切15分前→10分前→5分前）に、結果を当てる情報があるか。
+    本番は締切5.5分前に決めるので、使うのは5分前までのオッズだけ（1分前・確定は払戻にだけ使う）。"""
+    from .rtm_learn import _eval, _fit
+
+    rs = sorted([r for r in races if r.get("t15") and len(r["t15"]) >= 60 and r.get("t5")], key=lambda r: r["race"])
+    if len(rs) < 200:
+        return []
+    lines = [f"\n18. オッズの動き（締切15分前→10分前→5分前）に、結果を当てる情報があるか（{len(rs):,}R。5分前より後のオッズは使わない）"]
+    # 18-1. 5分前の人気が同じくらいの艇で、15分前から人気が上がった艇・下がった艇の実際の1着率
+    boats = []
+    for r in rs:
+        m15, m5 = market_win(r["t15"]), market_win(r["t5"])
+        win = int(r["hit"].split("-")[0])
+        for lane, p5 in m5.items():
+            p15 = m15.get(lane)
+            if p15:
+                boats.append((p5, p5 / p15, lane == win, r["race"]))
+    lines.append(f" 18-1. 5分前の1着の人気が同じ帯の艇を、15分前からの動きで分けると（上がった＝{FLOW_UP}倍以上、下がった＝{FLOW_DOWN}倍以下）。"
+                 "各欄＝艇数 実際の1着率（5分前の見立て）")
+    lines.append(f"    {_pad('5分前の見立て', 16)}{_pad('上がった（買われた）', 32)}{_pad('ほぼ同じ', 32)}下がった（売られた）")
+    for lo, hi in ((0, .05), (.05, .1), (.1, .2), (.2, .35), (.35, .5), (.5, 1.01)):
+        cells = []
+        for cond in (lambda q: q >= FLOW_UP, lambda q: FLOW_DOWN < q < FLOW_UP, lambda q: q <= FLOW_DOWN):
+            g = [(p, w) for p, q, w, _ in boats if lo <= p < hi and cond(q)]
+            cells.append(_pad(f"{len(g):>6}艇 {100 * np.mean([w for _, w in g]) if g else float('nan'):5.1f}%"
+                              f"（{100 * np.mean([p for p, _ in g]) if g else float('nan'):4.1f}%）", 32))
+        lines.append(f"    {_pad(f'{100 * lo:.0f}〜{min(100 * hi, 100):.0f}%', 16)}{''.join(cells)}")
+    # 18-2. MINAMOの確率＋5分前の見立て＋動き（前半で重み、後半で確かめ）
+    items = []
+    for r in rs:
+        if not r.get("p_lane") or not r.get("course_of"):
+            continue
+        lanes = sorted(r["p_lane"])
+        m15, m10, m5 = market_win(r["t15"]), market_win(r.get("t10")), market_win(r["t5"])
+        if len(lanes) != 6 or any(m5.get(l, 0) <= 0 or m15.get(l, 0) <= 0 for l in lanes):
+            continue
+        win = int(r["hit"].split("-")[0])
+        f = {"mkt5": np.log([m5[l] for l in lanes]),
+             "mv15": np.log([m5[l] / m15[l] for l in lanes]),
+             "mv10": np.log([m5[l] / m10[l] if m10.get(l) else 1.0 for l in lanes])}
+        items.append({"race": r["race"], "lanes": lanes, "course": r["course_of"], "p": np.array([r["p_lane"][l] for l in lanes]),
+                      "win": lanes.index(win), "pos": np.zeros(6), "feats": f})
+    half = len(items) // 2
+    if half >= 100:
+        fit, test = items[:half], items[half:]
+        lines.append(f" 18-2. MINAMOの確率に、5分前の見立てとオッズの動きを足すと（前半 {len(fit):,}Rで重み、後半 {len(test):,}Rで確かめ。対数損失は小さいほど良い）")
+        base = None
+        for cols, name in (((), "MINAMOだけ"), (("mkt5",), "＋5分前の見立て"), (("mkt5", "mv15"), "＋5分前の見立て＋15分前からの動き"),
+                           (("mkt5", "mv15", "mv10"), "＋5分前の見立て＋15分前・10分前からの動き")):
+            w = _fit(fit, cols)
+            ll, top, top_up = _eval(test, cols, w)
+            base = base if base is not None else ll
+            lines.append(f"    {_pad(name, 40)}対数損失 {ll:.4f}（{ll - base:+.4f}）  本命の1着 {top:5.1f}%  イン逃げ以外 {top_up:5.1f}%"
+                         f"  重み {' '.join(f'{v:+.2f}' for v in w)}")
+        lines.append("    重みの並び：MINAMO・5分前の見立て・15分前からの動き・10分前からの動き（動きが＋なら、買われた艇ほど見立てより勝つ）")
+    # 18-3. 今の試し買いを、組のオッズの動きで分けると（補正B・後半を、さらに前半・後半に）
+    cal = _test_cal(rs)
+    if cal:
+        mid = cal[len(cal) // 2]["race"]
+        tri, ex = [], []
+        for r in cal:
+            cs = [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True) if r["probs"][c] >= MIN_P and _ev(r, c) >= 1.2][:9]
+            tri += [(r["race"], r["t5"][c] / r["t15"][c] if r["t15"].get(c) else None, c == r["hit"], r["final"].get(c, 0)) for c in cs]
+            if r.get("x5") and r.get("xfinal") and r.get("x15"):
+                xp = exacta_probs(r["probs"])
+                hit = r["hit"].rsplit("-", 1)[0]
+                xs = [c for c in sorted(xp, key=xp.get, reverse=True) if xp[c] >= EX_MIN_P and r["x5"].get(c) and xp[c] * r["x5"][c] >= 1.2][:3]
+                ex += [(r["race"], r["x5"][c] / r["x15"][c] if r["x15"].get(c) else None, c == hit, r["xfinal"].get(c, 0)) for c in xs]
+        lines.append(f" 18-3. 今の試し買いの組を、15分前→5分前のその組のオッズの動きで分けると（補正B・後半 {len(cal):,}R。"
+                     "下がった＝0.9倍以下＝買われた組、上がった＝1.1倍以上＝売られた組）")
+        for tag, rows in (("3連単（期待値1.2以上・最大9点）", tri), ("2連単（期待値1.2以上・最大3点）", ex)):
+            if not rows:
+                continue
+            lines.append(f"  {tag}")
+            for name, cond in (("全部（今の買い方）", lambda q: True), ("オッズが下がった組だけ", lambda q: q is not None and q <= 0.9),
+                               ("上がった組を外す", lambda q: q is None or q < 1.1), ("オッズが上がった組だけ", lambda q: q is not None and q >= 1.1)):
+                def roi(xs):
+                    return f"{100 * sum(f for *_, h, f in xs if h) / len(xs):6.1f}%" if xs else "   -- "
+                g = [x for x in rows if cond(x[1])]
+                a, b = [x for x in g if x[0] < mid], [x for x in g if x[0] >= mid]
+                lines.append(f"    {_pad(name, 24)}{len(g):>6}点 的中{sum(x[2] for x in g):>4}本  回収率 {roi(g)}（前 {roi(a)}  後 {roi(b)}）")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -1542,4 +1641,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += formation_one_report(races)
     lines += cherry_report(races)
     lines += survive_report(races)
+    lines += odds_flow_report(races)
     return "\n".join(lines)

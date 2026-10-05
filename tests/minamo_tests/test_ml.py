@@ -1344,3 +1344,30 @@ def test_survive_report():
     assert "17. 🍒の逆" in out and "一番差の大きい所が ②〈③（攻める艇 ③）  400R" in out
     line = next(l for l in out.splitlines() if "2連単 ①-攻める艇（1点）" in l)
     assert "回収率 200.0%" in line  # 2回に1回 1-3（4倍）
+
+
+def test_odds_flow_report():
+    """18. オッズの動き：15分前から人気が上がった艇（買われた艇）を分けて数え、MINAMOに5分前の見立てと動きを足して前半・後半で比べる。
+    架空のデータ：勝つ艇は15分前→5分前にオッズが下がる（買われる）→ 上がった艇の1着率が見立てより高く、動きの重みが＋になる。"""
+    from itertools import permutations
+
+    from minamo.ml import ev_check
+
+    rng = np.random.default_rng(1)
+    races = []
+    for i in range(500):
+        win = int(rng.choice(6, p=[0.5, 0.15, 0.13, 0.1, 0.07, 0.05])) + 1
+        others = [l for l in range(1, 7) if l != win]
+        hit = f"{win}-{others[0]}-{others[1]}"
+        base = {"-".join(map(str, t)): 10.0 + 5 * t[0] + t[1] for t in permutations(range(1, 7), 3)}
+        t15 = dict(base)
+        t5 = {c: (o * 0.7 if c.startswith(f"{win}-") else o) for c, o in base.items()}  # 勝つ艇の頭が買われる
+        races.append({"race": f"2026{i:05d}", "probs": {c: 1 / 120 for c in base}, "t5": t5, "t10": t5, "t15": t15,
+                      "final": {hit: 30.0}, "hit": hit, "course_of": {l: l for l in range(1, 7)},
+                      "p_lane": {l: 1 / 6 for l in range(1, 7)}, "x5": None, "xfinal": None})
+    out = "\n".join(ev_check.odds_flow_report(races))
+    assert "18. オッズの動き" in out and "18-1." in out and "18-2." in out
+    mv = next(l for l in out.splitlines() if "＋5分前の見立て＋15分前からの動き" in l and "10分前" not in l)
+    w = [float(x) for x in mv.split("重み")[1].split()]
+    assert w[2] > 1.0  # 動きの重みが＋（買われた艇ほど勝つ）
+    assert "（-" in mv  # 動きを足すと対数損失が下がる
