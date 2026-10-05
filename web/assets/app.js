@@ -279,6 +279,27 @@ function monitorHtml(day, now, filter) {
   return `<div class="monitor" role="table" aria-label="全場レースモニター">${head}${rows || `<div class="mon-empty">該当する場はありません</div>`}</div>`;
 }
 
+// トップの成績：予想の種類を選んで、その種類だけで数える（main＝推奨買い目、ほかは試験中の買い方）
+const getHomeKind = () => { try { const k = localStorage.getItem("minamo-home-kind"); return REC_KINDS[k] ? k : "main"; } catch { return "main"; } };
+function homeKpisHtml(day, kind = getHomeKind()) {
+  const seg = `<div class="seg home-kind" role="group" aria-label="成績の予想">${Object.entries(REC_KINDS).map(([k, x]) => `<button type="button" data-kind="${k}" class="${k === kind ? "on" : ""}">${x.label}</button>`).join("")}</div>`;
+  return `<div class="home-kpis">${seg}${kind === "main" ? kpisHtml(day.totals) : kindKpisHtml(kind)}</div>`;
+}
+function kindKpisHtml(kind) {
+  const K = REC_KINDS[kind];
+  const races = allRaces();
+  const bought = races.filter((r) => (K.picks(r) || []).length).length;
+  const t = sumRaces(races, kind);
+  const f = (a, b) => (b ? ((a / b) * 100).toFixed(1) : "--");
+  const unit = kind === "co" ? "1レース1,000円" : kind === "time" ? "仮想資金" : "1点1,000円";
+  return `<div class="kpis">
+    <div class="kpi"><b class="num">${t.races}<span class="muted" style="font-size:.5em">/${bought}</span></b><span>確定/買う</span></div>
+    <div class="kpi hit"><b>${f(t.hits, t.races)}<small style="font-size:.5em">%</small></b><span>的中 ${t.hits}R</span></div>
+    <div class="kpi"><b>${f(t.ret, t.stake)}<small style="font-size:.5em">%</small></b><span>回収率</span></div>
+    <div class="kpi"><b style="font-size:.7em">${t.stake ? signedYen(t.ret - t.stake) : "--"}</b><span>収支（${unit}）</span></div>
+  </div>`;
+}
+
 function kpisHtml(t) {
   const hitRate = t.settled ? (t.hits / t.settled) * 100 : null;
   const honmei = t.settled ? (t.honmei_hits / t.settled) * 100 : null;
@@ -306,7 +327,7 @@ async function renderHome(refresh = false) {
     <section class="section wrap" id="monitor">
       <div class="section-head">
         <div><span class="eyebrow">${fmtDate(state.date)} · ${state.day.venues.length}場で開催</span><h2 class="section-title">全場のレース<small>本命・推奨買い目・結果をひと目で</small></h2></div>
-        ${kpisHtml(state.day.totals)}
+        <div id="homeKpis">${homeKpisHtml(state.day)}</div>
       </div>
       <div class="filters" role="group" aria-label="絞り込み">${FILTERS.map(([k, l]) => `<button class="filter" data-filter="${k}" aria-pressed="${k === filter}">${l}</button>`).join("")}</div>
       <div id="monitorBody">${monitorHtml(state.day, now, filter)}</div>
@@ -321,6 +342,12 @@ async function renderHome(refresh = false) {
   state.firstPaint.monitor = true;
   scrollCellsToNow(main);
   animateRings(main, refresh);
+  $("#homeKpis").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-kind]");
+    if (!b) return;
+    try { localStorage.setItem("minamo-home-kind", b.dataset.kind); } catch { /* 保存できなくても切替はする */ }
+    $("#homeKpis").innerHTML = homeKpisHtml(state.day, b.dataset.kind);
+  });
   $$(".filter", main).forEach((b) => b.addEventListener("click", () => {
     state.filter = b.dataset.filter;
     $$(".filter", main).forEach((x) => x.setAttribute("aria-pressed", x === b));

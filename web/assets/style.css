@@ -350,6 +350,9 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 
 /* ---------------------------------------------------- monitor */
 .kpis { display: flex; gap: 10px; flex-wrap: wrap; }
+.home-kpis { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.home-kind { flex-wrap: wrap; border-radius: 14px; margin: 0; }
+.home-kind button { white-space: nowrap; }
 .kpi { padding: 10px 16px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); min-width: 110px; }
 .kpi b { display: block; font-family: var(--f-display); font-size: 30px; font-weight: 800; line-height: 1; }
 .kpi span { font-family: var(--f-mono); font-size: 10px; letter-spacing: .14em; color: var(--muted); text-transform: uppercase; }
@@ -875,3 +878,7 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .skip-list { padding: 6px 14px; }
 .skip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 10px 2px; border-bottom: 1px solid var(--line); color: inherit; text-decoration: none; }
 .skip-row:last-child { border-bottom: 0; }
+@media (max-width: 640px) {
+  .home-kpis { align-items: stretch; width: 100%; }
+  .home-kind button { flex: 1 0 33.3%; padding: 8px 2px; }
+}
