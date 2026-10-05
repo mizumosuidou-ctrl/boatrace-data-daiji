@@ -1052,3 +1052,15 @@ def test_cherry_pick_and_settle():
     res = RaceResult(trifecta=hit, trifecta_payout=5600, exacta=hit[:3], exacta_payout=900)
     st = store.settle({"picks": []}, res, ch_pick=ch)
     assert st["ch_hit"] and st["ch_rank"] == 3 and st["ch_stake"] == 1200 and st["ch_return"] == 5600
+
+
+def test_ev_and_ex_picks_odds_band():
+    """オッズの帯（10/7から）：選んだ組（最大9点・3点）のうち、3連単は15〜120倍、2連単は10〜80倍の組だけ。帯は選んだあとに当てる。"""
+    tri = [("1-2-3", 0.20), ("1-3-2", 0.10), ("2-1-3", 0.05)]
+    odds = {"1-2-3": 8.0, "1-3-2": 20.0, "2-1-3": 150.0}
+    assert store.ev_picks(tri, odds) == ["1-2-3", "1-3-2", "2-1-3"]
+    assert store.ev_picks(tri, odds, band=True) == ["1-3-2"]
+    odds2 = {"1-2": 7.0, "1-3": 12.0, "2-1": 90.0}
+    combos, items = store.ex_picks(tri, odds, odds2, band=True)
+    assert combos == ["1-3"] and items[0]["odds"] == 12.0
+    assert store.ex_picks(tri, odds, odds2)[0] == ["1-2", "1-3", "2-1"]
