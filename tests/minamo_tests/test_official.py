@@ -206,3 +206,21 @@ def test_run_skips_when_another_import_holds_the_lock(tmp_path, monkeypatch):
     assert official.run(tmp_path, "20261004", "20261004", dl) == 0 and dl.calls == []
     held.close()
     assert official.run(tmp_path, "20261004", "20261004", dl) == 1
+
+
+def test_original_live_harvest(tmp_path):
+    """本番で取ったオリジナル展示（var/state の orig）を、昨日までの日だけ書き出し、学習の load_original が読む。"""
+    from minamo.ml import dataset as ds
+    from minamo.ml import original_live
+
+    state, raw = tmp_path / "state", tmp_path / "ml" / "raw"
+    raw.mkdir(parents=True)
+    for day in ("20261004", "20261005", "20261006"):
+        (state / day).mkdir(parents=True)
+        (state / day / "02-03.json").write_text(json.dumps({"orig": {"1": {"lap_time": 37.1, "turn_time": 5.8, "straight_time": 6.9},
+                                                                     "2": {"lap_time": None, "turn_time": None, "straight_time": None}}}))
+        (state / day / "venues.json").write_text("{}")
+    assert original_live.harvest(raw, state, today="20261006") == 2  # 2日×1艇（何も無い艇は書かない、今日の分はまだ）
+    assert original_live.harvest(raw, state, today="20261006") == 0  # 取り終えた日はとばす
+    o = ds.load_original(raw / "original.csv")
+    assert len(o) == 2 and o["lap_time"].iloc[0] == 37.1 and set(o["race_id"]) == {"20261004-02-03", "20261005-02-03"}

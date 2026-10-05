@@ -20,6 +20,7 @@ case "$mode" in
   daily)
     docker compose run --rm worker python -m minamo ml-facts || echo "（実績を足せませんでした。続けます）"
     docker compose run --rm worker python -m minamo ml-official --fan || echo "（公式のダウンロードデータを取り込めませんでした。続けます）"
+    docker compose run --rm worker python -m minamo ml-original-live || echo "（本番のオリジナル展示を書き出せませんでした。続けます）"
     docker compose run --rm worker python -m minamo ml-train && \
       { docker compose run --rm worker python -m minamo ev-check > /dev/null || echo "（買い目の比べに失敗。続けます）"; } && \
       docker compose up -d worker || status=$?
