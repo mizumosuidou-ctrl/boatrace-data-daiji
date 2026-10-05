@@ -1,11 +1,11 @@
 -- レースタイムモニターの今日の予想（prediction_mode_runs：DEEP・NORMAL）の1番手の艇。読むだけ。
 -- deploy/rtm_live.sh が1分ごとに var/state/rtm_live.csv へ書き出し、MINAMOの試し買い「一致」が締切前に読む
 COPY (
-  -- 先に索引のある source_updated_at で直近20時間に絞る（payload を全部開くと30秒以上かかる）
+  -- 先に索引のある source_updated_at（文字の時刻 '2026-10-05T…'）で、きのう（UTC）以降に絞る。payload を全部開くと30秒以上かかる
   WITH t AS MATERIALIZED (
     SELECT payload FROM site_archive.records
     WHERE source_table = 'prediction_mode_runs'
-      AND source_updated_at >= now() - interval '20 hours'
+      AND source_updated_at >= to_char((now() AT TIME ZONE 'UTC') - interval '1 day', 'YYYY-MM-DD')
   )
   SELECT
     replace(payload->>'race_date', '-', '') AS race_date,
