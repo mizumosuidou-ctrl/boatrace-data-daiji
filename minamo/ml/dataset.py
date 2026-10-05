@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import unicodedata
@@ -89,7 +90,7 @@ KIMARITE_FEATURES = ["km_nige", "km_sasare", "km_makurare", "km_makusasare", "km
                      "race_c1_nige", "race_c1_sasare", "race_c1_makurare", "race_c1_makusasare"]
 KIMARITE_WINDOW = 365
 KIMARITE_SMOOTH = 10.0
-KIMARITE_FILES = ("kimarite.csv", "kimarite_backfill.csv", "odds_results.csv")
+KIMARITE_FILES = ("kimarite.csv", "kimarite_backfill.csv", "odds_results.csv", "kimarite_kb.csv")
 # 数える組：（列, 自分が1着か, 決まり手, 1着の艇のコースが1か）。None は問わない
 _KM_COUNTS = {"km_c_nige": (True, "逃げ", None), "km_c_sashi": (True, "差し", None), "km_c_makuri": (True, "まくり", None),
               "km_c_makusa": (True, "まくり差し", None), "km_c_lsashi": (False, "差し", None), "km_c_lmakuri": (False, "まくり", None),
@@ -156,6 +157,7 @@ def _race_id(df: pd.DataFrame) -> pd.Series:
 
 
 FACTS_BACKFILL = "facts_backfill.csv"
+FACTS_OFFICIAL = "facts_kb.csv"  # 公式サイトのダウンロードデータ（競走成績・番組表。official.py）。何年も前までさかのぼれる
 FACT_COLS = ["race_date", "venue", "race_no", "lane", "course", "toban", "grade", "start_rank",
              "st", "st_hundredths", "finish", "race_f", "updated_at", "motor_no", "race_time_ms", "series_title"]
 
@@ -186,18 +188,38 @@ def _compact(chunk: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+WINDOW_NAME = "train_window.json"  # 学習に使う期間（ml-years で良くなったときだけ書く。var/ml/）
+DEFAULT_HISTORY_SINCE = "20250101"  # train_window.json が無いとき：データベースの実績の始まり（ダウンロードデータで昔を足しても、今までと同じ期間）
+
+
+def train_window(raw_dir: Path) -> dict:
+    """{"since": 学習に使う最初の日, "history_since": 成績を数え始める日}。無ければ {}。"""
+    p = Path(raw_dir).parent / WINDOW_NAME
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def history_since(raw_dir: Path) -> Optional[str]:
+    """実績を読み込む最初の日。MINAMO_ML_SINCE（手で絞るとき）＞ train_window.json。どちらも無ければ None（全部）。"""
+    return os.environ.get("MINAMO_ML_SINCE") or train_window(raw_dir).get("history_since")
+
+
 def load_facts(path: Path) -> pd.DataFrame:
-    since = os.environ.get("MINAMO_ML_SINCE")  # 例 20250101（メモリが足りないとき期間を絞る）
+    since = history_since(Path(path).parent)  # 例 20250101
     parts = []
-    extra = Path(path).with_name(FACTS_BACKFILL)  # 公式サイトから足した、データベースより後の日
-    for src in [Path(path)] + ([extra] if extra.exists() else []):
+    extra = [Path(path).with_name(n) for n in (FACTS_BACKFILL, FACTS_OFFICIAL)]  # 公式サイトから足した分（ページ・ダウンロードデータ）
+    for src in [p for p in [Path(path)] + extra if p.exists()]:
         for chunk in pd.read_csv(src, dtype=str, usecols=lambda c: c in FACT_COLS, chunksize=200_000):
             for c in FACT_COLS:
                 if c not in chunk:
                     chunk[c] = None
             part = _compact(chunk)
-            if since:
-                part = part[part["race_date"].astype(str) >= since]
+            # 期間の指定が無ければ、ダウンロードデータは今までと同じ期間（データベースの始まり）から
+            start = since or (DEFAULT_HISTORY_SINCE if src.name == FACTS_OFFICIAL else None)
+            if start:
+                part = part[part["race_date"].astype(str) >= start]
             parts.append(part)
     df = pd.concat(parts, ignore_index=True)
     for c in ["race_date", "venue", "grade", "series_title"]:
@@ -230,7 +252,7 @@ def load_exhibition(path: Optional[Path]) -> pd.DataFrame:
     frames = []
     if path and Path(path).exists():
         frames.append(pd.read_csv(path, dtype=str))
-    for name in ("exhibition_backfill.csv", "original.csv"):  # 公式サイト・ボートレース日和から取り寄せた過去分
+    for name in ("exhibition_backfill.csv", "original.csv", "exhibition_kb.csv"):  # 公式サイト・ボートレース日和・ダウンロードデータ
         extra = Path(path).with_name(name) if path else None
         if extra and extra.exists():
             frames.append(pd.read_csv(extra, dtype=str))
@@ -284,9 +306,16 @@ def load_original(path: Optional[Path]) -> pd.DataFrame:
 
 def load_motors(path: Optional[Path]) -> pd.DataFrame:
     cols = ["race_id", "lane", "motor_2", "motor_no_m"]
-    if not path or not Path(path).exists():
+    paths = [p for p in (Path(path), Path(path).with_name("motors_kb.csv")) if p.exists()] if path else []
+    if not paths:
         return pd.DataFrame(columns=cols)
-    mo = pd.read_csv(path, dtype=str)
+    frames = []
+    for p in paths:  # 0〜1表記と％表記が混ざらないように、ファイルごとに％にそろえる
+        f = pd.read_csv(p, dtype=str)
+        m2 = _num(f["motor_2"]) if "motor_2" in f else pd.Series(np.nan, index=f.index)
+        f["motor_2"] = m2 * 100 if m2.dropna().between(0, 1).mean() > 0.9 else m2
+        frames.append(f)
+    mo = pd.concat(frames, ignore_index=True)
     mo["motor_no_m"] = motor_key(mo["motor_no"]) if "motor_no" in mo else np.nan
     mo["race_date"] = mo["race_date"].str.replace("-", "", regex=False).str[:8]
     mo["venue"] = mo["venue"].str.zfill(2)
@@ -296,10 +325,7 @@ def load_motors(path: Optional[Path]) -> pd.DataFrame:
     mo = mo.sort_values("captured_at").drop_duplicates(["race_date", "venue", "race_no", "lane"], keep="last")
     mo["race_id"] = _race_id(mo)
     mo["lane"] = mo["lane"].astype(int)
-    mo["motor_2"] = _num(mo["motor_2"])
-    # 0〜1表記なら％にそろえる
-    if mo["motor_2"].dropna().between(0, 1).mean() > 0.9:
-        mo["motor_2"] *= 100
+    mo["motor_2"] = pd.to_numeric(mo["motor_2"], errors="coerce")
     return mo[cols]
 
 
@@ -320,10 +346,11 @@ def load_weather(path: Optional[Path]) -> pd.DataFrame:
     from .. import wind as wind_mod
 
     cols = ["race_id"] + WIND_FEATURES
-    if not path or not (Path(path).exists() or Path(path).with_name("weather_backfill.csv").exists()):
+    paths = [p for p in (Path(path), Path(path).with_name("weather_backfill.csv"), Path(path).with_name("weather_kb.csv"))
+             if path and p.exists()] if path else []
+    if not paths:
         return pd.DataFrame(columns=cols)
-    w = pd.concat([pd.read_csv(p, dtype=str) for p in (Path(path), Path(path).with_name("weather_backfill.csv")) if p.exists()],
-                  ignore_index=True)
+    w = pd.concat([pd.read_csv(p, dtype=str) for p in paths], ignore_index=True)
     if "wind_icon" not in w:
         w["wind_icon"] = np.nan
     w["race_date"] = w["race_date"].str.replace("-", "", regex=False).str[:8]

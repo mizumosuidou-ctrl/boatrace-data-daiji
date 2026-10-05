@@ -4,3 +4,4 @@ anthropic>=1.0
 pandas>=2.2
 numpy>=1.26
 lightgbm>=4.3
+lhafile>=0.3

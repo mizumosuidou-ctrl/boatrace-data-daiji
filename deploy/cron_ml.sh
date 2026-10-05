@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 学習の自動実行（install_cron.sh が /etc/cron.d/minamo に登録する）。データベースは読むだけ。
-#   daily  … 前日までの実績を公式サイトで足す → 学習し直す → 買い目の比べ（補正の値も更新）→ 予想の仕組みを入れ替える
+#   daily  … 前日までの実績を公式サイトで足す（ページ・ダウンロードデータ）→ 学習し直す → 買い目の比べ（補正の値も更新）→ 予想の仕組みを入れ替える
 #   weekly … データベースからの書き出しからやり直す（ml_refresh.sh）。最新のコードに更新してから
 # 2つが重なったら、あとから始まった方は休む。記録は /opt/minamo/var/cron_<daily|weekly>.log
 set -uo pipefail
@@ -19,6 +19,7 @@ status=0
 case "$mode" in
   daily)
     docker compose run --rm worker python -m minamo ml-facts || echo "（実績を足せませんでした。続けます）"
+    docker compose run --rm worker python -m minamo ml-official --fan || echo "（公式のダウンロードデータを取り込めませんでした。続けます）"
     docker compose run --rm worker python -m minamo ml-train && \
       { docker compose run --rm worker python -m minamo ev-check > /dev/null || echo "（買い目の比べに失敗。続けます）"; } && \
       docker compose up -d worker || status=$?

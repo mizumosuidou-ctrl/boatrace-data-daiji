@@ -123,6 +123,21 @@
 - rtm-learn「5.」（PR #131）：RTMの予想（LIVE）が締切の何分前に出ているか（web/data の締切と合わせる）と、
   締切5.5分前までに出ていた版だけで「4.」の35%以上・30%以上をやり直す（本番の試し買いと同じ条件）。
 
+## 公式のダウンロードデータ（PR #142）
+
+- minamo/ml/official.py・`python -m minamo ml-official [--from --to --fan --peek YYYYMMDD]`：
+  競走成績K（www1.mbrace.or.jp/od2/K/YYYYMM/kYYMMDD.lzh）・番組表B（…/B/…/bYYMMDD.lzh）・ファン手帳（boatrace.jp …/kibetsu/fanYYMM.lzh）を
+  1秒1件で取り、lhafile で展開、cp932。書き出し：facts_kb.csv（facts と同じ列、級は番組表）・exhibition_kb.csv（展示タイム）・
+  weather_kb.csv（天候・風向き wind_from・風速・波）・kimarite_kb.csv・motors_kb.csv（番組表のモーター番号・2連率）・fan.csv（公式レイアウト416バイト）。
+  updated_at／captured_at は "0000-0official"（データベース・公式ページの行があればそちらが残る）。取り終えた日は official_days.txt。
+- dataset：load_facts／load_exhibition／load_weather／load_motors（ファイルごとに％へそろえる）／KIMARITE_FILES がダウンロードデータも読む。
+  期間：MINAMO_ML_SINCE ＞ var/ml/train_window.json の history_since。どちらも無ければ、ダウンロードデータは 2025/1/1 から（今までと同じ）。
+- train.run：train_window.json の since 以降だけで学習。`python -m minamo ml-years [--dry-run]`（train.years_check）：成績はいちばん古い候補の1年前から数え、
+  今の展示前モデルの特徴量で学習の始まり（2025・2024・2023・2022・2021・2020年1月1日）だけを変え、同じ調整・検証期間で比べる。
+  調整期間で一番良い始まりが検証期間でも今より良ければ train_window.json（since・history_since＝1年前・results）を書く。
+- cron daily：ml-facts のあとに ml-official --fan（昨日の分と、まだ取っていないファン手帳）。昔の分は手で --from を付けて取り込む（1日2件・1秒1件）。
+- ファン手帳を学習の材料にするのは次（特徴量の組として、良くなったときだけ採用）。
+
 ## 🍒穴狙い🍒の検証（ev-check「16.」、PR #139）
 
 - ユーザーの案：展示の並び（進入コース順）で ①〈②・②〈③・③〈④・④〈⑤ のどこかに、外の艇の方が平均スタート順位で0.4以上速い所があれば、
