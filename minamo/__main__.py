@@ -10,6 +10,8 @@
   python -m minamo ml-backfill      過去の展示データを公式サイトから取り寄せる
   python -m minamo ml-facts         データベースの実績が止まった日の次の日から、実績・展示・風を公式サイトで足す
   python -m minamo ml-original      過去のオリジナル展示をボートレース日和から取り寄せる
+  python -m minamo ml-official      公式のダウンロードデータ（競走成績・番組表・ファン手帳）を取り込む
+  python -m minamo ml-years         過去何年分を学習に使うと良くなるかを比べる（良くなったときだけ採用）
   python -m minamo wind-table       場ごとの風の表を、データベースの過去の天気から作る
 """
 from __future__ import annotations
@@ -48,6 +50,15 @@ def main() -> None:
     mlf = sub.add_parser("ml-facts", help="データベースの実績が止まった日の次の日から昨日まで、実績・展示・風を公式サイトで足す（1秒1件）")
     mlf.add_argument("--from", dest="date_from", default=None)
     mlf.add_argument("--to", dest="date_to", default=None)
+    mlx = sub.add_parser("ml-official", help="公式のダウンロードデータ（競走成績K・番組表B・ファン手帳）を取り込む（1秒1件）。取り終えた日はとばす")
+    mlx.add_argument("--raw", help="var/ml/raw の場所")
+    mlx.add_argument("--from", dest="date_from", help="YYYYMMDD（省くと取り終えた最後の日の翌日、無ければ昨日）")
+    mlx.add_argument("--to", dest="date_to", help="YYYYMMDD（省くと昨日）")
+    mlx.add_argument("--fan", action="store_true", help="ファン手帳も（まだ取っていない期だけ）")
+    mlx.add_argument("--peek", metavar="YYYYMMDD", help="1日分の中身と読み取れた数を見るだけ（書き出さない）")
+    mly = sub.add_parser("ml-years", help="過去何年分を学習に使うと良くなるかを、同じ検証期間で比べる（良くなったときだけ採用）")
+    mly.add_argument("--raw", default=None)
+    mly.add_argument("--dry-run", action="store_true", help="比べるだけで、採用（train_window.json）は書かない")
     mlk = sub.add_parser("ml-kimarite", help="決まり手を公式サイトの結果一覧（1場1日で1ページ、1秒1件）から足す。取り終えた日はとばす")
     mlk.add_argument("--raw", help="var/ml/raw の場所")
     mlk.add_argument("--from", dest="date_from", help="YYYYMMDD（省くと facts.csv の最初の日）")
@@ -183,6 +194,21 @@ def main() -> None:
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
         print(rtm_compare.build(raw, Path(args.data) if args.data else store.DATA_DIR))
+    elif args.cmd == "ml-official":
+        from .ml import live, official
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        if args.peek:
+            print(official.peek(args.peek))
+        else:
+            n = official.run(raw, args.date_from, args.date_to)
+            f = official.run_fan(raw) if args.fan else 0
+            print(f"取り込み完了: 競走成績・番組表 {n} 日" + (f"、ファン手帳 {f} 期" if args.fan else ""))
+    elif args.cmd == "ml-years":
+        from .ml import live, train
+
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        print(train.years_check(raw, live.ML_DIR, write=not args.dry_run))
     elif args.cmd == "rtm-learn":
         from .ml import live, rtm_learn
 

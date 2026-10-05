@@ -209,9 +209,12 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     test_start = last - pd.Timedelta(days=test_days)
     valid_start = test_start - pd.Timedelta(days=valid_days)
     tr = rows[rows["date"] < valid_start]
+    window = ds.train_window(raw_dir).get("since")  # ml-years で決めた、学習に使う最初の日（無ければ全部）
+    if window:
+        tr = tr[tr["date"] >= pd.Timestamp(window)]
     va = rows[(rows["date"] >= valid_start) & (rows["date"] < test_start)]
     te = rows[rows["date"] >= test_start]
-    log.info("rows=%d train=%d valid=%d test=%d", len(rows), len(tr), len(va), len(te))
+    log.info("rows=%d train=%d valid=%d test=%d window=%s", len(rows), len(tr), len(va), len(te), window)
 
     # 修正3までの特徴量と、当地・調子・モーター実績を足したものを、同じ検証期間で比べる
     pre_v1 = _fit(tr, va, ds.BASE_FEATURES_V1)
@@ -347,6 +350,78 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
+
+
+YEARS_STARTS = ("20250101", "20240101", "20230101", "20220101", "20210101", "20200101")
+HISTORY_WARMUP_DAYS = 365  # 学習に使う最初の日より、これだけ前から成績を数える（選手・モーターの成績が育つように）
+
+
+def years_check(raw_dir: Path, out_dir: Path, starts: tuple[str, ...] = YEARS_STARTS, test_days: int = 90, valid_days: int = 45,
+                write: bool = True) -> str:
+    """過去何年分を学習に使うと良くなるか。成績はいちばん古い候補の1年前から全部数えて表を作り、
+    今の展示前モデルの特徴量（meta.json）で、学習の始まりだけを変えて同じ検証期間で比べる。
+    調整期間（valid）の対数損失がいちばん小さい始まりを選び、学習に使っていない検証期間（test）でも今より良ければ
+    train_window.json に書く（良くなったときだけ採用）。今＝train_window.json の始まり（無ければ 2025/1/1）。"""
+    import os
+
+    raw_dir, out_dir = Path(raw_dir), Path(out_dir)
+    current = ds.train_window(raw_dir).get("since") or ds.DEFAULT_HISTORY_SINCE
+    starts = tuple(sorted(set(starts) | {current}, reverse=True))
+    oldest = min(starts)
+    os.environ["MINAMO_ML_SINCE"] = (pd.Timestamp(oldest) - pd.Timedelta(days=HISTORY_WARMUP_DAYS)).strftime("%Y%m%d")
+    try:
+        rows = ds.build(raw_dir)[0]
+    finally:
+        os.environ.pop("MINAMO_ML_SINCE", None)
+    rows["course"] = rows["course"].astype(int)
+    first = rows["date"].min()
+    last = rows["date"].max()
+    test_start = last - pd.Timedelta(days=test_days)
+    valid_start = test_start - pd.Timedelta(days=valid_days)
+    va = rows[(rows["date"] >= valid_start) & (rows["date"] < test_start)]
+    te = rows[rows["date"] >= test_start]
+    meta_path = out_dir / "meta.json"
+    feats = json.loads(meta_path.read_text(encoding="utf-8")).get("pre_features") if meta_path.exists() else None
+    feats = [f for f in (feats or ds.BASE_FEATURES) if f in rows.columns]
+    lines = [f"過去何年分を学習に使うか（成績は {first:%Y/%m/%d} から数え、展示前モデル・特徴量 {len(feats)} 個。"
+             f"調整期間 {valid_start:%Y/%m/%d}〜・検証期間 {test_start:%Y/%m/%d}〜{last:%Y/%m/%d}。小さいほど良い）",
+             f"  {'学習の始まり':<14}{'学習の艇数':>10}{'調整 対数損失':>14}{'検証 対数損失':>14}{'本命1着':>8}{'3連単1点目':>10}{'3連単上位10':>11}"]
+    results = {}
+    for s in starts:
+        st = pd.Timestamp(s)
+        if st < first + pd.Timedelta(days=HISTORY_WARMUP_DAYS // 2) and s != current:
+            lines.append(f"  {s[:4]}/{s[4:6]}/{s[6:]}から   （その前の成績が足りないので比べない。ml-official --from でさかのぼって取り込む）")
+            continue
+        tr = rows[(rows["date"] >= st) & (rows["date"] < valid_start)]
+        if len(tr) < 2000:
+            continue
+        model = _fit(tr, va, feats)
+        m_va = evaluate(va, normalize(va, model.predict(va[feats])))
+        m_te = evaluate(te, normalize(te, model.predict(te[feats])))
+        results[s] = {"train_rows": int(len(tr)), "valid": m_va["logloss"], "test": m_te["logloss"], "fav_win": m_te["fav_win"],
+                      "tri_top1": m_te["tri_top1"], "tri_top10": m_te["tri_top10"]}
+        mark = "（今）" if s == current else ""
+        lines.append(f"  {s[:4]}/{s[4:6]}/{s[6:]}から{mark:<4}{len(tr):>10,}{m_va['logloss']:>14.4f}{m_te['logloss']:>14.4f}"
+                     f"{100 * m_te['fav_win']:>7.1f}%{100 * m_te['tri_top1']:>9.1f}%{100 * m_te['tri_top10']:>10.1f}%")
+        log.info("years %s: train=%d valid=%.4f test=%.4f", s, len(tr), m_va["logloss"], m_te["logloss"])
+    if current not in results or len(results) < 2:
+        return "\n".join(lines + ["  比べられる候補が足りません（ml-official --from で昔の競走成績・番組表を取り込んでから）"])
+    best = min(results, key=lambda k: results[k]["valid"])
+    cur, b = results[current], results[best]
+    adopt = best != current and b["test"] < cur["test"]
+    lines.append(f"  → 調整期間でいちばん良いのは {best[:4]}/{best[4:6]}/{best[6:]}から。検証期間の対数損失 今 {cur['test']:.4f} → {b['test']:.4f}"
+                 f"（{b['test'] - cur['test']:+.4f}）")
+    if adopt and write:
+        hist = (pd.Timestamp(best) - pd.Timedelta(days=HISTORY_WARMUP_DAYS)).strftime("%Y%m%d")
+        (out_dir / ds.WINDOW_NAME).write_text(json.dumps({
+            "since": best, "history_since": hist, "checked_at": datetime.now().isoformat(timespec="seconds"),
+            "results": results}, ensure_ascii=False, indent=2), encoding="utf-8")
+        lines.append(f"  → 採用：次の学習から {best[:4]}/{best[4:6]}/{best[6:]} 以降で学習し、成績は {hist[:4]}/{hist[4:6]}/{hist[6:]} から数えます（{ds.WINDOW_NAME}）")
+    elif adopt:
+        lines.append("  → 良くなりますが、--dry-run なので採用は書きません")
+    else:
+        lines.append("  → 今の期間のまま（検証期間で今より良くならなかった）" if best != current else "  → 今の期間がいちばん良いので、そのまま")
+    return "\n".join(lines)
 
 
 def summary_ja(meta: dict) -> str:
