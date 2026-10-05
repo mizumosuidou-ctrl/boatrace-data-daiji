@@ -22,6 +22,7 @@ from . import parsers, store
 log = logging.getLogger(__name__)
 
 MAX_BACK_DAYS = 7
+POINTS = {1: 10.0, 2: 8.0, 3: 6.0, 4: 4.0, 5: 2.0, 6: 1.0}  # ml/dataset.py の WIN_POINTS と同じ
 _TIME_RE = re.compile(r"(\d)\s*[\'’′]\s*(\d{1,2})\s*[\"”″]\s*(\d)")
 
 
@@ -88,6 +89,28 @@ class RaceTimes:
         store.write_json(path, out)
         return out
 
+    def day_places(self, date: str, jcd: str) -> list[list]:
+        """その日・その場の [登番, 着順（失格・欠場などは None）] の一覧（今節成績用）。"""
+        path = self.dir / f"{date}-{jcd}-pl.json"
+        cached = store.read_json(path)
+        if cached is not None:
+            return cached
+        out = []
+        for rno in range(1, 13):
+            st = self.load_state(date, f"{jcd}-{rno:02d}") or {}
+            rows = (st.get("result") or {}).get("rows")
+            if rows is None:
+                try:
+                    rows = [r.__dict__ for r in parsers.parse_result(self.fetcher.result(date, jcd, rno)).rows]
+                except requests.RequestException as exc:
+                    log.warning("racetime result %s %s %dR: %s", date, jcd, rno, exc)
+                    return out  # 保存しない（次回取り直す）
+            for r in rows:
+                if r.get("toban"):
+                    out.append([r["toban"], r.get("place")])
+        store.write_json(path, out)
+        return out
+
     def prior_days(self, date: str, jcd: str, label: str) -> list[str]:
         """同じ節の、前日までの日付（新しい順）。"""
         n = _day_no(label)
@@ -124,4 +147,12 @@ class RaceTimes:
         rank = lambda xs, v: 1 + sum(x < v for x in xs)  # noqa: E731 — 同タイムは同順位
         racers = {t: [ms, runs[t], rank(ordered, ms), len(ordered), rank(all_ms, ms), len(all_ms),
                       last[t], rank(lasts, last[t]), len(lasts)] for t, ms in best.items()}
-        return {"day": len(days) + 1, "racers": racers}
+        # 今節成績：前日までの走った数・得点の合計（1着10点〜6着1点、失格などは0点）・1着の数（学習の series_stats と同じ）
+        series: dict[str, list] = {}
+        for d in days:
+            for toban, place in self.day_places(d, jcd):
+                s = series.setdefault(toban, [0, 0.0, 0])
+                s[0] += 1
+                s[1] += POINTS.get(place, 0.0)
+                s[2] += int(place == 1)
+        return {"day": len(days) + 1, "racers": racers, "series": series}

@@ -1376,3 +1376,41 @@ def test_odds_flow_report():
     assert float(c_line.split("c=")[1].split("（")[0]) > 0
     ll = next(l for l in out.splitlines() if "当たり組の対数損失" in l and "補正C" in l)
     assert "（-" in ll and "補正C" in out
+
+
+def test_series_stats_counts_prior_days_of_the_meeting():
+    """今節成績：同じ節（場で日付が続く間）の前日までの走った数・平均の得点・1着の数。当日の走りと、前の節は数えない。"""
+    import pandas as pd
+    from minamo.ml import dataset as ds
+    from minamo.ml.live import MLPredictor as Predictor
+
+    rows = []
+    for date, fin in (("2026-09-01", 3), ("2026-09-10", 1), ("2026-09-11", 2), ("2026-09-11", 6), ("2026-09-12", 4)):
+        rows.append({"venue": "02", "date": pd.Timestamp(date), "toban": "4074", "finish": fin, "series_title": "杯"})
+    f = pd.DataFrame(rows)
+    ss = ds.series_stats(f).set_index("date")
+    assert ss.loc[pd.Timestamp("2026-09-10"), "ss_n"] == 0  # 9/1 は別の節（日が空いた）
+    d11 = ss.loc[pd.Timestamp("2026-09-11")]
+    assert d11["ss_n"] == 1 and d11["ss_avg"] == 10.0 and d11["ss_wins"] == 1
+    d12 = ss.loc[pd.Timestamp("2026-09-12")]
+    assert d12["ss_n"] == 3 and abs(d12["ss_avg"] - (10 + 8 + 1) / 3) < 1e-9 and d12["ss_wins"] == 1
+    # 本番：racetime.table の "series" を同じ形に
+    assert Predictor._series({"series": {"4074": [3, 19.0, 1]}}, "4074") == {"ss_n": 3.0, "ss_avg": 19.0 / 3, "ss_wins": 1.0}
+    assert Predictor._series({"series": {}}, "4074")["ss_n"] == 0.0
+    assert np.isnan(Predictor._series({}, "4074")["ss_n"])
+
+
+def test_odds_band_report_picks_band_on_first_half_and_checks_second():
+    """19. オッズの帯：前の期間で一番良い帯を選び、後の期間で確かめる（他のAIの案 10〜80倍の行も出す）。"""
+    from minamo.ml import ev_check
+
+    races = []
+    for i in range(1200):
+        hit = "1-2-3" if i % 8 == 0 else "6-5-4"
+        probs = {c: 0.0 for c in ev_check.COMBOS}
+        probs.update({"1-2-3": 0.1, "1-3-2": 0.1, "6-5-4": 0.5})
+        t5 = {c: 100.0 for c in ev_check.COMBOS}
+        t5.update({"1-2-3": 20.0, "1-3-2": 150.0, "6-5-4": 1.0})
+        races.append({"race": f"2026{i:05d}", "probs": probs, "t5": t5, "final": {"1-2-3": 20.0}, "hit": hit, "x5": None, "xfinal": None})
+    out = "\n".join(ev_check.odds_band_report(races))
+    assert "19. 今の試し買いの組" in out and "10〜80倍（他のAIの案）" in out and "前で1番の帯" in out

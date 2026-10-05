@@ -510,7 +510,11 @@ def test_racetime_table_uses_prior_days_of_the_series(tmp_path):
     n = len(F.calls)
     rt.table("20261003", "12", "3日目")
     assert len(F.calls) == n  # 一度読んだ日は取り直さない
-    assert rt.table("20261001", "12", "初日") == {"day": 1, "racers": {}}
+    assert rt.table("20261001", "12", "初日") == {"day": 1, "racers": {}, "series": {}}
+    # 今節成績：前日までの2日分（同じ結果の1Rだけ）→ 走った数2、得点は着順の点×2、1着の数
+    from minamo import parsers
+    first = next(r for r in parsers.parse_result(RESULT_HTML).rows if r.place == 1)
+    assert t["series"][first.toban] == [2, 20.0, 2]
 
 
 def test_race_summary_has_ledger_fields(sandbox):
