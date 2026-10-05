@@ -101,6 +101,7 @@ class MLPredictor:
                 "rt_best": r[0] if r else np.nan,
                 "rt_series_rank": r[2] if r else np.nan,
                 "rt_series_n": r[3] if r else np.nan,
+                **self._series(rt, e.toban),
                 "motor_2": e.motor_2, "f_recent": float(e.f_count or 0), "f_hold": float(e.f_count or 0),
                 "wind_tail": wind[0], "wind_cross": wind[1],
                 "wave_cm": getattr(before, "wave_cm", None) if before else np.nan,
@@ -113,7 +114,7 @@ class MLPredictor:
             })
         df = pd.DataFrame(rows)
         for c in ("motor_2", "ex_time", "ex_st", "tilt", "lap_time", "turn_time", "straight_time",
-                  "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n", "wave_cm"):
+                  "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n", "wave_cm", "ss_n", "ss_avg", "ss_wins"):
             df[c] = pd.to_numeric(df[c], errors="coerce")
         for c, (lo, hi) in ds.ORIG_BOUNDS.items():
             df.loc[~df[c].between(lo, hi), c] = np.nan
@@ -121,6 +122,16 @@ class MLPredictor:
         df = ds.apply_extra(df, self.extra)
         df = ds.apply_new(df, self.new, self.meta["priors"])
         return df
+
+    @staticmethod
+    def _series(rt: dict, toban: str) -> dict:
+        """今節成績（racetime.table の "series"：[走った数, 得点の合計, 1着の数]）。節の情報が無ければ NaN。"""
+        if not rt or "series" not in rt:
+            return {"ss_n": np.nan, "ss_avg": np.nan, "ss_wins": np.nan}
+        s = rt["series"].get(toban)
+        if not s or not s[0]:
+            return {"ss_n": 0.0, "ss_avg": np.nan, "ss_wins": 0.0}
+        return {"ss_n": float(s[0]), "ss_avg": s[1] / s[0], "ss_wins": float(s[2])}
 
     def motor_era(self, jcd: str, date: str) -> int:
         """学習と同じ数え方で「何回目のモーターか」。学習のあとに交換されていれば、その分も足す。"""

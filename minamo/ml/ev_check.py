@@ -1591,6 +1591,60 @@ def calib_c_report(rs: list[dict]) -> list[str]:
     return lines
 
 
+BAND_LOWS = (1.0, 5.0, 10.0, 15.0, 20.0)
+BAND_HIGHS = (30.0, 50.0, 80.0, 120.0, 200.0, float("inf"))
+
+
+def odds_band_report(races: list[dict]) -> list[str]:
+    """19. 今の試し買いの組を、5分前のオッズの帯で絞ると（他のAIの案「10〜80倍」も）。
+    補正B・後半のレースを、さらに「選ぶ期間（前）」と「確かめる期間（後）」に分け、帯は前で選び、後で確かめる。"""
+    cal = _test_cal(races)
+    if len(cal) < 400:
+        return []
+    mid = cal[len(cal) // 2]["race"]
+    tri, ex = [], []
+    for r in cal:
+        cs = [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True) if r["probs"][c] >= MIN_P and _ev(r, c) >= 1.2][:9]
+        tri += [(r["race"], r["t5"][c], c == r["hit"], r["final"].get(c, 0)) for c in cs]
+        if r.get("x5") and r.get("xfinal"):
+            xp = exacta_probs(r["probs"])
+            hit = r["hit"].rsplit("-", 1)[0]
+            xs = [c for c in sorted(xp, key=xp.get, reverse=True) if xp[c] >= EX_MIN_P and r["x5"].get(c) and xp[c] * r["x5"][c] >= 1.2][:3]
+            ex += [(r["race"], r["x5"][c], c == hit, r["xfinal"].get(c, 0)) for c in xs]
+
+    def roi(rows):
+        if not rows:
+            return float("nan"), 0, 0, float("nan")
+        pays = [f for *_, h, f in rows if h]
+        tot = sum(pays)
+        cut = 100 * (tot - max(pays)) / len(rows) if pays else 0.0
+        return 100 * tot / len(rows), len(rows), len(pays), cut
+
+    def cell(rows):
+        r, n, h, cut = roi(rows)
+        return f"{n:>5}点 当たり{h:>4}本 回収率 {r:6.1f}%（最大除く {cut:6.1f}%）" if n else "（買う組なし）"
+
+    lines = [f"\n19. 今の試し買いの組を、5分前のオッズの帯で絞ると（補正B・後半 {len(cal):,}R を、帯を選ぶ前の期間と、確かめる後の期間に分ける）"]
+    for tag, rows in (("3連単（期待値1.2以上・最大9点）", tri), ("2連単（期待値1.2以上・最大3点）", ex)):
+        if not rows:
+            continue
+        a = [x for x in rows if x[0] < mid]
+        b = [x for x in rows if x[0] >= mid]
+        band = lambda xs, lo, hi: [x for x in xs if lo <= x[1] < hi]
+        cands = [(lo, hi) for lo in BAND_LOWS for hi in BAND_HIGHS if hi > lo * 2]
+        scored = [(roi(band(a, lo, hi))[0], lo, hi) for lo, hi in cands if roi(band(a, lo, hi))[1] >= max(100, len(a) // 10)]
+        scored.sort(reverse=True)
+        lines.append(f"  {tag}")
+        lines.append(f"    {_pad('帯', 22)}{_pad('前の期間（帯を選ぶ）', 48)}後の期間（確かめる）")
+        fmt = lambda lo, hi: f"{lo:g}〜{'' if hi == float('inf') else f'{hi:g}'}倍"
+        lines.append(f"    {_pad('全部（今の買い方）', 22)}{_pad(cell(a), 48)}{cell(b)}")
+        lines.append(f"    {_pad('10〜80倍（他のAIの案）', 22)}{_pad(cell(band(a, 10, 80)), 48)}{cell(band(b, 10, 80))}")
+        for i, (_, lo, hi) in enumerate(scored[:3]):
+            lines.append(f"    {_pad(('前で1番の帯 ' if i == 0 else f'前で{i + 1}番の帯 ') + fmt(lo, hi), 22)}{_pad(cell(band(a, lo, hi)), 48)}{cell(band(b, lo, hi))}")
+    lines.append("    帯は前の期間だけで選んでいる。後の期間でも「全部」より良いときだけ、本当に効く絞り方と言える")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -1716,4 +1770,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += cherry_report(races)
     lines += survive_report(races)
     lines += odds_flow_report(races)
+    lines += odds_band_report(races)
     return "\n".join(lines)

@@ -88,6 +88,8 @@ SHAPE_FEATURES = ["shape_c1_top", "shape_key", "shape_gap_max", "shape_gap_at", 
 #   race_c1_*：そのレースの1コースの艇の率（ほかの艇にも同じ値。差されやすい①に、差しの上手な②、のように組み合わせるため）
 KIMARITE_FEATURES = ["km_nige", "km_sasare", "km_makurare", "km_makusasare", "km_nogashi", "km_sashi", "km_makuri", "km_makurisashi",
                      "race_c1_nige", "race_c1_sasare", "race_c1_makurare", "race_c1_makusasare"]
+# 今節成績（同じ節の前日までの走り）：走った数・平均の得点（1着10点〜6着1点、失格などは0点）・1着の数
+SERIES_FEATURES = ["ss_n", "ss_avg", "ss_wins"]
 KIMARITE_WINDOW = 365
 KIMARITE_SMOOTH = 10.0
 KIMARITE_FILES = ("kimarite.csv", "kimarite_backfill.csv", "odds_results.csv", "kimarite_kb.csv")
@@ -830,6 +832,26 @@ def racetime_stats(facts: pd.DataFrame) -> pd.DataFrame:
     return grid[["venue", "date", "toban", "rt_day", "rt_n", "rt_best", "rt_series_rank", "rt_series_n"]]
 
 
+def series_stats(facts: pd.DataFrame) -> pd.DataFrame:
+    """今節成績（前日までの走り）を、場×日×選手ごとに作る。節の分け方は racetime_stats と同じ（meetings）。"""
+    f = facts[["venue", "date", "toban", "finish"]].copy()
+    f["pts"] = f["finish"].map(WIN_POINTS).fillna(0.0)
+    f["win1"] = (f["finish"] == 1).astype(float)
+    vd = meetings(facts)
+    f = f.merge(vd[["venue", "date", "meet"]], on=["venue", "date"])
+    daily = f.groupby(["meet", "toban", "date"], as_index=False).agg(d_n=("pts", "size"), d_pts=("pts", "sum"), d_w=("win1", "sum"))
+    daily = daily.sort_values(["meet", "toban", "date"])
+    for c, d in (("ss_n", "d_n"), ("ss_pts", "d_pts"), ("ss_wins", "d_w")):
+        daily[c] = daily.groupby(["meet", "toban"])[d].cumsum()
+    grid = f[["meet", "toban"]].drop_duplicates().merge(vd[["venue", "date", "meet"]], on="meet")
+    grid = pd.merge_asof(grid.sort_values("date"), daily[["meet", "toban", "date", "ss_n", "ss_pts", "ss_wins"]].sort_values("date"),
+                         on="date", by=["meet", "toban"], allow_exact_matches=False)  # 当日の走りは使わない
+    for c in ("ss_n", "ss_pts", "ss_wins"):
+        grid[c] = grid[c].fillna(0.0)
+    grid["ss_avg"] = (grid["ss_pts"] / grid["ss_n"]).where(grid["ss_n"] > 0)
+    return grid[["venue", "date", "toban", "ss_n", "ss_avg", "ss_wins"]]
+
+
 RT_BANDS = [(0.0, 0.1, "上位10%"), (0.1, 0.3, "10〜30%"), (0.3, 0.6, "30〜60%"), (0.6, 9.0, "60%より下")]
 
 
@@ -1050,6 +1072,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     from .discover import discover
     found = discover(facts, fstate, f_recent, nxt)  # 選手別アビリティの自動発見（表示だけ）
     rt = racetime_stats(facts)
+    ss = series_stats(facts)
 
     rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank", "motor_no"]].copy()
     del facts
@@ -1070,7 +1093,8 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     for c in WIND_FEATURES:
         rows[c] = pd.to_numeric(rows[c], errors="coerce")
     rows = rows.merge(rt, on=["venue", "date", "toban"], how="left")
-    del rt
+    rows = rows.merge(ss, on=["venue", "date", "toban"], how="left")
+    del rt, ss
     del pc, pa
     gc.collect()
     rows = add_race_features(rows, with_ex=True)
@@ -1079,7 +1103,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows["top3"] = (rows["finish"] <= 3).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
     rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
-    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + KIMARITE_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + KIMARITE_FEATURES + SERIES_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":
