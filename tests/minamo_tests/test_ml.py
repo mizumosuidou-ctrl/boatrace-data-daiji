@@ -1362,7 +1362,7 @@ def test_odds_flow_report():
         base = {"-".join(map(str, t)): 10.0 + 5 * t[0] + t[1] for t in permutations(range(1, 7), 3)}
         t15 = dict(base)
         t5 = {c: (o * 0.7 if c.startswith(f"{win}-") else o) for c, o in base.items()}  # 勝つ艇の頭が買われる
-        races.append({"race": f"2026{i:05d}", "probs": {c: 1 / 120 for c in base}, "t5": t5, "t10": t5, "t15": t15,
+        races.append({"race": f"2026{i:05d}", "probs": {c: 1 / 120 for c in base}, "t5": t5, "t10": t15, "t15": t15,
                       "final": {hit: 30.0}, "hit": hit, "course_of": {l: l for l in range(1, 7)},
                       "p_lane": {l: 1 / 6 for l in range(1, 7)}, "x5": None, "xfinal": None})
     out = "\n".join(ev_check.odds_flow_report(races))
@@ -1371,3 +1371,8 @@ def test_odds_flow_report():
     w = [float(x) for x in mv.split("重み")[1].split()]
     assert w[2] > 1.0  # 動きの重みが＋（買われた艇ほど勝つ）
     assert "（-" in mv  # 動きを足すと対数損失が下がる
+    # 18-4. 補正C：10分前→5分前に買われた組ほど確率を上げる（c＞0）と、当たり組の対数損失が補正Bより下がる
+    c_line = next(l for l in out.splitlines() if "補正C a=" in l)
+    assert float(c_line.split("c=")[1].split("（")[0]) > 0
+    ll = next(l for l in out.splitlines() if "当たり組の対数損失" in l and "補正C" in l)
+    assert "（-" in ll and "補正C" in out
