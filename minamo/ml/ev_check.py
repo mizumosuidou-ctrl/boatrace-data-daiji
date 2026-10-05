@@ -163,6 +163,43 @@ def _logloss(q: np.ndarray, hit: np.ndarray) -> float:
     return float(-np.log(q[ok, hit[ok]]).mean()) if ok.any() else float("nan")
 
 
+GRID_C = np.round(np.arange(-0.5, 2.01, 0.25), 2)
+MOVE_CLIP = (0.5, 2.0)
+
+
+def _move_matrix(races: list[dict], m5: np.ndarray, early: str = "t10") -> np.ndarray:
+    """組ごとの「締切に近い動き」＝5分前の市場の確率 ÷ 10分前の市場の確率（買われた組ほど大きい）。無ければ 1。"""
+    inv = np.array([[1 / r[early][c] if (r.get(early) or {}).get(c) else np.nan for c in COMBOS] for r in races], dtype=float)
+    tot = np.nansum(inv, axis=1, keepdims=True)
+    m10 = inv / np.where(tot > 0, tot, np.nan)
+    v = np.where(np.isnan(m10) | (m10 <= 0), 1.0, m5 / np.where(m10 > 0, m10, 1.0))
+    return np.clip(v, *MOVE_CLIP)
+
+
+def fit_calibration_c(races: list[dict]) -> tuple[float, float, float]:
+    """補正C：確率 ∝ MINAMO^a × 市場（5分前）^b × 動き（10分前→5分前）^c。当たり組の対数損失が一番小さい a, b, c。"""
+    p, m, hit = _matrices(races)
+    lv = np.log(_move_matrix(races, m))
+    lp, lm = np.log(p), np.log(m)
+    best = (float("inf"), 1.0, 0.0, 0.0)
+    for a in GRID_A:
+        for b in GRID_B:
+            base = a * lp + b * lm
+            for c in GRID_C:
+                q = np.exp(base + c * lv)
+                q /= q.sum(axis=1, keepdims=True)
+                best = min(best, (_logloss(q, hit), float(a), float(b), float(c)))
+    return best[1], best[2], best[3]
+
+
+def apply_calibration_c(races: list[dict], a: float, b: float, c: float) -> tuple[list[dict], float]:
+    """補正Cで確率を作り直したレースと、当たり組の対数損失。"""
+    p, m, hit = _matrices(races)
+    q = np.exp(a * np.log(p) + b * np.log(m) + c * np.log(_move_matrix(races, m)))
+    q /= q.sum(axis=1, keepdims=True)
+    return [{**r, "probs": dict(zip(COMBOS, row))} for r, row in zip(races, q)], _logloss(q, hit)
+
+
 def fit_calibration(races: list[dict], market: bool = True) -> tuple[float, float]:
     """当たり組の確率の対数損失が一番小さくなる a, b（market=False なら b=0）。"""
     p, m, hit = _matrices(races)
@@ -1514,6 +1551,43 @@ def odds_flow_report(races: list[dict]) -> list[str]:
                 g = [x for x in rows if cond(x[1])]
                 a, b = [x for x in g if x[0] < mid], [x for x in g if x[0] >= mid]
                 lines.append(f"    {_pad(name, 24)}{len(g):>6}点 的中{sum(x[2] for x in g):>4}本  回収率 {roi(g)}（前 {roi(a)}  後 {roi(b)}）")
+    lines += calib_c_report(rs)
+    return lines
+
+
+def calib_c_report(rs: list[dict]) -> list[str]:
+    """18-4. 補正C（補正B＋10分前→5分前の組の動き）。前半で a, b, c を決め、後半で補正Bと比べる（当たり組の対数損失・試し買いの回収率）。"""
+    rs = [r for r in rs if r.get("t10")]
+    half = len(rs) // 2
+    fit, test = rs[:half], rs[half:]
+    if len(fit) < 100 or len(test) < 100:
+        return []
+    a, b = fit_calibration(fit)
+    a3, b3, c3 = fit_calibration_c(fit)
+    p, m, hit = _matrices(test)
+    ll_b = _logloss(_calibrated(p, m, a, b), hit)
+    cal_b = apply_calibration(test, a, b)
+    cal_c, ll_c = apply_calibration_c(test, a3, b3, c3)
+    mid = test[len(test) // 2]["race"]
+    lines = [f" 18-4. 補正C＝MINAMO^a × 5分前の市場^b × 10分前→5分前の組の動き^c（前半 {len(fit):,}Rで決め、後半 {len(test):,}Rで補正Bと比べる）",
+             f"    補正B a={a:.1f} b={b:.1f}  補正C a={a3:.1f} b={b3:.1f} c={c3:+.2f}（c＞0 なら、買われた組ほど確率を上げる）",
+             f"    当たり組の対数損失（小さいほど良い）：補正B {ll_b:.4f}  補正C {ll_c:.4f}（{ll_c - ll_b:+.4f}）"]
+    for name, cal in (("補正B（今）", cal_b), ("補正C", cal_c)):
+        tri, ex = _trial_rows(cal)
+        cells = []
+        for tag, rows in (("3連単", tri), ("2連単", ex)):
+            if not any(rows):
+                continue
+            roi, lo, hi, n_hit, _ = _rows_boot(rows)
+            if tag == "3連単":
+                a_, b_ = _rows_boot([x for x, r in zip(rows, cal) if r["race"] < mid])[0], _rows_boot([x for x, r in zip(rows, cal) if r["race"] >= mid])[0]
+            else:
+                xr = [r for r in cal if r.get("x5") and r.get("xfinal")]
+                a_ = _rows_boot([x for x, r in zip(rows, xr) if r["race"] < mid])[0]
+                b_ = _rows_boot([x for x, r in zip(rows, xr) if r["race"] >= mid])[0]
+            pts = sum(len(x) for x in rows)
+            cells.append(f"{tag} {pts:>5}点 当たり{n_hit:>4}本 回収率 {roi:6.1f}%（前 {a_:6.1f}% 後 {b_:6.1f}%）")
+        lines.append(f"    {_pad(name, 14)}" + "   ".join(cells))
     return lines
 
 
