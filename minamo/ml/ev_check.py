@@ -1337,6 +1337,34 @@ def cherry_report(races: list[dict]) -> list[str]:
             pick = lambda r, how=how: cherry_picks(r, how)
             a, b = [r for r in g if r["race"] < mid], [r for r in g if r["race"] >= mid]
             lines.append(f"{head if i == 0 else ' ' * len(head)}  {how}  {_pat_cell(a, pick)}  {_pat_cell(b, pick)}  {_pat_cell(g, pick)}")
+    lines += cherry_value_report(rs, mid, one_win, mkt1)
+    return lines
+
+
+CHERRY_EDGES = (0.0, 0.05, 0.10, 0.15)  # 市場の①の見立て − MINAMOの①の見立て がこれ以上のレースだけ買う
+
+
+def cherry_value_report(rs: list[dict], mid: str, one_win, mkt1) -> list[str]:
+    """16-2. 🍒を、MINAMOが市場より①を弱いと見たレースだけで買う（学習の見立てで、イン逃しが割安なレースを選ぶ）。"""
+    def p1(r):
+        one = {cc: l for l, cc in r["course_of"].items()}.get(1)
+        return r["p_lane"].get(one, float("nan")) if r.get("p_lane") else float("nan")
+
+    g0 = [r for r in rs if cherry_gap(r) is not None]
+    lines = [" 16-2. 差のあるレースのうち、市場の①の見立て − MINAMOの①の見立て が○ポイント以上のレースだけ🍒を買うと"
+             "（MINAMOが①を市場より弱いと見たレース＝イン逃しが割安なはずのレース）",
+             f"    {_pad('レース', 30)}{_pad('①1着', 22)}{_pad('買い方', 8)}{_pad('前半', 48)}{_pad('後半', 48)}全部"]
+    for e in CHERRY_EDGES:
+        g = [r for r in g0 if mkt1(r) - p1(r) >= e]
+        if len(g) < 30:
+            continue
+        head = (f"    {_pad(f'{100 * e:.0f}ポイント以上', 30)}{len(g):>5}R {100 * np.mean([one_win(r) for r in g]):4.1f}%"
+                f"／{100 * np.nanmean([mkt1(r) for r in g]):4.1f}%／{100 * np.nanmean([p1(r) for r in g]):4.1f}%")
+        for i, how in enumerate(("A", "B")):
+            pick = lambda r, how=how: cherry_picks(r, how)
+            a, b = [r for r in g if r["race"] < mid], [r for r in g if r["race"] >= mid]
+            lines.append(f"{head if i == 0 else ' ' * len(head)}  {how}  {_pat_cell(a, pick)}  {_pat_cell(b, pick)}  {_pat_cell(g, pick)}")
+    lines.append("    ①1着＝実際／市場の見立て／MINAMOの見立て")
     return lines
 
 

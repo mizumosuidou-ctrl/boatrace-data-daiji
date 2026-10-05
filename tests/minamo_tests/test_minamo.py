@@ -1025,3 +1025,26 @@ def test_rtm_live_top_and_ag_pick(tmp_path, monkeypatch):
     assert st["ag_bought"] and st["ag_hit"] and st["ag_stake"] == 100 and st["ag_return"] == 1460
     text = notify.pick_message("20261006", "02", 3, "11:05", 5, {}, {}, None, {**ag, "odds": {"3-1": 14.6}})
     assert "一致（RTMの1番手・MINAMO 40%）2連単：3-1（14.6倍）" in text
+
+
+def test_cherry_pick_and_settle():
+    """🍒穴狙い🍒（記録だけ）：隣より外が0.4以上速い所（一番差の大きい所）があれば、①頭以外の12点（A）と、攻める艇とその外の頭の12点（B）。
+    市場の①の見立て − MINAMOの①の見立て（edge）も残す。差が無ければ combos が空、材料が無ければ None。"""
+    from itertools import permutations
+    from types import SimpleNamespace as B
+
+    def boats(srs):
+        return [B(boat=c, course=c, win=w, stats={"sr_model": srs[c - 1]} if c <= 5 else {})
+                for c, w in zip(range(1, 7), (0.45, 0.2, 0.15, 0.1, 0.06, 0.04))]
+    tri = sorted(((f"{a}-{b}-{c}", 1 / (a * 10 + b + c / 10)) for a, b, c in permutations(range(1, 7), 3)), key=lambda x: -x[1])
+    odds = {c: (2.0 if c.startswith("1-") else 50.0) for c, _ in tri}
+    ch = store.cherry_pick(boats([3.0, 3.1, 2.6, 3.3, 3.4]), tri, odds)  # ②〈③ 0.5
+    assert ch["where"] == "②〈③" and ch["gap"] == 0.5 and len(ch["combos"]) == 12
+    assert not any(c.startswith("1-") for c in ch["combos"]) and {c[0] for c in ch["combos_b"]} <= {"3", "4"}
+    assert ch["p1"] == 0.45 and ch["edge"] == round(ch["mkt1"] - 0.45, 3)
+    assert store.cherry_pick(boats([3.0, 3.1, 3.2, 3.3, 3.4]), tri, odds)["combos"] == []  # 差なし
+    assert store.cherry_pick([B(boat=1, course=1, win=0.5, stats={})], tri, odds) is None
+    hit = ch["combos"][2]
+    res = RaceResult(trifecta=hit, trifecta_payout=5600, exacta=hit[:3], exacta_payout=900)
+    st = store.settle({"picks": []}, res, ch_pick=ch)
+    assert st["ch_hit"] and st["ch_rank"] == 3 and st["ch_stake"] == 1200 and st["ch_return"] == 5600

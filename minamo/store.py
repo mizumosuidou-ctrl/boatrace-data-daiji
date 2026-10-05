@@ -160,6 +160,40 @@ def ag_pick(boats, rtm: Optional[dict]) -> Optional[dict]:
             "rtm_at": rtm.get("at"), "p": round(p, 3), "rule": rule, "combos": [f"{b.boat}-{one}"] if ok else []}
 
 
+# 🍒穴狙い🍒（ユーザーの予想方法。記録だけ）：展示の並びで ①〈②・②〈③・③〈④・④〈⑤ のどこかに、外の艇の方が平均スタート順位で
+#   CHERRY_GAP 以上速い所があれば、イン逃し（①頭以外）だけの12点。A＝MINAMOの確率の上位12点、B＝攻める艇（一番差の大きい所の外）とその外の頭で12点。
+#   10/5 ev-check「16.」：A 74.2%・B 75.7%（全部のレースと同じ）→ お金はかけずに記録し、MINAMOが①を市場より弱いと見たレース（edge）で絞れるかを見る
+CHERRY_GAP = 0.4
+CHERRY_N = 12
+
+
+def cherry_pick(boats, trifecta: list, odds: Optional[dict[str, float]]) -> Optional[dict]:
+    """🍒の買い目。boats は予想の艇（course・stats["sr_model"]・win）。①〜⑤の材料が無ければ None、差が無ければ combos が空。"""
+    from . import formation
+
+    by_c = {getattr(b, "course", None): b for b in boats}
+    sr = {c: (getattr(by_c.get(c), "stats", None) or {}).get("sr_model") for c in range(1, 6)}
+    if any(v is None for v in sr.values()) or 1 not in by_c:
+        return None
+    gaps = [(k, sr[k] - sr[k + 1]) for k in range(1, 5) if sr[k] - sr[k + 1] >= CHERRY_GAP]
+    one = by_c[1].boat
+    inv = {c: 1 / o for c, o in (odds or {}).items() if o}
+    tot = sum(inv.values())
+    mkt1 = sum(v for c, v in inv.items() if c.startswith(f"{one}-")) / tot if tot else None
+    p1 = float(getattr(by_c[1], "win", 0.0) or 0.0)
+    out = {"p1": round(p1, 3), "mkt1": round(mkt1, 3) if mkt1 is not None else None,
+           "edge": round(mkt1 - p1, 3) if mkt1 is not None else None, "combos": [], "combos_b": []}
+    if not gaps:
+        return out
+    k, g = max(gaps, key=lambda x: x[1])
+    ranked = [c for c, _ in trifecta]
+    heads_b = {by_c[c].boat for c in (k + 1, k + 2) if c in by_c}
+    out.update(gap=round(g, 2), where=f"{formation.CIRCLED[k - 1]}〈{formation.CIRCLED[k]}",
+               combos=[c for c in ranked if int(c.split("-")[0]) != one][:CHERRY_N],
+               combos_b=[c for c in ranked if int(c.split("-")[0]) in heads_b][:CHERRY_N])
+    return out
+
+
 # 試験中：2連単の買い目（10/4の検証：補正B・期待値1.2以上・最大3点で、後半3,013Rの回収率120%・幅109〜131%）
 EX_MIN = 1.2
 EX_MIN_P = 0.02
@@ -219,7 +253,7 @@ def co_picks(trifecta: list, odds: Optional[dict[str, float]], th: float = CO_MI
 
 def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Optional[list] = None,
            ex: Optional[list] = None, ev_items: Optional[list] = None, time_pick: Optional[dict] = None,
-           fm_pick: Optional[dict] = None, ag_pick: Optional[dict] = None) -> dict:
+           fm_pick: Optional[dict] = None, ag_pick: Optional[dict] = None, ch_pick: Optional[dict] = None) -> dict:
     picks = [p["combo"] for p in ai.get("picks", [])]
     order = result.order
     hit = result.trifecta if result.trifecta in picks else None
@@ -294,6 +328,15 @@ def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Option
         out["ag_hit"] = result.exacta in cs
         out["ag_stake"] = 100 * len(cs)
         out["ag_return"] = (result.exacta_payout or 0) if result.exacta in cs else 0
+    # 🍒穴狙い🍒（記録だけ。A＝ch、B＝chb。3連単12点）
+    if ch_pick is not None:
+        for k, key in (("ch", "combos"), ("chb", "combos_b")):
+            cs = ch_pick.get(key) or []
+            out[f"{k}_bought"] = bool(cs)
+            out[f"{k}_hit"] = result.trifecta in cs
+            out[f"{k}_rank"] = cs.index(result.trifecta) + 1 if result.trifecta in cs else None
+            out[f"{k}_stake"] = 100 * len(cs)
+            out[f"{k}_return"] = payout if result.trifecta in cs else 0
     # LightGBMと統計モデルの本命（1着確率1位）を比べる
     if pred and order and pred.get("shadow_win"):
         fav = max(pred["boats"], key=lambda b: b["win"])["boat"]
@@ -321,6 +364,7 @@ def build_race(
     time_pick: Optional[dict] = None,
     fm_pick: Optional[dict] = None,
     ag_pick: Optional[dict] = None,
+    ch_pick: Optional[dict] = None,
 ) -> dict:
     be = {b.boat: b for b in (before.entries if before else [])}
     rt = (getattr(card, "racetime", None) or {}).get("racers") or {}
@@ -403,7 +447,7 @@ def build_race(
             "rows": [asdict(r) for r in result.rows],
         }
         if not result.cancelled and result.trifecta:
-            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick, fm_pick, ag_pick)
+            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick, fm_pick, ag_pick, ch_pick)
     return payload
 
 
@@ -489,6 +533,13 @@ def race_summary(race: dict) -> dict:
         "ag_items": race.get("ag_items"),
         "ag_at": (race.get("ag_pick") or {}).get("at"),
         "ag_info": {k: (race.get("ag_pick") or {}).get(k) for k in ("rtm_top", "rtm_mode", "p", "rule")} if race.get("ag_pick") else None,
+        # 🍒穴狙い🍒（記録だけ）
+        **{f"{k}_{f}": st.get(f"{k}_{f}") for k in ("ch", "chb") for f in ("bought", "hit", "rank", "stake", "return")},
+        "ch_pick": (race.get("ch_pick") or {}).get("combos") if race.get("ch_pick") else None,
+        "chb_pick": (race.get("ch_pick") or {}).get("combos_b") if race.get("ch_pick") else None,
+        "ch_items": race.get("ch_items"),
+        "ch_at": (race.get("ch_pick") or {}).get("at"),
+        "ch_info": {k: (race.get("ch_pick") or {}).get(k) for k in ("where", "gap", "p1", "mkt1", "edge")} if race.get("ch_pick") else None,
         "result_ex": res.get("exacta"),
         "payout_ex": res.get("exacta_payout"),
     }
@@ -575,7 +626,9 @@ def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
     totals = {"races": 0, "settled": 0, "hits": 0, "honmei_hits": 0, "stake": 0, "return": 0, "ml_races": 0, "ml_fav_hits": 0, "shadow_fav_hits": 0, "alt_races": 0, "alt_hits": 0, "alt_stake": 0, "alt_return": 0, "method_hits": 0, "method_stake": 0, "method_return": 0, "ev_races": 0, "ev_bought": 0, "ev_hits": 0, "ev_stake": 0, "ev_return": 0, "ex_races": 0, "ex_bought": 0, "ex_hits": 0, "ex_stake": 0, "ex_return": 0, "co_races": 0, "co_bought": 0, "co_hits": 0, "co_stake": 0, "co_return": 0, "time_races": 0, "time_bought": 0, "time_hits": 0, "time_stake": 0, "time_return": 0, "time12_hits": 0, "time12_stake": 0, "time12_return": 0,
               "fm_races": 0, "fm_bought": 0, "fm_hits": 0, "fm_stake": 0, "fm_return": 0,
               "fmb_bought": 0, "fmb_hits": 0, "fmb_stake": 0, "fmb_return": 0,
-              "ag_races": 0, "ag_bought": 0, "ag_hits": 0, "ag_stake": 0, "ag_return": 0}
+              "ag_races": 0, "ag_bought": 0, "ag_hits": 0, "ag_stake": 0, "ag_return": 0,
+              "ch_races": 0, "ch_bought": 0, "ch_hits": 0, "ch_stake": 0, "ch_return": 0,
+              "chb_bought": 0, "chb_hits": 0, "chb_stake": 0, "chb_return": 0}
     for vd in sorted(vdays, key=lambda v: v.jcd):
         races = []
         for rno in range(1, 13):
@@ -644,6 +697,13 @@ def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
                     totals["ag_hits"] += int(st["ag_hit"])
                     totals["ag_stake"] += st["ag_stake"]
                     totals["ag_return"] += st["ag_return"]
+                if "ch_hit" in st:
+                    totals["ch_races"] += 1
+                    for k in ("ch", "chb"):
+                        totals[f"{k}_bought"] += int(st[f"{k}_bought"])
+                        totals[f"{k}_hits"] += int(st[f"{k}_hit"])
+                        totals[f"{k}_stake"] += st[f"{k}_stake"]
+                        totals[f"{k}_return"] += st[f"{k}_return"]
                 if "fav_win" in st:
                     totals["ml_races"] += 1
                     totals["ml_fav_hits"] += int(st["fav_win"])
@@ -674,7 +734,9 @@ def update_record(date: str, totals: dict, demo: bool) -> None:
                                                     "time12_hits", "time12_stake", "time12_return",
                                                     "fm_races", "fm_bought", "fm_hits", "fm_stake", "fm_return",
                                                     "fmb_bought", "fmb_hits", "fmb_stake", "fmb_return",
-                                                    "ag_races", "ag_bought", "ag_hits", "ag_stake", "ag_return")}
+                                                    "ag_races", "ag_bought", "ag_hits", "ag_stake", "ag_return",
+                                                    "ch_races", "ch_bought", "ch_hits", "ch_stake", "ch_return",
+                                                    "chb_bought", "chb_hits", "chb_stake", "chb_return")}
     day_files = [read_json(DATA_DIR / d["date"] / "day.json") for d in days]
     day_files = [x for x in day_files if x]
     streaks = {"picks": losing_streaks(streak_rows(day_files)), "ev": losing_streaks(streak_rows(day_files, ev=True))}
