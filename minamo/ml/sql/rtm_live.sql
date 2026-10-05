@@ -1,26 +1,21 @@
 -- レースタイムモニターの今日の予想（prediction_mode_runs：DEEP・NORMAL）の1番手の艇。読むだけ。
--- deploy/rtm_live.sh が1分ごとに var/state/rtm_live.csv へ書き出し、MINAMOの試し買い「一致」が締切前に読む
+-- deploy/rtm_live.sh が1分ごとに var/state/rtm_live.csv へ書き出し、MINAMOの試し買い「一致」が締切前に読む。
+-- 速くするため：
+--   - 索引のある source_updated_at（文字の時刻 '2026-10-05T…'）と、表の列の race_date（'2026-10-05'）で今日の分に絞る
+--   - payload は jsonb_to_record で1回だけ開く（payload->>'…' を何回も書くと、そのたびに大きな payload を開き直す）
+--   - prediction_json（大きな文字）は JSON として読まず、先頭の "ranking":[{"lane":N の N だけを文字で探す（JSON として読むと30秒かかる）
 COPY (
-  -- 先に索引のある source_updated_at（文字の時刻 '2026-10-05T…'）で、きのう（UTC）以降に絞る。payload を全部開くと30秒以上かかる
-  WITH t AS MATERIALIZED (
-    SELECT payload FROM site_archive.records
-    WHERE source_table = 'prediction_mode_runs'
-      AND source_updated_at >= to_char((now() AT TIME ZONE 'UTC') - interval '1 day', 'YYYY-MM-DD')
-  )
   SELECT
-    replace(payload->>'race_date', '-', '') AS race_date,
-    lpad(payload->>'venue_code', 2, '0')    AS venue,
-    payload->>'race_no'                     AS race_no,
-    payload->>'mode'                        AS mode,
-    payload->>'method_id'                   AS method_id,
-    payload->>'revision'                    AS revision,
-    payload->>'created_at'                  AS created_at,
-    payload->>'capture_mode'                AS capture_mode,
-    p->'ranking'->0->>'lane'                AS top_lane
-  FROM t
-  CROSS JOIN LATERAL (
-    SELECT CASE WHEN left(payload->>'prediction_json', 1) = '{' THEN (payload->>'prediction_json')::jsonb END AS p
-  ) AS x
-  WHERE p IS NOT NULL AND jsonb_typeof(p->'ranking') = 'array'
-    AND replace(payload->>'race_date', '-', '') = to_char((now() AT TIME ZONE 'Asia/Tokyo')::date, 'YYYYMMDD')
+    replace(r.race_date, '-', '')   AS race_date,
+    lpad(r.venue_code, 2, '0')      AS venue,
+    r.race_no                       AS race_no,
+    j.mode, j.method_id, j.revision, j.created_at, j.capture_mode,
+    substring(j.prediction_json FROM '"ranking"\s*:\s*\[\s*\{\s*"lane"\s*:\s*"?([1-6])') AS top_lane
+  FROM site_archive.records r
+  CROSS JOIN LATERAL jsonb_to_record(r.payload) AS j(mode text, method_id text, revision text, created_at text,
+                                                      capture_mode text, prediction_json text)
+  WHERE r.source_table = 'prediction_mode_runs'
+    AND r.source_updated_at >= to_char((now() AT TIME ZONE 'UTC') - interval '1 day', 'YYYY-MM-DD')
+    AND r.race_date = to_char((now() AT TIME ZONE 'Asia/Tokyo')::date, 'YYYY-MM-DD')
+    AND j.prediction_json LIKE '{%'
 ) TO STDOUT WITH CSV HEADER;
