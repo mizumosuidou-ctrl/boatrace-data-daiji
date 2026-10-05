@@ -277,9 +277,10 @@ def load_exhibition(path: Optional[Path]) -> pd.DataFrame:
 
 def load_original(path: Optional[Path]) -> pd.DataFrame:
     """オリジナル展示（一周・まわり足・直線）。ボートレース日和から取り寄せた分（original.csv）と、
-    データベースから書き出した分（同じ場所の original_db.csv）を合わせる。同じ艇は後者を使う。"""
+    データベースから書き出した分（同じ場所の original_db.csv）、本番で取った分（original_live.csv）を合わせる。"""
     cols = ["race_id", "lane"] + list(ORIG_BOUNDS)
-    paths = [Path(path), Path(path).with_name("original_db.csv")] if path else []
+    # 本番で取った分（original_live.csv）がいちばん弱い。同じ艇は captured_at の新しい方（データベース）が残る
+    paths = [Path(path).with_name("original_live.csv"), Path(path), Path(path).with_name("original_db.csv")] if path else []
     frames = [pd.read_csv(p, dtype=str, usecols=lambda c: c in {"race_date", "venue", "race_no", "lane", "captured_at", *ORIG_BOUNDS})
               for p in paths if p.exists()]
     if not frames:

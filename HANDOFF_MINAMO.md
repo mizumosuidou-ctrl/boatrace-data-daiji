@@ -123,6 +123,13 @@
 - rtm-learn「5.」（PR #131）：RTMの予想（LIVE）が締切の何分前に出ているか（web/data の締切と合わせる）と、
   締切5.5分前までに出ていた版だけで「4.」の35%以上・30%以上をやり直す（本番の試し買いと同じ条件）。
 
+## オリジナル展示の材料（PR #148）
+
+- 10/6 時点：original_db.csv 78,919艇（2025/1〜、データベースのレースの一部だけ）、original.csv（ボートレース日和）6,601艇（9/3〜9/10 の1週間だけ。途中で止まっていた）。
+- 本番の pipeline._original が場の公式サイトから取った "orig"（var/state/日付/場-R.json）が学習に使われていなかった
+  → minamo/ml/original_live.py・`python -m minamo ml-original-live`（cron daily）で original_live.csv に書き出し、load_original が読む（いちばん弱い）。
+- ボートレース日和の取り寄せ（ml-original --days 365、3〜5秒に1件・300件ごとに3分休み）は裏で数日かけて広げる。
+
 ## 公式のダウンロードデータ（PR #142）
 
 - minamo/ml/official.py・`python -m minamo ml-official [--from --to --fan --peek YYYYMMDD]`：

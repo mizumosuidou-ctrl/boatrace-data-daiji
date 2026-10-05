@@ -56,6 +56,7 @@ def main() -> None:
     mlx.add_argument("--to", dest="date_to", help="YYYYMMDD（省くと昨日）")
     mlx.add_argument("--fan", action="store_true", help="ファン手帳も（まだ取っていない期だけ）")
     mlx.add_argument("--peek", metavar="YYYYMMDD", help="1日分の中身と読み取れた数を見るだけ（書き出さない）")
+    sub.add_parser("ml-original-live", help="本番で取ったオリジナル展示（var/state の orig）を学習の材料に書き出す（昨日まで、取り終えた日はとばす）")
     mly = sub.add_parser("ml-years", help="過去何年分を学習に使うと良くなるかを、同じ検証期間で比べる（良くなったときだけ採用）")
     mly.add_argument("--raw", default=None)
     mly.add_argument("--dry-run", action="store_true", help="比べるだけで、採用（train_window.json）は書かない")
@@ -204,6 +205,10 @@ def main() -> None:
             n = official.run(raw, args.date_from, args.date_to)
             f = official.run_fan(raw) if args.fan else 0
             print(f"取り込み完了: 競走成績・番組表 {n} 日" + (f"、ファン手帳 {f} 期" if args.fan else ""))
+    elif args.cmd == "ml-original-live":
+        from .ml import live, original_live
+
+        print(f"本番のオリジナル展示を書き出しました: {original_live.harvest(live.ML_DIR / 'raw')} 艇")
     elif args.cmd == "ml-years":
         from .ml import live, train
 
