@@ -1208,3 +1208,46 @@ def test_formation_one_report():
     out = "\n".join(ev_check.formation_one_report(races))
     assert "15-5." in out and "①〈②③④  60R  ①1着 100.0%" in out and "①〈②④③  60R  ①1着 0.0%" in out
     assert "回収率 333.3%" in out  # 1-234-234 の6点で 2000円/600円
+
+
+def test_rtm_learn(tmp_path):
+    """RTMの艇ごとの評価（最後の版）とMINAMOの検証期間の確率を合わせ、RTMの点数を足すと当たり方がよくなるかを見る。
+    架空のデータ：RTMの rt_score が高い艇ほど、MINAMOの確率より勝ちやすいようにしておく → 重みが＋で対数損失が下がる。"""
+    import pandas as pd
+    from minamo.ml import rtm_learn
+
+    rng = np.random.default_rng(0)
+    rows, tp = [], []
+    for i in range(600):
+        rid = f"2026{8 + i // 300:02d}{1 + i % 28:02d}-{1 + i % 24:02d}-{1 + i % 12:02d}"
+        d, v, rno = rid[:8], rid[9:11], rid[12:]
+        p = np.array([0.5, 0.15, 0.12, 0.1, 0.08, 0.05])
+        rt = rng.normal(size=6)
+        true = p * np.exp(0.8 * rt)
+        win = rng.choice(6, p=true / true.sum())
+        for rev in (1, 2):  # 古い版は点数がでたらめ（最後の版だけ使う）
+            sc = rt if rev == 2 else rng.normal(size=6)
+            order = np.argsort(-sc)
+            for k, l in enumerate(order):
+                rows.append({"race_date": d, "venue": v, "race_no": str(int(rno)), "mode": "DEEP", "method_id": "toda-deep-test",
+                             "revision": rev, "created_at": f"2026-08-01T0{rev}:00", "capture_mode": "LIVE", "pos": k + 1,
+                             "lane": l + 1, "course": l + 1, "score": 50 + 10 * sc[l], "st_score": 50, "rt_score": 50 + 10 * sc[l],
+                             "motor_score": rng.normal(), "finish_score": 50, "escape_index": "{}" if k == 0 else "",
+                             "pred_order": "", "evidence": ""})
+        for l in range(6):
+            tp.append({"race_id": rid, "lane": l + 1, "finish": 1 if l == win else 2 + (l > win), "course_i": l + 1,
+                       "p_pre": p[l], "p_post": None})
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pd.DataFrame(rows).to_csv(raw / "rtm_rank.csv", index=False)
+    pd.DataFrame(tp).drop_duplicates(["race_id", "lane"]).to_csv(tmp_path / "test_preds.csv.gz", index=False)
+    rank = rtm_learn.load_rank(raw)
+    assert set(rank["revision"]) == {2}
+    rs = rtm_learn.races(rank, rtm_learn.load_minamo(tmp_path), "DEEP（場別）")
+    assert len(rs) > 300
+    w = rtm_learn._fit(rs, ("rt_score",))
+    assert w[1] > 0.4
+    text = rtm_learn.build(tmp_path, raw)
+    assert "■ DEEP（場別）" in text and "レースタイム点" in text and "RTMが①以外を1番手にしたレース" in text
+    line = next(l for l in text.splitlines() if l.strip().startswith("レースタイム点"))
+    assert "（-0." in line  # 対数損失が下がる
