@@ -1298,3 +1298,30 @@ def test_rtm_learn_cutoff_and_timing(tmp_path):
     assert set(rtm_learn.load_rank(raw)["revision"]) == {3}
     out = "\n".join(rtm_learn.timing_report(raw, dl, 5.5))
     assert "最初の版：締切の真ん中 20.0分前（5.5分前までに出ていた 100%）" in out and "最後の版：真ん中 2.0分前" in out
+
+
+def test_cherry_picks_and_report():
+    """🍒穴狙い🍒：隣より外が0.4以上速い所（一番差の大きい所）を見つけ、①頭以外の12点を選ぶ。B は攻める艇とその外の頭だけ。"""
+    from itertools import permutations
+
+    from minamo.ml import ev_check
+
+    probs = {"-".join(map(str, t)): 1.0 / (1 + t[0] * 10 + t[1] + t[2] / 10) for t in permutations(range(1, 7), 3)}
+    r = {"course_of": {l: l for l in range(1, 7)}, "sr": {1: 3.0, 2: 3.2, 3: 2.7, 4: 3.6, 5: 3.0, 6: 4.0}, "probs": probs}
+    assert ev_check.cherry_gap(r)[0] == 4  # ②〈③ 0.5 と ④〈⑤ 0.6 → 一番差の大きい ④〈⑤
+    a = ev_check.cherry_picks(r, "A")
+    assert len(a) == 12 and not any(c.startswith("1-") for c in a) and a[0].startswith("2-")
+    b = ev_check.cherry_picks(r, "B")
+    assert len(b) == 12 and {c[0] for c in b} <= {"5", "6"}
+    assert ev_check.cherry_gap({"sr": {1: 3.0, 2: 3.1, 3: 3.2, 4: 3.3, 5: 3.4}}) is None
+    races = []
+    for i in range(400):
+        gap = i % 2 == 0
+        races.append({"race": f"2026{i:05d}", "course_of": {l: l for l in range(1, 7)}, "probs": probs,
+                      "sr": {1: 3.0, 2: 2.5 if gap else 3.1, 3: 3.2, 4: 3.3, 5: 3.4, 6: 3.5},
+                      "t5": {"1-2-3": 5.0, "2-1-3": 10.0}, "final": {"2-1-3": 30.0, "1-2-3": 4.0},
+                      "hit": "2-1-3" if gap and i % 4 == 0 else "1-2-3"})
+    out = "\n".join(ev_check.cherry_report(races))
+    assert "16. 🍒穴狙い🍒" in out and "一番差の大きい所が ①〈②" in out
+    line = next(l for l in out.splitlines() if "差あり" in l)
+    assert "回収率 125.0%" in line  # 差ありの半分で 2-1-3（30倍）が当たる：3000円÷（12点×100円×2R）
