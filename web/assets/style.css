@@ -841,6 +841,11 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .seg-big { display: flex; width: 100%; max-width: 640px; margin: 0 0 18px; }
 .seg-big button { flex: 1 1 0; min-width: 0; font-size: 15px; font-weight: 700; padding: 12px 6px; white-space: nowrap; }
 @media (max-width: 480px) { .seg-big button { font-size: 13px; padding: 11px 2px; letter-spacing: -.02em; } }
+/* ボタンが多いとスマホで文字がはみ出すので、2段にする（1段に3つまで） */
+@media (max-width: 640px) {
+  .seg-big { flex-wrap: wrap; border-radius: 14px; }
+  .seg-big button { flex: 1 0 33.3%; }
+}
 /* TIME予想 */
 .time-panel { padding: 18px 20px; line-height: 1.8; }
 .time-panel h4 { margin: 14px 0 4px; font-size: 14px; }

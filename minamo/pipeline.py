@@ -108,7 +108,7 @@ class Pipeline:
         ex_pick = st.get("ex_pick") or {}
         payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev_pick.get("combos"),
                                    ex=ex_pick.get("combos") if "ex_pick" in st else None, ev_items=ev_pick.get("items"),
-                                   time_pick=st.get("time_pick"))
+                                   time_pick=st.get("time_pick"), fm_pick=st.get("fm_pick"))
         payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
         payload["ev_at"] = ev_pick.get("at")
         payload["pick_fixed"] = st.get("pick_fixed")  # 試験中の買い目を固定した時刻（それまでは仮）
@@ -116,6 +116,9 @@ class Pipeline:
         payload["time_pick"] = st.get("time_pick")  # TIME予想（キーマン・買い目・判定）
         payload["ex_items"] = ex_pick.get("items")  # 試験中の2連単
         payload["ex_at"] = ex_pick.get("at")
+        payload["fm_pick"] = st.get("fm_pick")  # 試験中：隊形①-②（隊形・A/B/C・2連単）
+        fm = st.get("fm_pick") or {}
+        payload["fm_items"] = [{"combo": c, "odds": (fm.get("odds") or {}).get(c)} for c in fm.get("combos") or []] if fm else None
         payload["odds2"] = st.get("odds2") or {}
         payload["formation"] = self._formation(card, pred, vday)
         store.write_json(store.race_path(date, jcd, rno), payload)
@@ -252,6 +255,10 @@ class Pipeline:
                 if odds2:  # 試験中：2連単（補正した3連単の確率を足して2連単に。2連単のオッズで期待値1.2以上・最大3点）
                     xc, xi = ([], []) if skip else store.ex_picks(tri, odds, odds2, cal)
                     st["ex_pick"] = {"combos": xc, "items": xi, "at": now.isoformat(), "skip": skip}
+                fm = store.fm_pick(pr.boats)  # 試験中：隊形①-②（②が速い見送りとは別。A の隊形で2連単①-②）
+                if fm is not None:
+                    st["fm_pick"] = {**fm, "at": now.isoformat(),
+                                     "odds": {c: odds2.get(c) for c in fm["combos"] + fm["ref"] if odds2 and odds2.get(c)}}
                 tp = self._time_pick(card, before, odds, pr, st)  # TIME予想（サーバーに設定があるときだけ）
                 if tp:
                     st["time_pick"] = {**tp, "at": now.isoformat()}
