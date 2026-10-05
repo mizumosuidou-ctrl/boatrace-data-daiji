@@ -400,6 +400,22 @@ def peek(date: str, dl: Optional[Downloader] = None) -> str:
         for r in rows["facts"][:6]:
             lines.append("   " + ", ".join(f"{c}={r[c]}" for c in ("venue", "race_no", "lane", "course", "toban", "grade", "st",
                                                                       "finish", "race_f", "motor_no", "race_time_ms")))
+        no_grade = sorted({r["venue"] for r in rows["facts"] if not r["grade"]})
+        if no_grade and b:
+            lines.append(f"== 番組表で級別を読めなかった場：{', '.join(no_grade)}。その場の番組表の、読めなかった行の見本")
+            btext, cur, shown = unlzh(b), None, 0
+            for l in btext.splitlines():
+                m = re.match(r"^(\d{2})BBGN", l)
+                if m:
+                    cur = m.group(1)
+                if cur in no_grade and re.match(r"^\s*[1-6]\s*\d{4}", l) and not B_ROW.match(l) and shown < 4:
+                    lines.append("   " + repr(l))
+                    shown += 1
+                if cur in no_grade and ("Ｒ" in l and "Ｈ" in l) and shown < 6:
+                    lines.append("   見出し " + repr(l))
+                    shown += 1
+            if not shown:
+                lines.append("   （その場の番組表が、ファイルにありません）")
         for key in ("weather", "kimarite", "ex", "motors"):
             if rows[key]:
                 lines.append(f"   {key}: {rows[key][0]}")
