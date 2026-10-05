@@ -1325,3 +1325,22 @@ def test_cherry_picks_and_report():
     assert "16. 🍒穴狙い🍒" in out and "一番差の大きい所が ①〈②" in out
     line = next(l for l in out.splitlines() if "差あり" in l)
     assert "回収率 125.0%" in line  # 差ありの半分で 2-1-3（30倍）が当たる：3000円÷（12点×100円×2R）
+
+
+def test_survive_report():
+    """17. 🍒の逆：差のある所の外の艇（攻める艇）と①で、①が残る側の2連単・3連単。"""
+    from itertools import permutations
+
+    from minamo.ml import ev_check
+
+    probs = {"-".join(map(str, t)): 1 / 120 for t in permutations(range(1, 7), 3)}
+    races = []
+    for i in range(400):
+        races.append({"race": f"2026{i:05d}", "course_of": {l: l for l in range(1, 7)}, "probs": probs,
+                      "sr": {1: 3.0, 2: 3.1, 3: 2.6, 4: 3.3, 5: 3.4, 6: 3.5},  # ②〈③ 0.5 → 攻める艇は③
+                      "t5": {"1-3-2": 9.0}, "final": {"1-3-2": 10.0, "3-1-2": 20.0}, "xfinal": {"1-3": 4.0, "3-1": 8.0},
+                      "hit": "1-3-2" if i % 2 else "2-4-5"})
+    out = "\n".join(ev_check.survive_report(races))
+    assert "17. 🍒の逆" in out and "一番差の大きい所が ②〈③（攻める艇 ③）  400R" in out
+    line = next(l for l in out.splitlines() if "2連単 ①-攻める艇（1点）" in l)
+    assert "回収率 200.0%" in line  # 2回に1回 1-3（4倍）

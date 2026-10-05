@@ -1340,6 +1340,56 @@ def cherry_report(races: list[dict]) -> list[str]:
     return lines
 
 
+def survive_report(races: list[dict]) -> list[str]:
+    """17. 🍒の逆：外の艇の方がスタートが速い所（0.4以上）があるレースで、①が残る側を買う。
+    攻める艇＝一番差の大きい所の外の艇（k+1コース）。2連単 ①-攻める艇・攻める艇-①・①-全、3連単 ①-攻-全・攻-①-全・両方。
+    決まった選び方なので補正は使わず、検証期間の全部を前半・後半に。5分前オッズのあるレース、払戻は確定オッズ。"""
+    from .. import formation
+
+    rs = sorted([{**r, "xhit": "-".join(r["hit"].split("-")[:2])} for r in races
+                 if r.get("sr") and r.get("course_of") and all(c in r["sr"] for c in range(1, 6))], key=lambda r: r["race"])
+    if len(rs) < 200:
+        return []
+    mid = rs[len(rs) // 2]["race"]
+    c = formation.CIRCLED
+
+    def lanes(r):
+        g = cherry_gap(r)
+        lane = {cc: l for l, cc in r["course_of"].items()}
+        return (lane.get(1), lane.get(g[0] + 1)) if g else (None, None)
+
+    def mk(f):
+        def pick(r):
+            one, a = lanes(r)
+            return f(one, a) if one and a else []
+        return pick
+    rest = lambda a, b: [x for x in range(1, 7) if x not in (a, b)]
+    plans = [("2連単 ①-攻める艇（1点）", mk(lambda o, a: [f"{o}-{a}"]), "xfinal"),
+             ("2連単 攻める艇-①（1点）", mk(lambda o, a: [f"{a}-{o}"]), "xfinal"),
+             ("2連単 ①-攻・攻-①（2点）", mk(lambda o, a: [f"{o}-{a}", f"{a}-{o}"]), "xfinal"),
+             ("2連単 ①-全（5点）", mk(lambda o, a: [f"{o}-{x}" for x in range(1, 7) if x != o]), "xfinal"),
+             ("3連単 ①-攻-全（4点）", mk(lambda o, a: [f"{o}-{a}-{x}" for x in rest(o, a)]), "final"),
+             ("3連単 攻-①-全（4点）", mk(lambda o, a: [f"{a}-{o}-{x}" for x in rest(o, a)]), "final"),
+             ("3連単 ①-攻-全・攻-①-全（8点）", mk(lambda o, a: [f"{o}-{a}-{x}" for x in rest(o, a)] + [f"{a}-{o}-{x}" for x in rest(o, a)]), "final")]
+    groups = [("差あり（どこか0.4以上）", lambda r: cherry_gap(r) is not None)]
+    groups += [(f"一番差の大きい所が {c[k - 1]}〈{c[k]}（攻める艇 {c[k]}）", lambda r, k=k: (cherry_gap(r) or (0,))[0] == k) for k in range(1, 5)]
+    lines = [f"\n17. 🍒の逆：外の方がスタートが{CHERRY_GAP}以上速い所があるレースで、①が残る側を買う（検証期間 {len(rs):,}R を前半・後半に。"
+             "5分前オッズのあるレース、払戻は確定オッズ。1点100円）",
+             f"    {_pad('レース・買い方', 44)}{_pad('前半', 48)}{_pad('後半', 48)}全部"]
+    for name, cond in groups:
+        g = [r for r in rs if cond(r)]
+        if len(g) < 30:
+            continue
+        lines.append(f"  ■ {name}  {len(g):,}R")
+        for pname, pick, odds in plans:
+            gg = [r for r in g if r.get(odds)]
+            if len(gg) < 30:
+                continue
+            a, b = [r for r in gg if r["race"] < mid], [r for r in gg if r["race"] >= mid]
+            lines.append(f"    {_pad(pname, 44)}{_pat_cell(a, pick, odds)}  {_pat_cell(b, pick, odds)}  {_pat_cell(gg, pick, odds)}")
+    return lines
+
+
 def points_report(races: list[dict]) -> list[str]:
     """7. 3連単の点数の比べ（補正B・後半）：今の買い方と、上限を増やす・条件をゆるめる・いつも同じ点数で買う。"""
     races = sorted(races, key=lambda r: r["race"])
@@ -1463,4 +1513,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += one_two_report(races)
     lines += formation_one_report(races)
     lines += cherry_report(races)
+    lines += survive_report(races)
     return "\n".join(lines)
