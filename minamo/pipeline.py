@@ -109,7 +109,7 @@ class Pipeline:
         payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev_pick.get("combos"),
                                    ex=ex_pick.get("combos") if "ex_pick" in st else None, ev_items=ev_pick.get("items"),
                                    time_pick=st.get("time_pick"), fm_pick=st.get("fm_pick"),
-                                   ag_pick=st.get("ag_pick"), ch_pick=st.get("ch_pick"))
+                                   ag_pick=st.get("ag_pick"), ch_pick=st.get("ch_pick"), xa_pick=st.get("xa_pick"))
         payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
         payload["ev_at"] = ev_pick.get("at")
         payload["pick_fixed"] = st.get("pick_fixed")  # 試験中の買い目を固定した時刻（それまでは仮）
@@ -123,6 +123,8 @@ class Pipeline:
         payload["ag_pick"] = st.get("ag_pick")  # 試験中：一致（RTMの1番手・MINAMOの見立て・2連単）
         ag = st.get("ag_pick") or {}
         payload["ag_items"] = [{"combo": c, "p": ag.get("p"), "odds": (ag.get("odds") or {}).get(c)} for c in ag.get("combos") or []] if ag else None
+        payload["xa_pick"] = st.get("xa_pick")  # 2連単（全レース。見送りなし）
+        payload["xa_items"] = (st.get("xa_pick") or {}).get("items")
         payload["ch_pick"] = st.get("ch_pick")  # 🍒穴狙い🍒（記録だけ）
         ch = st.get("ch_pick") or {}
         tri_p = dict(pred.trifecta)
@@ -273,6 +275,7 @@ class Pipeline:
                 if ag is not None:
                     st["ag_pick"] = {**ag, "at": now.isoformat(),
                                      "odds": {c: odds2.get(c) for c in ag["combos"] if odds2 and odds2.get(c)}}
+                st["xa_pick"] = {**store.xa_pick(tri, odds2), "at": now.isoformat()}  # 2連単（全レース。見送りなし）
                 ch = store.cherry_pick(pr.boats, tri, odds)  # 🍒穴狙い🍒（記録だけ。②が速い見送りとは別）
                 if ch is not None:
                     st["ch_pick"] = {**ch, "at": now.isoformat(), "odds": {c: odds.get(c) for c in ch["combos"] if odds.get(c)}}

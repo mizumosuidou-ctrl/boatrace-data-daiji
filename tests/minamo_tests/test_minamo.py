@@ -203,6 +203,17 @@ def test_losing_streaks_in_deadline_order():
     assert store.losing_streaks([])["max"] == 0
 
 
+def test_xa_pick_buys_top_exacta_every_race():
+    """2連単（全レース）：見送りなしで、3連単の確率を足した2連単の上位3点。結果の2連単で数える。"""
+    tri = [("1-2-3", 0.20), ("1-2-4", 0.10), ("1-3-2", 0.15), ("2-1-3", 0.12), ("1-4-2", 0.05), ("3-1-2", 0.08)]
+    pick = store.xa_pick(tri, {"1-2": 3.1, "1-3": 6.0})
+    assert pick["combos"] == ["1-2", "1-3", "2-1"]
+    assert pick["items"][0] == {"combo": "1-2", "p": 0.3, "odds": 3.1} and pick["items"][2]["odds"] is None
+    res = RaceResult(rows=[], trifecta="1-3-2", trifecta_payout=1500, exacta="1-3", exacta_payout=620)
+    st = store.settle({"picks": []}, res, xa_pick=pick)
+    assert st["xa_bought"] and st["xa_hit"] and st["xa_rank"] == 2 and st["xa_stake"] == 300 and st["xa_return"] == 620
+
+
 def test_settle_hit_and_miss():
     res = RaceResult(rows=[ResultRow(place=i + 1, boat=b) for i, b in enumerate([1, 2, 3, 4, 5, 6])], trifecta="1-2-3", trifecta_payout=1230)
     hit = store.settle({"honmei": 1, "picks": [{"combo": "1-2-3"}, {"combo": "1-3-2"}]}, res)
