@@ -86,6 +86,9 @@ def main() -> None:
     mlq.add_argument("--raw", default=None)
     mle = sub.add_parser("ev-check", help="買い目の選び方（確率上位・期待値）を、学習に使っていない期間のオッズと結果で比べる")
     mle.add_argument("--raw", default=None)
+    mwk = sub.add_parser("weekly", help="週報：直近7日の実戦の成績と学習の様子（--send で Discord にも送る）")
+    mwk.add_argument("--send", action="store_true")
+    mwk.add_argument("--data", help="web/data の場所（既定は MINAMO_DATA_DIR）")
     mll = sub.add_parser("live-check", help="実戦の成績（試験中の買い目）を、過去の検証と同じ物差しで見る表を出す")
     mll.add_argument("--data", help="web/data の場所（既定は MINAMO_DATA_DIR）")
     mll.add_argument("--odds", action="store_true", help="実戦で決めたときのオッズを、データベースの5分前・1分前・確定オッズと比べる")
@@ -184,6 +187,13 @@ def main() -> None:
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
         print(f"{facts_backfill.fill_kimarite(raw, args.date_from, args.date_to)} days fetched")
+    elif args.cmd == "weekly":
+        from . import weekly
+
+        text = weekly.build(Path(args.data) if args.data else store.DATA_DIR)
+        print(text)
+        if args.send:
+            print(f"（Discord に {weekly.send(text)} 通送りました）")
     elif args.cmd == "live-check":
         from . import live_check
 
