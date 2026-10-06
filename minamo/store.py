@@ -279,7 +279,7 @@ def co_picks(trifecta: list, odds: Optional[dict[str, float]], th: float = CO_MI
 def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Optional[list] = None,
            ex: Optional[list] = None, ev_items: Optional[list] = None, time_pick: Optional[dict] = None,
            fm_pick: Optional[dict] = None, ag_pick: Optional[dict] = None, ch_pick: Optional[dict] = None,
-           xa_pick: Optional[dict] = None) -> dict:
+           xa_pick: Optional[dict] = None, late: Optional[dict] = None) -> dict:
     picks = [p["combo"] for p in ai.get("picks", [])]
     order = result.order
     hit = result.trifecta if result.trifecta in picks else None
@@ -354,6 +354,16 @@ def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Option
         out["ag_hit"] = result.exacta in cs
         out["ag_stake"] = 100 * len(cs)
         out["ag_return"] = (result.exacta_payout or 0) if result.exacta in cs else 0
+    # 記録だけ：同じルールで締切の2分前・1分前に決め直した試し買い（ev2・ev1＝3連単、ex2・ex1＝2連単）
+    for k, cs in (late or {}).items():
+        exa = k.startswith("ex")
+        won = result.exacta if exa else result.trifecta
+        if not won:
+            continue
+        out[f"{k}_bought"] = bool(cs)
+        out[f"{k}_hit"] = won in cs
+        out[f"{k}_stake"] = 100 * len(cs)
+        out[f"{k}_return"] = ((result.exacta_payout if exa else payout) or 0) if won in cs else 0
     # 2連単（全レース。見送りなし・確率の上位3点）
     if xa_pick is not None and result.exacta:
         cs = xa_pick.get("combos") or []
@@ -400,6 +410,7 @@ def build_race(
     ag_pick: Optional[dict] = None,
     ch_pick: Optional[dict] = None,
     xa_pick: Optional[dict] = None,
+    late: Optional[dict] = None,
 ) -> dict:
     be = {b.boat: b for b in (before.entries if before else [])}
     rt = (getattr(card, "racetime", None) or {}).get("racers") or {}
@@ -482,7 +493,7 @@ def build_race(
             "rows": [asdict(r) for r in result.rows],
         }
         if not result.cancelled and result.trifecta:
-            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick, fm_pick, ag_pick, ch_pick, xa_pick)
+            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick, fm_pick, ag_pick, ch_pick, xa_pick, late)
     return payload
 
 

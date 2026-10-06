@@ -409,10 +409,14 @@ def test_pipeline_full_day(sandbox, monkeypatch):
     race = json.loads(race_file.read_text())
     fixed_at = race["ev_at"]
     assert race["pick_fixed"] == fixed_at and fixed_at.startswith("2026-10-01T20:40")
-    # 固定したあとは、取り直しても買い目を変えない
+    # 固定したあとは、取り直しても買い目を変えない。2分前・1分前には同じルールで決め直した組を別に記録する（記録だけ）
+    assert pipe.tick(date, deadline - timedelta(minutes=1.5)) == 1
+    race = json.loads(race_file.read_text())
+    assert race["ev2_at"].startswith("2026-10-01T20:43") and race["ev1_at"] is None
     assert pipe.tick(date, deadline - timedelta(minutes=1)) == 1
     race = json.loads(race_file.read_text())
     assert race["ev_at"] == fixed_at and race["pick_fixed"] == fixed_at
+    assert race["ev1_at"].startswith("2026-10-01T20:44") and isinstance(race["ev1_pick"], list)
     # TIME予想（設定があるとき）：判定と、締切前に決めた時刻
     assert race["time_pick"]["status"] in ("予想可能", "進入待ち", "データ不足", "キーマン不成立")
     assert race["time_pick"]["at"] == fixed_at and race["time_pick"]["version"] == "test"
@@ -422,6 +426,7 @@ def test_pipeline_full_day(sandbox, monkeypatch):
     assert race["result"]["trifecta"] == "4-1-2" and race["settle"] is not None
     # 試験中のオッズで絞った買い目：締切前に決めた組（見送りなら空）を照合して数える
     assert isinstance(race["ev_pick"], list) and "ev_hit" in race["settle"]
+    assert "ev2_hit" in race["settle"] and "ev1_hit" in race["settle"]
     assert race["settle"]["ev_stake"] == 100 * len(race["ev_pick"])
     # 「今買う候補」ページ用：決めたときの確率・オッズ・期待値と、一覧への写し
     assert [x["combo"] for x in race["ev_items"]] == race["ev_pick"] and race["ev_at"]
@@ -446,7 +451,7 @@ def test_pipeline_full_day(sandbox, monkeypatch):
     assert sp["races"] == 1 and sp["current"] + sp["hits"] == 1 and record["streaks"]["ev"]["races"] <= 1
     # オッズ履歴：直前情報を取るたびに1行、確定後に「final」を1行
     hist = [json.loads(x) for x in (sandbox / "state" / "odds" / f"{date}.jsonl").read_text().splitlines()]
-    assert [h["kind"] for h in hist] == ["pre"] * 4 + ["final"] and [h["min"] for h in hist[:4]] == [20.0, 10.0, 5.0, 1.0]
+    assert [h["kind"] for h in hist] == ["pre"] * 5 + ["final"] and [h["min"] for h in hist[:5]] == [20.0, 10.0, 5.0, 1.5, 1.0]
     # ほかの券種のオッズは締切12分前から（20分前は取らない、10分前は取る）
     assert "more" not in hist[0] and {"win", "place", "wide", "trio"} <= set(hist[1]["more"])
     assert hist[0]["t2"]["1-2"] == pytest.approx(1.5) and len(hist[0]["t2"]) == 30 and len(hist[0]["t3"]) == 120

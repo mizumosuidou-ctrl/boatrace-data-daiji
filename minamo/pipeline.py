@@ -31,6 +31,9 @@ MORE_ODDS_MIN = float(os.environ.get("MINAMO_MORE_ODDS_MIN", "12"))  # ほかの
 BEFORE_REFRESH = timedelta(minutes=int(os.environ.get("MINAMO_BEFORE_REFRESH_MIN", "4")))
 # 試験中の買い目を決めて固定する、締切の何分前か（人が買えるのは5〜3分前まで。10/4 の検証：5分前のオッズで決めると3連単124%・2連単120%）
 PICK_FIX_MIN = float(os.environ.get("MINAMO_PICK_FIX_MIN", "5.5"))
+# 記録だけ：同じルールの試し買い（3連単・2連単）を、締切の2分前・1分前に決め直した組（5分前に固定した組と同じレースで比べる）
+LATE_FIX = (("2", 2.0, 1.0), ("1", 1.0, 0.0))  # (名前, この分数以下で, この分数より前)
+LATE_KINDS = ("ev2", "ex2", "ev1", "ex1")
 RESULT_DELAY = timedelta(minutes=int(os.environ.get("MINAMO_RESULT_DELAY_MIN", "6")))
 # 結果の取り込み：最初の20回は毎分、そのあとは5分おきに、締切から12時間まで取り直す（あきらめない）
 RESULT_FAST_TRIES = 20
@@ -109,7 +112,8 @@ class Pipeline:
         payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev_pick.get("combos"),
                                    ex=ex_pick.get("combos") if "ex_pick" in st else None, ev_items=ev_pick.get("items"),
                                    time_pick=st.get("time_pick"), fm_pick=st.get("fm_pick"),
-                                   ag_pick=st.get("ag_pick"), ch_pick=st.get("ch_pick"), xa_pick=st.get("xa_pick"))
+                                   ag_pick=st.get("ag_pick"), ch_pick=st.get("ch_pick"), xa_pick=st.get("xa_pick"),
+                                   late={k: st[f"{k}_pick"].get("combos") or [] for k in LATE_KINDS if st.get(f"{k}_pick")})
         payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
         payload["ev_at"] = ev_pick.get("at")
         payload["pick_fixed"] = st.get("pick_fixed")  # 試験中の買い目を固定した時刻（それまでは仮）
@@ -123,6 +127,11 @@ class Pipeline:
         payload["ag_pick"] = st.get("ag_pick")  # 試験中：一致（RTMの1番手・MINAMOの見立て・2連単）
         ag = st.get("ag_pick") or {}
         payload["ag_items"] = [{"combo": c, "p": ag.get("p"), "odds": (ag.get("odds") or {}).get(c)} for c in ag.get("combos") or []] if ag else None
+        for k in LATE_KINDS:  # 記録だけ：2分前・1分前に決め直した試し買い
+            lp = st.get(f"{k}_pick")
+            payload[f"{k}_pick"] = lp.get("combos") if lp else None
+            payload[f"{k}_items"] = lp.get("items") if lp else None
+            payload[f"{k}_at"] = lp.get("at") if lp else None
         payload["xa_pick"] = st.get("xa_pick")  # 2連単（全レース。見送りなし）
         payload["xa_items"] = (st.get("xa_pick") or {}).get("items")
         payload["ch_pick"] = st.get("ch_pick")  # 🍒穴狙い🍒（記録だけ）
@@ -225,7 +234,9 @@ class Pipeline:
                     elif deadline - PRE_WINDOW <= now < deadline + timedelta(minutes=1):
                         last = st.get("before_at")
                         fix_now = not st.get("pick_fixed") and deadline - now <= timedelta(minutes=PICK_FIX_MIN)
-                        if not last or now - datetime.fromisoformat(last) >= BEFORE_REFRESH or fix_now:
+                        left = (deadline - now).total_seconds() / 60
+                        late_now = bool(st.get("pick_fixed")) and any(lo < left <= hi and f"ev{tag}_pick" not in st for tag, hi, lo in LATE_FIX)
+                        if not last or now - datetime.fromisoformat(last) >= BEFORE_REFRESH or fix_now or late_now:
                             self._refresh(date, vd, rno, st, now)
                             changed += 1
                 except requests.RequestException as exc:
@@ -287,6 +298,11 @@ class Pipeline:
                     st["pick_fixed"] = now.isoformat()
                     # 決めた買い目を Discord に知らせる（設定があるときだけ）
                     notify.maybe_notify(st, date, vd.jcd, rno, card.deadline, mins_left)
+        if odds and card.deadline and st.get("pick_fixed"):
+            mins_left = self._mins_left(date, card.deadline, now)
+            for tag, hi, lo in LATE_FIX:
+                if lo < mins_left <= hi and f"ev{tag}_pick" not in st:
+                    self._late_pick(st, tag, date, card, before, odds, odds2, now)
         st["odds"] = odds or st.get("odds")
         st["odds2"] = odds2 or st.get("odds2")
         st["before_at"] = now.isoformat()
@@ -296,6 +312,22 @@ class Pipeline:
             st["ai_stage"] = "exhibition"
         self._save(date, f"{vd.jcd}-{rno:02d}", st)
         self.publish(date, vd.jcd, rno, vd)
+
+    @staticmethod
+    def _late_pick(st: dict, tag: str, date: str, card, before, odds: dict, odds2: Optional[dict], now: datetime) -> None:
+        """記録だけ：5分前に固定した試し買いと同じルール（補正B・期待値1.2以上・帯・②が速い見送り）で、いまのオッズで決め直す。"""
+        cal = store.ev_calib()
+        pr = predict(card, before, odds)
+        tri = pr.trifecta
+        skip = store.trial_skip(pr.boats)
+        band = date >= store.BAND_FROM
+        combos = [] if skip else store.ev_picks(tri, odds, cal, band=band)
+        prob = dict(store.calibrate(tri, odds, *cal) if cal else tri)
+        st[f"ev{tag}_pick"] = {"combos": combos, "at": now.isoformat(), "skip": skip,
+                               "items": [{"combo": c, "p": round(prob[c], 4), "odds": odds[c], "ev": round(prob[c] * odds[c], 2)} for c in combos]}
+        if odds2:
+            xc, xi = ([], []) if skip else store.ex_picks(tri, odds, odds2, cal, band=band)
+            st[f"ex{tag}_pick"] = {"combos": xc, "items": xi, "at": now.isoformat(), "skip": skip}
 
     def _formation(self, card: RaceCard, pred, vday: Optional[VenueDay]) -> Optional[dict]:
         """スタート隊形トゥエルブと、その場・種類・隊形の過去成績（表が無ければ None）。"""
