@@ -862,6 +862,8 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .my-del { padding: 3px 10px; font-size: 11px; }
 .hit-stamp small { display: block; font-size: .45em; letter-spacing: .05em; margin-top: 2px; }
 .trial-hits { margin: 8px 2px 0; line-height: 1.8; }
+.bet-count { margin: 0 2px 12px; line-height: 1.8; }
+.ticket.value { border-style: dashed; opacity: .78; }
 /* 成績の早見表 */
 .rb-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .rb-tile { padding: 16px 18px; min-width: 0; }
