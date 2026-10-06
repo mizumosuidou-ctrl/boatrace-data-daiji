@@ -556,6 +556,10 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .sheet td.name { font-family: var(--f-sans); font-weight: 700; }
 .sheet tr:last-child td { border-bottom: 0; }
 .sheet td.r1 { color: var(--accent); font-weight: 700; }
+.sheet table.ab { min-width: 1280px; }
+.sheet table.ab th:nth-child(-n+4), .sheet table.ab td:nth-child(-n+4) { text-align: left; }
+.formation-box { margin: 10px 2px 12px; line-height: 1.9; }
+.formation-box .big-label { font-size: 20px; letter-spacing: .04em; }
 .sheet td.pos { color: var(--hit); }
 .sheet td.neg { color: var(--miss); }
 .sheet td.r1::after { content: "●"; font-size: 7px; vertical-align: 3px; margin-left: 4px; }
