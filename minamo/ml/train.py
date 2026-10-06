@@ -117,6 +117,9 @@ def _races(df: pd.DataFrame, prob: np.ndarray, q: Optional[np.ndarray] = None):
 # 2着・3着の残りやすさをコースごとに直す倍率（4コースを1.0に固定）。1着を逃した①が2着・3着に残りすぎる、などを直す
 PLACE_MULT_GRID = (0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.4, 1.6, 1.8)
 PLACE_MULT_FREE = (0, 1, 2, 4, 5)
+# 本番で使うか。10/6 の ev-check 20-2：①の3着内の見立ては実際に近づく（87.0%→82.3%、実際81.9%）が、
+# 回収率は下がる（上位6点 88.5%→87.2%、期待値1.2以上 91.2%→79.7%）。①が負けて2着・3着に残る組が妙味の源なので、記録だけ
+PLACE_MULT_ADOPT = False
 
 
 def race_arrays(df: pd.DataFrame, prob: np.ndarray, decay: float, q: Optional[np.ndarray] = None, w: float = 0.0):
@@ -281,7 +284,7 @@ def _mult_experiment(split, model, feats, decay: float, place: dict, name: str, 
     base = _evaluate_mult(te_, p_te, decay, q_te, w, [1.0] * 6)
     new = _evaluate_mult(te_, p_te, decay, q_te, w, mult)
     metrics[f"{name}_mult_base"], metrics[f"{name}_mult"] = base, new
-    adopt = mult != [1.0] * 6 and new["tri_ll"] < base["tri_ll"] and new["tri_top10"] >= base["tri_top10"] - 0.002
+    adopt = PLACE_MULT_ADOPT and mult != [1.0] * 6 and new["tri_ll"] < base["tri_ll"] and new["tri_top10"] >= base["tri_top10"] - 0.002
     return {**place, "mult": [round(x, 2) for x in mult], "mult_adopt": bool(adopt)}
 
 
@@ -583,7 +586,8 @@ def summary_ja(meta: dict) -> str:
         b, q = m.get(f"{name}_mult_base"), m.get(f"{name}_mult")
         if pl and b and q and pl.get("mult"):
             ms = " ".join(f"{i + 1}C×{x:g}" for i, x in enumerate(pl["mult"]))
-            lines.append(f"2着・3着の残りやすさ（コース別の倍率・{tag}）: " + ("使う" if pl.get("mult_adopt") else "使わない")
+            lines.append(f"2着・3着の残りやすさ（コース別の倍率・{tag}）: " + ("使う" if pl.get("mult_adopt") else
+                         "使わない（記録だけ。回収率が下がるため）" if not PLACE_MULT_ADOPT else "使わない")
                          + f"（{ms}、3連単の対数損失 {b['tri_ll']:.3f}→{q['tri_ll']:.3f}、"
                          f"10点的中 {b['tri_top10'] * 100:.1f}%→{q['tri_top10'] * 100:.1f}%、5点的中 {b['tri_top5'] * 100:.1f}%→{q['tri_top5'] * 100:.1f}%）")
     labels = {"fhold": "F持ちのスタート順位", "wall": "壁（2〜6コースの選手が入ったときの1コース1着率）", "wind": "風（展示後）", "race": "レース番号", "day": "節の初日・最終日",
