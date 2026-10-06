@@ -163,6 +163,10 @@ class MLPredictor:
             log.exception("abilities failed")
             return {}, {}, []
 
+    def place_mult(self, name: str) -> Optional[list]:
+        info = (self.meta.get("place") or {}).get(name) or {}
+        return info.get("mult") if info.get("mult_adopt") else None
+
     def predict(self, card, before=None) -> Optional[dict]:
         """{boat: {"p":..., "factors":{...}, "start_order":...}} と使ったモデル名。"""
         try:
@@ -214,6 +218,7 @@ class MLPredictor:
         return {"engine": "lightgbm-post" if use_post else "lightgbm-pre", "boats": out, "pl_decay": self.meta.get("pl_decay"),
                 "keep": keep,  # 買い目反映ありの報告登録アビリティ：買い目内に残す組の指示
                 "place_w": place_w,
+                "place_mult": self.place_mult("post" if use_post else "pre"),  # 2着・3着の残りやすさ（コース別の倍率。採用したときだけ）
                 "wind": "wind_tail" in feats}  # 風をモデルが使っていれば、場の風の表では補正しない
 
 

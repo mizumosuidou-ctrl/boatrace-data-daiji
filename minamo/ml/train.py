@@ -114,6 +114,71 @@ def _races(df: pd.DataFrame, prob: np.ndarray, q: Optional[np.ndarray] = None):
             yield pd_, actual, dict(zip(g["lane"], zip(g["q2"], g["q3"])))
 
 
+# 2着・3着の残りやすさをコースごとに直す倍率（4コースを1.0に固定）。1着を逃した①が2着・3着に残りすぎる、などを直す
+PLACE_MULT_GRID = (0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.4, 1.6, 1.8)
+PLACE_MULT_FREE = (0, 1, 2, 4, 5)
+
+
+def race_arrays(df: pd.DataFrame, prob: np.ndarray, decay: float, q: Optional[np.ndarray] = None, w: float = 0.0):
+    """レースごとの 1着の強さ・2着の強さ・3着の強さ・コース（0〜5、無ければ-1）・1-2-3着の位置（6艇にそろえた配列）。"""
+    d = df[["race_id", "lane", "finish"]].copy()
+    d["p"] = prob
+    d["c"] = (df["course"].fillna(df["lane"]) if "course" in df else df["lane"]).astype(int) - 1
+    use_q = q is not None and w > 0
+    if use_q:
+        d["q2"], d["q3"] = q[:, 0], q[:, 1]
+    P, S2, S3, C, A = [], [], [], [], []
+    for _, g in d.groupby("race_id", sort=False):
+        if len(g) > 6:
+            continue
+        order = g.dropna(subset=["finish"]).sort_values("finish")
+        if len(order) < 3 or list(order["finish"].iloc[:3]) != [1, 2, 3]:
+            continue
+        p = g["p"].to_numpy(float)
+        soft = p ** decay
+        s2 = soft ** (1 - w) * g["q2"].to_numpy(float) ** w if use_q else soft
+        s3 = soft ** (1 - w) * g["q3"].to_numpy(float) ** w if use_q else soft
+        pos = {l: i for i, l in enumerate(g["lane"])}
+        pad = lambda x, v=0.0: np.pad(np.asarray(x, float), (0, 6 - len(x)), constant_values=v)
+        P.append(pad(p)); S2.append(pad(s2)); S3.append(pad(s3))
+        C.append(pad(g["c"].clip(-1, 5).to_numpy(), -1))
+        A.append([pos[l] for l in order["lane"].iloc[:3]])
+    if not P:
+        return None
+    return np.array(P), np.array(S2), np.array(S3), np.array(C).astype(int), np.array(A).astype(int)
+
+
+def mult_ll(arr, mult) -> np.ndarray:
+    """コースごとの倍率を2着・3着の強さにかけたときの、実際の3連単の確率（レースごと）。"""
+    P, S2, S3, C, A = arr
+    m = np.where(C >= 0, np.asarray(mult, float)[np.clip(C, 0, 5)], 1.0)
+    s2, s3 = S2 * m, S3 * m
+    r = np.arange(len(P))
+    a, b, c = A[:, 0], A[:, 1], A[:, 2]
+    p1 = P[r, a] / P.sum(1)
+    p2 = s2[r, b] / np.maximum(s2.sum(1) - s2[r, a], 1e-12)
+    p3 = s3[r, c] / np.maximum(s3.sum(1) - s3[r, a] - s3[r, b], 1e-12)
+    return np.clip(p1 * p2 * p3, 1e-9, 1)
+
+
+def fit_place_mult(arr, passes: int = 3) -> list[float]:
+    """コースごとの倍率を、3連単の対数尤度が一番高くなるように1つずつ合わせる（調整用の期間で）。"""
+    mult = [1.0] * 6
+    best = float(np.log(mult_ll(arr, mult)).sum())
+    for _ in range(passes):
+        moved = False
+        for k in PLACE_MULT_FREE:
+            for g in PLACE_MULT_GRID:
+                t = list(mult)
+                t[k] = g
+                ll = float(np.log(mult_ll(arr, t)).sum())
+                if ll > best + 1e-6:
+                    best, mult, moved = ll, t, True
+        if not moved:
+            break
+    return mult
+
+
 def tune_place(df: pd.DataFrame, prob: np.ndarray, q: np.ndarray, decay: float, max_races: int = 6000) -> float:
     """2着・3着の専用モデルをどれだけ混ぜるか（0〜1）を、調整用の期間で3連単が一番当たる値に合わせる。"""
     races = list(_races(df, prob, q))[-max_races:]
@@ -143,7 +208,10 @@ def tune_decay(df: pd.DataFrame, prob: np.ndarray, max_races: int = 6000) -> flo
     return best
 
 
-def evaluate(df: pd.DataFrame, prob: np.ndarray, decay: float = PL_DECAY, q: Optional[np.ndarray] = None, w: float = 0.0) -> dict:
+def evaluate(df: pd.DataFrame, prob: np.ndarray, decay: float = PL_DECAY, q: Optional[np.ndarray] = None, w: float = 0.0,
+             mult: Optional[list] = None) -> dict:
+    if mult is not None:
+        return _evaluate_mult(df, prob, decay, q, w, mult)
     d = df[["race_id", "lane", "finish"]].copy()
     d["p"] = prob
     win_p = d.loc[d["finish"] == 1, "p"]
@@ -163,6 +231,64 @@ def evaluate(df: pd.DataFrame, prob: np.ndarray, decay: float = PL_DECAY, q: Opt
         res[f"tri_top{k}"] = v / n if n else 0.0
     res["tri_ll"] = tri_ll / n if n else 0.0  # 3連単の対数損失（小さいほど良い）
     return res
+
+
+def _evaluate_mult(df, prob, decay, q, w, mult) -> dict:
+    """evaluate と同じ指標（3連単の上位1・5・10点の的中と対数損失）を、コースごとの倍率を入れた3連単で。"""
+    arr = race_arrays(df, prob, decay, q, w)
+    res = {"races": 0, "tri_ll": 0.0, "tri_top1": 0.0, "tri_top5": 0.0, "tri_top10": 0.0}
+    if arr is None:
+        return res
+    P, S2, S3, C, A = arr
+    m = np.where(C >= 0, np.asarray(mult, float)[np.clip(C, 0, 5)], 1.0)
+    hits = {1: 0, 5: 0, 10: 0}
+    for i in range(len(P)):
+        n = int((P[i] > 0).sum())
+        s2, s3, p = S2[i] * m[i], S3[i] * m[i], P[i]
+        probs = {}
+        for a, b, c in permutations(range(n), 3):
+            probs[(a, b, c)] = p[a] / p.sum() * s2[b] / (s2.sum() - s2[a]) * s3[c] / (s3.sum() - s3[a] - s3[b])
+        top = sorted(probs, key=lambda k: -probs[k])[:10]
+        actual = tuple(A[i])
+        for k in hits:
+            hits[k] += int(actual in top[:k])
+    n = len(P)
+    res.update({"races": n, "tri_ll": float(-np.log(mult_ll(arr, mult)).mean()), **{f"tri_top{k}": v / n for k, v in hits.items()}})
+    return res
+
+
+def _mult_experiment(split, model, feats, decay: float, place: dict, name: str, out_dir: Path, metrics: dict) -> dict:
+    """2着・3着の残りやすさのコース別倍率：調整期間で合わせ、検証期間で今の方法（2着・3着モデルを含む）と比べる。良くなったときだけ採用。"""
+    if split is None:
+        return place
+    tr_, va_, te_ = split
+    w = float(place.get("w") or 0.0) if place.get("adopt") else 0.0
+    q_va = q_te = None
+    if w > 0:
+        m2 = lgb_booster(out_dir / f"model_top2_{name}.txt")
+        m3 = lgb_booster(out_dir / f"model_top3_{name}.txt")
+        if m2 is None or m3 is None:
+            w = 0.0
+    p_va = normalize(va_, model.predict(va_[feats]))
+    p_te = normalize(te_, model.predict(te_[feats]))
+    if w > 0:
+        q_va = place_q(va_, p_va, m2.predict(va_[feats]), m3.predict(va_[feats]))
+        q_te = place_q(te_, p_te, m2.predict(te_[feats]), m3.predict(te_[feats]))
+    arr = race_arrays(va_, p_va, decay, q_va, w)
+    if arr is None or len(arr[0]) < 300:
+        return place
+    mult = fit_place_mult(arr)
+    base = _evaluate_mult(te_, p_te, decay, q_te, w, [1.0] * 6)
+    new = _evaluate_mult(te_, p_te, decay, q_te, w, mult)
+    metrics[f"{name}_mult_base"], metrics[f"{name}_mult"] = base, new
+    adopt = mult != [1.0] * 6 and new["tri_ll"] < base["tri_ll"] and new["tri_top10"] >= base["tri_top10"] - 0.002
+    return {**place, "mult": [round(x, 2) for x in mult], "mult_adopt": bool(adopt)}
+
+
+def lgb_booster(path: Path):
+    import lightgbm as lgb
+
+    return lgb.Booster(model_file=str(path)) if Path(path).exists() else None
 
 
 def _fit(train: pd.DataFrame, valid: pd.DataFrame, feats: list[str], label: str = "win"):
@@ -296,8 +422,10 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
 
     # 2着・3着の専用モデル（2着以内・3着以内を当てる）。混ぜた方が3連単が当たるときだけ使う
     place = {"pre": _place_experiment((tr, va, te), pre, pre_feats, decay, "pre", out_dir, metrics)}
+    place["pre"] = _mult_experiment((tr, va, te), pre, pre_feats, decay, place["pre"], "pre", out_dir, metrics)
     if post is not None and post_adopt:
         place["post"] = _place_experiment(post_split, post, post_feats, decay, "post", out_dir, metrics)
+        place["post"] = _mult_experiment(post_split, post, post_feats, decay, place["post"], "post", out_dir, metrics)
     else:
         _place_experiment(None, None, None, decay, "post", out_dir, metrics)  # 古いファイルを消すだけ
 
@@ -452,6 +580,12 @@ def summary_ja(meta: dict) -> str:
             lines.append(f"2着・3着の専用モデル（{tag}）: " + ("使う" if pl["adopt"] else "使わない")
                          + f"（混ぜる割合 {pl['w']}、3連単の対数損失 {b['tri_ll']:.3f}→{q['tri_ll']:.3f}、"
                          f"10点的中 {b['tri_top10'] * 100:.1f}%→{q['tri_top10'] * 100:.1f}%）")
+        b, q = m.get(f"{name}_mult_base"), m.get(f"{name}_mult")
+        if pl and b and q and pl.get("mult"):
+            ms = " ".join(f"{i + 1}C×{x:g}" for i, x in enumerate(pl["mult"]))
+            lines.append(f"2着・3着の残りやすさ（コース別の倍率・{tag}）: " + ("使う" if pl.get("mult_adopt") else "使わない")
+                         + f"（{ms}、3連単の対数損失 {b['tri_ll']:.3f}→{q['tri_ll']:.3f}、"
+                         f"10点的中 {b['tri_top10'] * 100:.1f}%→{q['tri_top10'] * 100:.1f}%、5点的中 {b['tri_top5'] * 100:.1f}%→{q['tri_top5'] * 100:.1f}%）")
     labels = {"fhold": "F持ちのスタート順位", "wall": "壁（2〜6コースの選手が入ったときの1コース1着率）", "wind": "風（展示後）", "race": "レース番号", "day": "節の初日・最終日",
               "shape": "展開の形（スタート隊形・一番大きなスタート順位の差の場所と大きさ）",
               "kimarite": "決まり手（逃げ・差され・まくられ・逃し・差し・まくり・まくり差しの率）",

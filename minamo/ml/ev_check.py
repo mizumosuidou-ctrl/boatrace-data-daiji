@@ -43,10 +43,13 @@ def load(ml_dir: Path, raw: Path) -> list[dict]:
     tp = pd.read_csv(path, dtype={"race_id": str})
     tp["p"] = tp["p_post"].where(tp["p_post"].notna(), tp["p_pre"]) if "p_post" in tp else tp["p_pre"]
     tp["post"] = tp["p_post"].notna() if "p_post" in tp else False
-    decay = PL_DECAY
+    decay, mults = PL_DECAY, {}
     meta = ml_dir / "meta.json"
     if meta.exists():
-        decay = json.loads(meta.read_text(encoding="utf-8")).get("pl_decay", PL_DECAY)
+        mj = json.loads(meta.read_text(encoding="utf-8"))
+        decay = mj.get("pl_decay", PL_DECAY)
+        # 2着・3着の残りやすさ（コース別の倍率）を学習で採用していれば、ここでも同じように使う（本番と同じ3連単の確率）
+        mults = {k: v.get("mult") for k, v in (mj.get("place") or {}).items() if isinstance(v, dict) and v.get("mult_adopt")}
     snaps = pd.read_csv(raw / "odds_hist.csv", dtype=str)
     snaps["race"] = snaps["race_date"].str.replace("-", "").str[:8] + "-" + snaps["venue"].str.zfill(2) + "-" + \
         pd.to_numeric(snaps["race_no"], errors="coerce").fillna(0).astype(int).astype(str).str.zfill(2)
@@ -84,16 +87,31 @@ def load(ml_dir: Path, raw: Path) -> list[dict]:
         x5, xfinal, x1, x10, x15 = ex_odds.get(race, (None,) * 5)
         row = {"race": race, "probs": probs, "t5": t5, "final": final, "t1": t1, "t10": t10, "t15": t15, "hit": hit,
                "x5": x5, "xfinal": xfinal, "x1": x1, "x10": x10, "x15": x15,
-               "p1": float(g.loc[g["lane"] == 1, "p"].iloc[0]), "post": bool(g["post"].any())}
+               "p1": float(g.loc[g["lane"] == 1, "p"].iloc[0]), "post": bool(g["post"].any()), "decay": decay}
         if "course_i" in g and "sr_c" in g and g["course_i"].notna().all():
             # 進入コース（艇番→コース）・コースごとの平均スタート順位・1着の艇のコース・艇ごとのMINAMOの1着確率
             row["course_of"] = {int(l): int(c) for l, c in zip(g["lane"], g["course_i"])}
             row["sr"] = {int(c): float(v) for c, v in zip(g["course_i"], g["sr_c"]) if v == v}
             row["p_lane"] = {int(l): float(v) for l, v in zip(g["lane"], g["p"])}
+            mult = mults.get("post" if row["post"] else "pre")
+            if mult and len(row["course_of"]) == len(row["p_lane"]):
+                row["probs"] = probs_mult(row["p_lane"], row["course_of"], decay, mult)
+                row["mult"] = mult
             for col, key in (("lap_rank", "lap_rank"), ("ex_time_rank", "ex_rank")):  # 展示の順位（艇番→順位。無ければ入れない）
                 if col in g and g[col].notna().sum() >= 4:
                     row[key] = {int(l): float(v) for l, v in zip(g["lane"], g[col]) if v == v}
         out.append(row)
+    return out
+
+
+def probs_mult(p: dict[int, float], course_of: dict[int, int], decay: float, mult) -> dict[str, float]:
+    """3連単の確率。2着・3着の強さに、進入コースごとの倍率をかける（mult が無ければ今までと同じ）。"""
+    tot = sum(p.values())
+    soft = {b: p[b] ** decay * (float(mult[course_of[b] - 1]) if mult and 1 <= course_of.get(b, 0) <= 6 else 1.0) for b in p}
+    S = sum(soft.values())
+    out = {}
+    for a, b, c in permutations(p, 3):
+        out[_key((a, b, c))] = p[a] / tot * soft[b] / (S - soft[a]) * soft[c] / (S - soft[a] - soft[b])
     return out
 
 
@@ -1649,6 +1667,48 @@ def outer_report(races: list[dict]) -> list[str]:
     return lines
 
 
+def place_mult_report(races: list[dict]) -> list[str]:
+    """20-2. 2着・3着の残りやすさをコースごとに直す（倍率）：前半で倍率を合わせ、後半で今の方法と比べる（良くなったときだけ採用）。"""
+    from .train import fit_place_mult, mult_ll
+
+    rs = sorted([r for r in races if r.get("p_lane") and r.get("course_of") and len(r["p_lane"]) == 6
+                 and len(r["course_of"]) == 6], key=lambda r: r["race"])
+    if len(rs) < 600:
+        return []
+    mid = rs[len(rs) // 2]["race"]
+    a, b = [r for r in rs if r["race"] < mid], [r for r in rs if r["race"] >= mid]
+
+    def arr(group):
+        P = np.array([[r["p_lane"][l] for l in range(1, 7)] for r in group])
+        S = P ** np.array([[r.get("decay", PL_DECAY)] for r in group])
+        C = np.array([[r["course_of"][l] - 1 for l in range(1, 7)] for r in group])
+        A = np.array([[int(x) - 1 for x in r["hit"].split("-")] for r in group])
+        return P, S, S, C, A
+
+    mult = fit_place_mult(arr(a))
+    base = [1.0] * 6
+    ms = " ".join(f"{i + 1}C×{x:g}" for i, x in enumerate(mult))
+    lines = [f"\n20-2. 2着・3着の残りやすさをコースごとに直す（倍率は前半 {len(a):,}R で合わせ、後半 {len(b):,}R で比べる）",
+             f"  合わせた倍率：{ms}（1より小さい＝2着・3着に残りにくくする。4コースを1に固定）",
+             f"  3連単の対数損失（小さいほど良い） 今 {-np.log(mult_ll(arr(b), base)).mean():.4f} → 直す {-np.log(mult_ll(arr(b), mult)).mean():.4f}"]
+    rb = [{**r, "probs": probs_mult(r["p_lane"], r["course_of"], r.get("decay", PL_DECAY), base)} for r in b]
+    rn = [{**r, "probs": probs_mult(r["p_lane"], r["course_of"], r.get("decay", PL_DECAY), mult)} for r in b]
+    top6 = lambda r: sorted(r["probs"], key=r["probs"].get, reverse=True)[:6]
+    ev9 = lambda r: [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True)[:40]
+                     if r["probs"][c] >= MIN_P and r["t5"].get(c) and _ev(r, c) >= 1.2][:9]
+    has56 = lambda r: any(x in "56" for x in r["hit"].split("-"))
+    for tag, pick in (("確率上位6点", top6), ("期待値1.2以上・最大9点（補正なし）", ev9)):
+        lines.append(f"  ■ {tag}")
+        for gtag, cond in (("全部", lambda r: True), ("5・6が3着までに来た", has56), ("①が1着でない", lambda r: not r["hit"].startswith("1-"))):
+            x, y = [r for r in rb if cond(r)], [r for r in rn if cond(r)]
+            lines.append(f"    {_pad(gtag, 22)}今   {_pat_cell(x, pick)}")
+            lines.append(f"    {_pad('', 22)}直す {_pat_cell(y, pick)}")
+    one3 = lambda group: 100 * np.mean([sum(p for c, p in r["probs"].items() if "1" in c.split("-")) for r in group])
+    act = 100 * np.mean(["1" in r["hit"].split("-") for r in b])
+    lines.append(f"  ①の3着内：今の見立て {one3(rb):.1f}% → 直す {one3(rn):.1f}%（実際 {act:.1f}%）")
+    return lines
+
+
 BAND_LOWS = (1.0, 5.0, 10.0, 15.0, 20.0)
 BAND_HIGHS = (30.0, 50.0, 80.0, 120.0, 200.0, float("inf"))
 
@@ -1830,4 +1890,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += odds_flow_report(races)
     lines += odds_band_report(races)
     lines += outer_report(races)
+    lines += place_mult_report(races)
     return "\n".join(lines)

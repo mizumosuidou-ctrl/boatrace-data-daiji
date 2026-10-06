@@ -1414,3 +1414,31 @@ def test_odds_band_report_picks_band_on_first_half_and_checks_second():
         races.append({"race": f"2026{i:05d}", "probs": probs, "t5": t5, "final": {"1-2-3": 20.0}, "hit": hit, "x5": None, "xfinal": None})
     out = "\n".join(ev_check.odds_band_report(races))
     assert "19. 今の試し買いの組" in out and "10〜80倍（他のAIの案）" in out and "前で1番の帯" in out
+
+
+def test_place_mult_fit_finds_course_one_too_sticky():
+    """①が1着を逃したら2着・3着にも残りにくい世界で結果を作ると、1コースの倍率が1より小さく合い、対数損失が良くなる。"""
+    import random
+
+    from minamo.ml import ev_check as ec
+    from minamo.ml import train
+
+    random.seed(3)
+    rng = np.random.default_rng(3)
+    rows, probs = [], []
+    for i in range(1500):
+        w = rng.dirichlet([8, 2.2, 2, 1.6, 1.1, 0.7])
+        p = {l: float(w[l - 1]) for l in range(1, 7)}
+        tp = ec.probs_mult(p, {l: l for l in range(1, 7)}, 0.82, [0.5, 1.1, 1.0, 1.0, 1.2, 1.3])
+        hit = [int(x) for x in random.choices(list(tp), weights=list(tp.values()))[0].split("-")]
+        for l in range(1, 7):
+            rows.append({"race_id": f"r{i:05d}", "lane": l, "course": l, "finish": hit.index(l) + 1 if l in hit else 4})
+            probs.append(p[l])
+    df, prob = pd.DataFrame(rows), np.array(probs)
+    assert ec.probs_mult({1: 0.5, 2: 0.3, 3: 0.2}, {1: 1, 2: 2, 3: 3}, 0.82, None) == pytest.approx(
+        {"-".join(map(str, k)): v for k, v in train.trifecta_probs({1: 0.5, 2: 0.3, 3: 0.2}, 0.82)})
+    mult = train.fit_place_mult(train.race_arrays(df, prob, 0.82))
+    assert mult[0] < 0.8 and mult[3] == 1.0
+    base = train.evaluate(df, prob, 0.82, mult=[1.0] * 6)
+    assert base["tri_ll"] == pytest.approx(train.evaluate(df, prob, 0.82)["tri_ll"])
+    assert train.evaluate(df, prob, 0.82, mult=mult)["tri_ll"] < base["tri_ll"]
