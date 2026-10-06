@@ -596,6 +596,22 @@ function boardHtml(race) {
   </div>`;
 }
 
+// このレースで何点勝負したか（買い方ごと）。試し買いは締切5.5分前に決まる（それまでは「決定前」）
+function betCountHtml(race) {
+  const n = (xs) => (xs || []).length;
+  const pts = (k) => (k ? `<b>${k}点</b>` : "見送り");
+  const later = race.result ? "見送り" : "締切5.5分前に決定";
+  const value = (race.prediction?.picks || []).filter((p) => p.kind === "妙味" && !(race.ai?.picks || []).some((m) => m.combo === p.combo)).length;
+  const rows = [`推奨（3連単・本線） ${pts(n(race.ai?.picks))}`];
+  rows.push(`3連単（試し） ${race.ev_pick != null ? pts(n(race.ev_pick)) : later}`);
+  rows.push(`2連単 ${race.ex_pick != null ? pts(n(race.ex_pick)) : later}`);
+  if (race.time_pick) rows.push(`TIME ${pts(n(race.time_pick.combos))}`);
+  if (race.fm_pick?.rule === "A") rows.push(`隊形①-② ${pts(n(race.fm_pick.combos))}`);
+  if (race.ag_pick && n(race.ag_pick.combos)) rows.push(`一致 ${pts(n(race.ag_pick.combos))}`);
+  const tail = value ? ` · 妙味${value}点は参考（どの成績にも入れていません）` : "";
+  return `<p class="small bet-count"><span class="chip">勝負した点数</span> ${rows.map((x) => `<span class="nowrap">${x}</span>`).join(" · ")}${tail}</p>`;
+}
+
 function ticketsHtml(race) {
   const ai = race.ai || {};
   const odds = race.odds || {};
@@ -610,7 +626,7 @@ function ticketsHtml(race) {
     const o = odds[t.combo];
     const ev = p && o ? p * o : null;
     return `<div class="ticket ${t.kind === "妙味" ? "value" : ""} ${won === t.combo ? "won" : ""} rv" style="--i:${i}">
-      <div class="kind"><span>3連単 ${String(i + 1).padStart(2, "0")} · <b>${won === t.combo ? "的中" : t.kind}</b>${t.ability ? ` · ${esc(t.ability)}` : ""}</span>${t.weight ? `<span class="weight">${t.weight}<small>%</small></span>` : ""}</div>
+      <div class="kind"><span>${t.kind === "妙味" ? "参考" : `3連単 ${String(i + 1).padStart(2, "0")}`} · <b>${won === t.combo ? (t.kind === "妙味" ? "妙味（買っていない）" : "的中") : t.kind}</b>${t.ability ? ` · ${esc(t.ability)}` : ""}</span>${t.weight ? `<span class="weight">${t.weight}<small>%</small></span>` : ""}</div>
       <div class="cmb">${t.combo.split("-").map((b) => boat(b)).join(`<span class="arrow"></span>`)}</div>
       <div class="stats"><div><span>確率</span>${p != null ? pct(p, 1) + "%" : "--"}</div><div><span>オッズ</span>${o ?? "--"}</div><div><span>期待値</span>${ev ? ev.toFixed(2) : "--"}</div></div>
     </div>`;
@@ -658,7 +674,7 @@ function resultHtml(race) {
       ${r.exacta ? `<div><div class="lbl">2連単</div>${pay(combo(r.exacta, ""), r.exacta_payout, r.exacta_popularity)}</div>` : ""}
       ${r.kimarite ? `<div><div class="lbl">決まり手</div><div class="res-kima">${esc(r.kimarite)}</div></div>` : ""}
     </div>
-    <div>${s.trifecta_hit ? `<div class="hit-stamp">的中${(() => { const n = (race.ai?.picks || []).findIndex((p) => p.combo === r.trifecta) + 1; return n ? `<small>${n}点目</small>` : ""; })()}</div>` : `<div class="miss-stamp">${s.honmei_win ? "本命1着" : "はずれ"}</div>`}</div>
+    <div>${s.trifecta_hit ? `<div class="hit-stamp">的中${(() => { const n = (race.ai?.picks || []).findIndex((p) => p.combo === r.trifecta) + 1; return n ? `<small>${n}点目／${(race.ai?.picks || []).length}点</small>` : ""; })()}</div>` : `<div class="miss-stamp">${s.honmei_win ? "本命1着" : "はずれ"}</div>`}</div>
   </div>
   ${trialHitsHtml(race, s)}
   ${otherPayHtml(r.payouts)}
@@ -669,16 +685,16 @@ function resultHtml(race) {
 function trialHitsHtml(race, s) {
   const r = race.result || {};
   const items = [
-    ["3連単（試し）", s.ev_bought, s.ev_hit, rankIn(race.ev_pick, r.trifecta)],
-    ["2連単", s.ex_bought, s.ex_hit, rankIn(race.ex_pick, r.exacta)],
-    ["TIME", s.time_bought, s.time_hit, s.time_rank],
-    ["隊形①-②", s.fm_bought || null, s.fm_hit, 1],
-    ["隊形①-② B（記録）", s.fmb_bought || null, s.fmb_hit, 1],
-    ["一致", s.ag_bought || null, s.ag_hit, 1],
-    ["🍒（記録）", s.ch_bought || null, s.ch_hit, s.ch_rank],
+    ["3連単（試し）", s.ev_bought, s.ev_hit, rankIn(race.ev_pick, r.trifecta), (race.ev_pick || []).length],
+    ["2連単", s.ex_bought, s.ex_hit, rankIn(race.ex_pick, r.exacta), (race.ex_pick || []).length],
+    ["TIME", s.time_bought, s.time_hit, s.time_rank, (race.time_pick?.combos || []).length],
+    ["隊形①-②", s.fm_bought || null, s.fm_hit, 1, 1],
+    ["隊形①-② B（記録）", s.fmb_bought || null, s.fmb_hit, 1, 1],
+    ["一致", s.ag_bought || null, s.ag_hit, 1, 1],
+    ["🍒（記録）", s.ch_bought || null, s.ch_hit, s.ch_rank, (race.ch_pick?.combos || []).length],
   ].filter(([, b]) => b != null);
   if (!items.length) return "";
-  return `<p class="small trial-hits">${items.map(([n, b, h, k]) => `<span class="nowrap">${n}：${!b ? "見送り" : h ? `<b class="pos">的中（${k}点目）</b>` : "はずれ"}</span>`).join(" · ")}${race.trial_skip ? `<br>試し買いの見送りの理由：${esc(race.trial_skip)}` : ""}</p>`;
+  return `<p class="small trial-hits">${items.map(([n, b, h, k, pts]) => `<span class="nowrap">${n}${b && pts ? ` ${pts}点` : ""}：${!b ? "見送り" : h ? `<b class="pos">的中（${k}点目）</b>` : "はずれ"}</span>`).join(" · ")}${race.trial_skip ? `<br>試し買いの見送りの理由：${esc(race.trial_skip)}` : ""}</p>`;
 }
 
 // 隊形①-②（試験中）：A＝①〈③②④で2連単①-②、B＝②が速く①〈②④③（記録だけ）、C＝①〈④②③は①頭を買わない
@@ -903,7 +919,8 @@ async function renderRace(r, refresh = false) {
     </section>
 
     <section class="section">
-      <div class="section-head"><div><h2 class="section-title">推奨買い目<small>買い目と配分（％）、オッズから見た妙味</small></h2></div></div>
+      <div class="section-head"><div><h2 class="section-title">推奨買い目<small>番号つきの本線が勝負する買い目（配分％）。「参考」の妙味はオッズから見た妙味の表示だけで、買っていません</small></h2></div></div>
+      ${betCountHtml(race)}
       ${ticketsHtml(race)}
       ${race.trial_skip && !race.result ? `<p class="small trial-hits"><span class="chip">試し買い 見送り</span> ${esc(race.trial_skip)}。このレースは試し買い（3連単・合成・2連単）を買いません</p>` : ""}
       ${fmNoteHtml(race)}
