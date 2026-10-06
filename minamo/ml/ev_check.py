@@ -1591,6 +1591,64 @@ def calib_c_report(rs: list[dict]) -> list[str]:
     return lines
 
 
+def outer_report(races: list[dict]) -> list[str]:
+    """20. 外の艇（5・6）の評価：MINAMOの見立てと実際。艇番ごと・進入コースごとの1着・3着内の見立て（MINAMO・市場）と実際、
+    5・6が3着までに来たレースでのMINAMOの成績（確率上位6点）、上位6点に5・6が入る割合。"""
+    rs = [r for r in races if r.get("probs") and r.get("final")]
+    if len(rs) < 200:
+        return []
+    lines = [f"\n20. 外の艇（5・6）の評価：MINAMOの見立てと実際（検証期間 {len(rs):,}R。市場＝確定オッズ）"]
+
+    def table(tag, key_of):
+        rows = {k: [0.0, 0.0, 0.0, 0.0, 0.0, 0] for k in range(1, 7)}  # MINAMO1着・市場1着・実際1着・MINAMO3着内・実際3着内・数
+        for r in rs:
+            km = key_of(r)
+            if km is None:
+                continue
+            win, top3 = {}, {}
+            for c, p in r["probs"].items():
+                ls = [int(x) for x in c.split("-")]
+                win[ls[0]] = win.get(ls[0], 0.0) + p
+                for l in ls:
+                    top3[l] = top3.get(l, 0.0) + p
+            mk = market_win(r["final"])
+            hit = [int(x) for x in r["hit"].split("-")]
+            for lane in range(1, 7):
+                k = km.get(lane)
+                if k not in rows:
+                    continue
+                x = rows[k]
+                x[0] += win.get(lane, 0.0); x[1] += mk.get(lane, 0.0); x[2] += hit[0] == lane
+                x[3] += top3.get(lane, 0.0); x[4] += lane in hit; x[5] += 1
+        lines.append(f"  ■ {tag}")
+        lines.append(f"    {_pad('', 8)}{_pad('1着 MINAMO', 13)}{_pad('市場', 9)}{_pad('実際', 11)}{_pad('3着内 MINAMO', 15)}{_pad('実際', 9)}数")
+        for k, (pw, mw, aw, p3, a3, n) in rows.items():
+            if n:
+                lines.append(f"    {_pad(str(k), 8)}{100 * pw / n:9.1f}%  {100 * mw / n:6.1f}%  {100 * aw / n:6.1f}%    "
+                             f"{100 * p3 / n:9.1f}%     {100 * a3 / n:6.1f}%  {n:,}")
+
+    table("艇番ごと", lambda r: {l: l for l in range(1, 7)})
+    if sum(bool(r.get("course_of")) for r in rs) >= 200:
+        table("進入コースごと（展示・実際の進入）", lambda r: r.get("course_of"))
+
+    top6 = lambda r: sorted(r["probs"], key=r["probs"].get, reverse=True)[:6]
+    has = lambda c, ls: any(x in c.split("-") for x in ls)
+    lines.append("  ■ 結果に5・6が来たか（艇番）× MINAMOの確率上位6点")
+    for tag, cond in (("5・6が3着までに来ない", lambda r: not has(r["hit"], "56")),
+                      ("5・6が3着までに来た", lambda r: has(r["hit"], "56")),
+                      ("  うち5・6が1着", lambda r: r["hit"][0] in "56"),
+                      ("  うち5・6が2着", lambda r: r["hit"].split("-")[1] in "56"),
+                      ("  うち5・6が3着", lambda r: r["hit"].split("-")[2] in "56")):
+        g = [r for r in rs if cond(r)]
+        if not g:
+            continue
+        ins = np.mean([any(has(c, "56") for c in top6(r)) for r in g])
+        rank = np.median([sorted(r["probs"], key=r["probs"].get, reverse=True).index(r["hit"]) + 1 for r in g])
+        lines.append(f"    {_pad(tag, 26)}{len(g):>6,}R（{100 * len(g) / len(rs):4.1f}%）  {_pat_cell(g, top6)}  "
+                     f"上位6点に5・6入り {100 * ins:4.1f}%  当たり組の確率順位（中央）{rank:.0f}位")
+    return lines
+
+
 BAND_LOWS = (1.0, 5.0, 10.0, 15.0, 20.0)
 BAND_HIGHS = (30.0, 50.0, 80.0, 120.0, 200.0, float("inf"))
 
@@ -1771,4 +1829,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += survive_report(races)
     lines += odds_flow_report(races)
     lines += odds_band_report(races)
+    lines += outer_report(races)
     return "\n".join(lines)
