@@ -1097,3 +1097,22 @@ def test_ev_and_ex_picks_odds_band():
     combos, items = store.ex_picks(tri, odds, odds2, band=True)
     assert combos == ["1-3"] and items[0]["odds"] == 12.0
     assert store.ex_picks(tri, odds, odds2)[0] == ["1-2", "1-3", "2-1"]
+
+
+def test_odds_compare_matches_live_odds_with_database(tmp_path):
+    """実戦で決めたときのオッズを、データベースの5分前・1分前・確定オッズと同じ組で比べる。"""
+    from minamo import live_check
+
+    (tmp_path / "data" / "20261006").mkdir(parents=True)
+    (tmp_path / "raw").mkdir()
+    store.write_json(tmp_path / "data" / "20261006" / "01-05.json", {
+        "date": "20261006", "jcd": "01", "rno": 5, "deadline": "12:00", "ev_at": "2026-10-06T11:55:00+09:00",
+        "ev_items": [{"combo": "1-2-3", "odds": 20.0}], "ex_items": []})
+    (tmp_path / "raw" / "odds_hist.csv").write_text(
+        "race_date,venue,race_no,label,captured_at,trifecta,exacta\n"
+        '2026-10-06,1,5,T5,2026-10-06T02:55:00Z,"1-2-3:20.0",\n'
+        '2026-10-06,1,5,FINAL,2026-10-06T03:01:00Z,"1-2-3:12.0",\n', encoding="utf-8")
+    out = live_check.odds_compare(tmp_path / "data", tmp_path / "raw")
+    assert "データベースにもあるレース 1R" in out
+    assert "実戦のオッズ ÷ データベースのT5     中央値 1.00" in out
+    assert "確定 ÷ 実戦のオッズ       中央値 0.60" in out
