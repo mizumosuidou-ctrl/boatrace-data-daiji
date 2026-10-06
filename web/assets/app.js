@@ -751,6 +751,8 @@ function trialHitsHtml(race, s) {
     ["3連単（試し）", s.ev_bought, s.ev_hit, rankIn(race.ev_pick, r.trifecta), (race.ev_pick || []).length],
     ["2連単", s.ex_bought, s.ex_hit, rankIn(race.ex_pick, r.exacta), (race.ex_pick || []).length],
     ["2連単（全R）", s.xa_bought ?? null, s.xa_hit, s.xa_rank, (race.xa_pick?.combos || []).length],
+    ...[["ev2", "3連単 2分前（記録）"], ["ev1", "3連単 1分前（記録）"], ["ex2", "2連単 2分前（記録）"], ["ex1", "2連単 1分前（記録）"]].map(([k, n]) =>
+      [n, s[`${k}_bought`] ?? null, s[`${k}_hit`], rankIn(race[`${k}_pick`], k.startsWith("ex") ? r.exacta : r.trifecta), (race[`${k}_pick`] || []).length]),
     ["TIME", s.time_bought, s.time_hit, s.time_rank, (race.time_pick?.combos || []).length],
     ["隊形①-②", s.fm_bought || null, s.fm_hit, 1, 1],
     ["隊形①-② B（記録）", s.fmb_bought || null, s.fmb_hit, 1, 1],
