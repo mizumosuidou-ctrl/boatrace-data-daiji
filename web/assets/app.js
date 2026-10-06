@@ -422,6 +422,7 @@ function rankClass(values, i, lowerBetter = false) {
   if (vs.length < 3 || values[i] == null) return "";
   vs.sort((a, b) => (lowerBetter ? a[0] - b[0] : b[0] - a[0]));
   if (vs[0][1] === i) return "r1";
+  if (vs[1][1] === i) return "r2";
   if (vs[vs.length - 1][1] === i) return "r6";
   return "";
 }
@@ -507,8 +508,7 @@ function abilityHtml(race, scope = getScope()) {
     return { v: P[scope] || {}, tag: "" };
   };
   const V = E.map(pick);
-  const cols = [["1着率", "win", false, pc], ["2連対率", "top2", false, pc], ["3連対率", "top3", false, pc],
-    ["平均ST順位", "sr", true, (v) => (v == null ? "--" : v.toFixed(2))], ["トップST率", "topst", false, pc],
+  const cols = [["1着率", "win", false, pc], ["2連対率", "top2", false, pc], ["3連対率", "top3", false, pc], ["トップST率", "topst", false, pc],
     ...(hasProfile ? [["トップ時1着", "topst_win", false, pc], ["トップ時2連", "topst_top2", false, pc]] : [])];
   // ST順位差：内側の隣のコースとの平均ST順位の差（マイナス＝内の艇より早い。-0.4以下は🍒の「差あり」）
   const srOf = Object.fromEntries(E.map((e, i) => [C[e.boat] ?? e.boat, V[i].v.sr]));
@@ -518,6 +518,7 @@ function abilityHtml(race, scope = getScope()) {
   const rr = (e) => (e.rt_best != null && e.rt_best > 0 ? 1 + bests.filter((x) => x < e.rt_best).length : null);
   const times = [["展示T", "exhibition_time"], ["一周", "lap_time"], ["まわり足", "turn_time"], ["直線", "straight_time"]].filter(([, k]) => E.some((e) => e[k] != null));
   const rankOf = (k, e) => (e[k] == null ? null : 1 + E.filter((x) => x[k] != null && x[k] < e[k]).length);
+  const rc = (r) => (r === 1 ? "r1" : r === 2 ? "r2" : "");
   const hasRT = E.some((e) => e.rt_best != null);
   const rows = E.map((e, i) => {
     const { v, tag } = V[i];
@@ -528,17 +529,18 @@ function abilityHtml(race, scope = getScope()) {
     const gap = g == null ? `<td class="muted">--</td>` : `<td class="${g <= -0.4 ? "r1" : g < 0 ? "pos" : ""}" title="内側の隣のコースとの平均ST順位の差">${g > 0 ? "+" : ""}${g.toFixed(2)}</td>`;
     const tcells = times.map(([, k]) => {
       const r = rankOf(k, e);
-      return e[k] == null ? `<td class="muted">--</td>` : `<td class="${r === 1 ? "r1" : ""}">${e[k].toFixed(2)}<small class="muted">（${r}）</small></td>`;
+      return e[k] == null ? `<td class="muted">--</td>` : `<td class="${rc(r)}">${e[k].toFixed(2)}<small class="muted">（${r}）</small></td>`;
     }).join("");
-    const rt = hasRT ? `<td class="${rr(e) === 1 ? "r1" : ""}">${rr(e) ? rr(e) + "位" : "--"}</td>
-      <td class="${e.rt_series_rank === 1 ? "r1" : ""}">${e.rt_series_rank != null ? `${e.rt_series_rank}<small class="muted">/${e.rt_series_n ?? "?"}</small>` : "--"}</td>
-      <td class="${e.rt_last_rank === 1 ? "r1" : ""}">${e.rt_last_rank != null ? `${e.rt_last_rank}<small class="muted">/${e.rt_last_n}</small>` : "--"}</td>` : "";
-    return `<tr class="${C[e.boat] && C[e.boat] !== e.boat ? "moved" : ""}">${gap}<td>${C[e.boat] ? courseTag(C[e.boat], e.boat, ex) : "--"}</td><td>${boat(e.boat, "sm")}</td>
-      <td class="name">${esc(e.name)}${tag ? ` <span class="ftag" title="F持ちのときの成績">F持ち時</span>` : ""}</td><td class="num">${v.n ?? 0}</td>${cells}${wall}${tcells}${rt}</tr>`;
+    const rt = hasRT ? `<td class="${rc(rr(e))}">${rr(e) ? rr(e) + "位" : "--"}</td>
+      <td class="${rankClass(E.map((x) => x.rt_series_rank), i, true)}">${e.rt_series_rank != null ? `${e.rt_series_rank}<small class="muted">/${e.rt_series_n ?? "?"}</small>` : "--"}</td>
+      <td class="${rankClass(E.map((x) => x.rt_last_rank), i, true)}">${e.rt_last_rank != null ? `${e.rt_last_rank}<small class="muted">/${e.rt_last_n}</small>` : "--"}</td>` : "";
+    const sr = `<td class="${rankClass(V.map((x) => x.v.sr), i, true)}">${v.sr == null ? "--" : v.sr.toFixed(2)}</td>`;
+    return `<tr class="${C[e.boat] && C[e.boat] !== e.boat ? "moved" : ""}"><td>${C[e.boat] ? courseTag(C[e.boat], e.boat, ex) : "--"}</td><td>${boat(e.boat, "sm")}</td>
+      <td class="name">${esc(e.name)}${tag ? ` <span class="ftag" title="F持ちのときの成績">F持ち時</span>` : ""}</td>${sr}${gap}<td class="num">${v.n ?? 0}</td>${cells}${wall}${tcells}${rt}</tr>`;
   }).join("");
   const seg = hasProfile ? `<div class="seg" role="group" aria-label="期間">${SCOPES.map(([k, l]) => `<button type="button" data-scope="${k}" class="${k === scope ? "on" : ""}">${l}</button>`).join("")}</div>` : "";
   return `${seg}${formationBox(race, srOf, scope, hasProfile)}<div class="panel sheet"><table class="ab">
-    <thead><tr><th>ST順位差</th><th>進入</th><th>艇</th><th>選手</th><th>出走</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}<th>壁率</th>${times.map(([l]) => `<th>${l}</th>`).join("")}${hasRT ? "<th>ﾀｲﾑ6艇内</th><th>選手別順位</th><th>前走順位</th>" : ""}</tr></thead>
+    <thead><tr><th>進入</th><th>艇</th><th>選手</th><th>平均ST順位</th><th>ST順位差</th><th>出走</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}<th>壁率</th>${times.map(([l]) => `<th>${l}</th>`).join("")}${hasRT ? "<th>ﾀｲﾑ6艇内</th><th>選手別順位</th><th>前走順位</th>" : ""}</tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 // 進入順のスタート隊形トゥエルブ（①〜④の平均ST順位の並び）。MINAMOが予想・試し買いに使う並びと、この表の期間で並べたもの
@@ -970,10 +972,10 @@ async function renderRace(r, refresh = false) {
     </section>
 
     <section class="section">
-      <div class="section-head"><div><h2 class="section-title">出走表データ<small>出走表・直前情報（● はレース内1位）。${exEntry(race) ? "展示の進入コース順" : "枠なり想定のコース順"}</small></h2></div></div>
+      <div class="section-head"><div><h2 class="section-title">出走表データ<small>出走表・直前情報（緑● はレース内1位、青● は2位）。${exEntry(race) ? "展示の進入コース順" : "枠なり想定のコース順"}</small></h2></div></div>
       ${sheetHtml(race, ins)}
       ${race.entries.some((e) => e.rt_best != null) ? `<p class="small muted" style="margin:10px 2px 0;line-height:1.7">ﾀｲﾑ6艇内＝節間ベストのレースタイムの、このレースの6艇の中での順位。選手別順位＝節間ベストの、その節に出ている選手の中での順位（順位/人数）。全走順位＝節間ベストの、その節の全部の走り（1走ずつ数える）の中での順位。前走順位＝いちばん新しい走りのタイムの、各選手のいちばん新しい走りの中での順位（数字に触れると前走のタイム）。ﾀｲﾑ評価＝この「6艇内の順位」と「節内の順位（上位10%・10〜30%・30〜60%・それより下）」だった選手の過去の3連対率が、同じコースの平均より何ポイント高いか${ins && ins.racetime && ins.racetime.n ? `（${ins.racetime.n.toLocaleString("ja-JP")}走から）` : ""}。</p>` : ""}
-      ${abilityHtml(race) ? `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">実力（進入コースでの成績）<small>この進入コースに入ったときの成績（前日まで・全場、%）。F持ちの選手は、F持ちだったときの成績。右側に展示・オリジナル展示（かっこは6艇内の順位）とレースタイムの順位</small></h2></div></div><div id="ability">${abilityHtml(race)}</div>
+      ${abilityHtml(race) ? `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">実力（進入コースでの成績）<small>この進入コースに入ったときの成績（前日まで・全場、%）。F持ちの選手は、F持ちだったときの成績。右側に展示・オリジナル展示（かっこは6艇内の順位）とレースタイムの順位。緑● は1位、青● は2位</small></h2></div></div><div id="ability">${abilityHtml(race)}</div>
       <p class="small muted" style="margin:10px 2px 0;line-height:1.7">ST順位差＝内側の隣のコースの選手との平均ST順位の差（マイナスは内の艇より早い。-0.40以下は色付き＝🍒の「差あり」）。出走＝そのコースでの出走数。平均ST順位＝そのコースでの本番のスタート順位の平均（小さいほど早い。スタート隊形トゥエルブの元の数字）。トップST率＝そのコースで本番のスタートが1番だった割合。トップ時1着・2連＝そのトップスタートのときの1着率・2連対率。「F持ち時」＝今F持ちの選手は、F持ちだったときの成績（期間で区切らず、ためていく）。壁率＝その選手がこのコースのとき①が1着だった割合（高いほど①が逃げやすい）。</p>` : ""}
       ${kimariteHtml(race) ? `<div class="section-head" style="margin-top:28px"><div><h2 class="section-title">決まり手（進入コースでの率）<small>その選手がこの進入コースに入ったときの直近1年（前日まで・全場、%）。1コース：逃げ・差され・まくられ・まくられ差し、2コース：逃し（1コースに逃げられた）、2〜6コース：差し・まくり・まくり差し（その決まり手で1着）。集計＝そのコースで決まり手の分かるレース数</small></h2></div></div>${kimariteHtml(race)}` : ""}
       ${skillsHtml(race)}
