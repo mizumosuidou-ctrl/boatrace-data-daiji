@@ -251,3 +251,96 @@ def build(data_dir: Path = store.DATA_DIR) -> str:
     for k in ("ev", "co", "ex", "time", "fm", "fmb", "ag", "xa", "ch", "chb"):
         lines += section(rows(data_dir, k), k)
     return "\n".join(lines)
+
+
+LABELS = ("T10", "T5", "T1", "FINAL")
+
+
+def _race_key(date: str, jcd: str, rno) -> str:
+    return f"{date}-{str(jcd).zfill(2)}-{int(rno):02d}"
+
+
+def odds_compare(data_dir: Path, raw: Path) -> str:
+    """実戦で買い目を決めたときのオッズと、検証に使うデータベースのオッズ（10分前・5分前・1分前・確定）を、同じ組で比べる。
+    実戦÷5分前 が1に近ければ同じ物差し（実戦の不調は数の少なさ）。1よりはっきり大きければ、実戦はデータベースの5分前より早い・薄いオッズで決めている。"""
+    import pandas as pd
+
+    from .ml import odds_history
+
+    path = Path(raw) / "odds_hist.csv"
+    if not path.exists():
+        return "odds_hist.csv がありません（db_export.sh で書き出してください）"
+    live = {}
+    for f in sorted(Path(data_dir).glob("*/[0-9][0-9]-[0-9][0-9].json")):
+        race = store.read_json(f) or {}
+        if race.get("demo") or not race.get("deadline"):
+            continue
+        date = race.get("date") or f.parent.name
+        items = {"trifecta": race.get("ev_items") or [], "exacta": race.get("ex_items") or []}
+        if any(items.values()):
+            live[_race_key(date, race.get("jcd") or f.stem[:2], race.get("rno") or int(f.stem[3:]))] = (race, items)
+    if not live:
+        return "実戦の買い目がありません"
+    snaps = pd.read_csv(path, dtype=str)
+    snaps["race"] = snaps["race_date"].str.replace("-", "").str[:8] + "-" + snaps["venue"].str.zfill(2) + "-" + \
+        pd.to_numeric(snaps["race_no"], errors="coerce").fillna(0).astype(int).astype(str).str.zfill(2)
+    snaps = snaps[snaps["race"].isin(set(live))]
+    if "captured_at" in snaps:
+        snaps = snaps.sort_values("captured_at", na_position="first")
+    snaps = snaps.drop_duplicates(["race", "label"], keep="last")
+    db: dict[str, dict] = {}
+    for row in snaps.itertuples(index=False):
+        db.setdefault(row.race, {})[row.label] = {"trifecta": odds_history._parse(row.trifecta), "exacta": odds_history._parse(getattr(row, "exacta", "")),
+                                                  "at": getattr(row, "captured_at", None)}
+    lines = [f"実戦で決めたときのオッズと、データベース（検証の材料）のオッズを同じ組で比べる（実戦の買い目のあるレース {len(live):,}R、"
+             f"データベースにもあるレース {len(db):,}R）"]
+    if not db:
+        lines.append("  データベースの書き出しに、まだ実戦の日が入っていません（db_export.sh を流してから、もう一度）")
+        return "\n".join(lines)
+    for key, tag in (("trifecta", "3連単（試し）"), ("exacta", "2連単（試し）")):
+        ratio = {lab: [] for lab in LABELS}
+        fin_live, fin_t5, mins_live, mins_db = [], [], [], {lab: [] for lab in LABELS}
+        n = 0
+        for rk, (race, items) in live.items():
+            snap = db.get(rk)
+            if not snap or not items[key]:
+                continue
+            date = rk[:8]
+            at = (race.get("ev_at") if key == "trifecta" else race.get("ex_at"))
+            m = mins_before(date, race.get("deadline"), at)
+            if m is not None:
+                mins_live.append(m)
+            for lab in LABELS:
+                if lab in snap:
+                    mm = mins_before(date, race.get("deadline"), snap[lab]["at"])
+                    if mm is not None:
+                        mins_db[lab].append(mm)
+            for it in items[key]:
+                o = it.get("odds")
+                if not o:
+                    continue
+                n += 1
+                for lab in LABELS:
+                    v = (snap.get(lab) or {}).get(key, {}).get(it["combo"])
+                    if v:
+                        ratio[lab].append(o / v)
+                fin = (snap.get("FINAL") or {}).get(key, {}).get(it["combo"])
+                t5 = (snap.get("T5") or {}).get(key, {}).get(it["combo"])
+                if fin:
+                    fin_live.append(fin / o)
+                    if t5:
+                        fin_t5.append(fin / t5)
+        if not n:
+            continue
+        med = lambda xs: f"{np.median(xs):.2f}" if xs else "--"
+        avg = lambda xs: f"{np.mean(xs):.2f}" if xs else "--"
+        lines.append(f"\n■ {tag}：{n:,}組")
+        lines.append(f"  決めた時刻：実戦は締切の平均 {avg(mins_live)}分前" + "".join(
+            f"・データベースの{lab} {avg(mins_db[lab])}分前" for lab in LABELS if lab != "FINAL" and mins_db[lab]))
+        for lab in LABELS:
+            if ratio[lab]:
+                lines.append(f"  実戦のオッズ ÷ データベースの{_pad(lab, 6)} 中央値 {med(ratio[lab])}  平均 {avg(ratio[lab])}（{len(ratio[lab]):,}組）")
+        lines.append(f"  確定 ÷ 実戦のオッズ       中央値 {med(fin_live)}  平均 {avg(fin_live)}（{len(fin_live):,}組）")
+        lines.append(f"  確定 ÷ データベースのT5  中央値 {med(fin_t5)}  平均 {avg(fin_t5)}（{len(fin_t5):,}組。検証はこの下がり方で数えている）")
+    lines.append("\n見方：「実戦÷T5」が1に近い＝検証と同じ物差し。1よりはっきり大きい＝実戦は検証より早い（薄い）オッズで決めていて、検証の回収率が甘く出ている")
+    return "\n".join(lines)

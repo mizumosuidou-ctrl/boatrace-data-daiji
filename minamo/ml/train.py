@@ -201,7 +201,7 @@ def tune_decay(df: pd.DataFrame, prob: np.ndarray, max_races: int = 6000) -> flo
     if len(races) < 200:
         return PL_DECAY
     best, best_ll = PL_DECAY, -np.inf
-    for decay in np.arange(0.55, 1.01, 0.05):
+    for decay in np.arange(0.30, 1.01, 0.05):  # 10/7：0.55（前の下限）に張り付いたので広げた
         ll = 0.0
         for p, actual in races:
             probs = dict(trifecta_probs(p, decay))
