@@ -1121,3 +1121,25 @@ def test_odds_compare_matches_live_odds_with_database(tmp_path):
     assert "データベースにもあるレース 1R" in out
     assert "実戦のオッズ ÷ データベースのT5     中央値 1.00" in out
     assert "確定 ÷ 実戦のオッズ       中央値 0.60" in out
+
+
+def test_weekly_report_sums_last_week_and_splits_for_discord(tmp_path):
+    """週報：直近7日の実戦の成績を買い方ごとに（プラス・マイナスに分けて）、決める時刻の比べ、Discord 用に分ける。"""
+    from minamo import weekly
+
+    day = tmp_path / "20261005"
+    day.mkdir()
+    store.write_json(day / "01-01.json", {
+        "date": "20261005", "jcd": "01", "rno": 1, "deadline": "12:00", "venue": {"name": "桐生"},
+        "result": {"trifecta": "1-2-3", "exacta": "1-2", "payout": 3000, "exacta_payout": 500},
+        "ev_pick": ["1-2-3", "1-3-2"], "ex_pick": ["2-1"], "ex2_pick": ["1-2"],
+        "settle": {"ev_bought": True, "ev_hit": True, "ev_stake": 200, "ev_return": 3000,
+                   "ex_bought": True, "ex_hit": False, "ex_stake": 100, "ex_return": 0,
+                   "ex2_bought": True, "ex2_hit": True, "ex2_stake": 100, "ex2_return": 500}})
+    text = weekly.build(tmp_path, ml_dir=tmp_path, today="20261007")
+    plus, minus = text.split("✅ 今週プラス")[1].split("❌ 今週マイナス")
+    assert "3連単（試し）5分前：1R 的中1（100%） 回収率 1500.0% 収支 +28,000円" in plus
+    assert "2連単（試し）5分前：1R 的中0（0%） 回収率 0.0%" in minus
+    assert "2連単：5分前 0.0%（1R） / 2分前 500.0%（1R） / 1分前 --" in text
+    parts = weekly.chunks("\n".join(["あ" * 100] * 40), size=1800)
+    assert len(parts) == 3 and all(len(p) <= 1800 for p in parts)

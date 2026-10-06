@@ -14,6 +14,8 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 10 3 * * 1 root /opt/minamo/deploy/cron_ml.sh weekly
 # 月曜の2時40分：作り直せない記録のバックアップ（/opt/minamo/backup、直近4週）
 40 2 * * 1 root /opt/minamo/deploy/backup.sh >> /opt/minamo/var/cron_backup.log 2>&1
+# 月曜の8時5分：週報（先週の実戦の成績と学習の様子）を Discord に送る
+5 8 * * 1 root cd /opt/minamo/deploy && docker compose run --rm worker python -m minamo weekly --send >> /opt/minamo/var/cron_weekly.log 2>&1
 # 8時〜21時台の毎分：レースタイムモニターの今日の予想（1番手）を書き出す（試し買い「一致」が締切前に読む。データベースは読むだけ）
 * 8-21 * * * root /opt/minamo/deploy/rtm_live.sh >> /opt/minamo/var/cron_rtm_live.log 2>&1
 CRON
