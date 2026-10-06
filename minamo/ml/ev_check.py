@@ -1709,6 +1709,45 @@ def place_mult_report(races: list[dict]) -> list[str]:
     return lines
 
 
+def escape_skip_report(races: list[dict]) -> list[str]:
+    """21. イン逃げが弱いレースを見送ると（サイトの「イン逃げが弱いレース」の切り替えと同じ線）。
+    イン逃げ指数＝1コースの艇のMINAMOの1着確率 ÷ 0.85（100まで）。40未満＝イン逃し本線、55未満＝逃げ危険以下。
+    帯ごとと、見送ったあとの残りで、確率上位6点・期待値1.2以上（最大9点、補正なし）の的中と回収率。前半・後半に分けて。"""
+    from ..model import ESCAPE_FULL
+
+    def index(r):
+        co = r.get("course_of") or {}
+        one = next((l for l, c in co.items() if c == 1), 1)
+        p = (r.get("p_lane") or {}).get(one, r.get("p1"))
+        return max(0, min(100, round(100 * p / ESCAPE_FULL))) if p is not None else None
+
+    rs = sorted([{**r, "esc": index(r)} for r in races if index(r) is not None], key=lambda r: r["race"])
+    if len(rs) < 400:
+        return []
+    mid = rs[len(rs) // 2]["race"]
+    top6 = lambda r: sorted(r["probs"], key=r["probs"].get, reverse=True)[:6]
+    ev9 = lambda r: [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True)[:40]
+                     if r["probs"][c] >= MIN_P and r["t5"].get(c) and _ev(r, c) >= 1.2][:9]
+    one_won = lambda g: 100 * np.mean([r["hit"].split("-")[0] == str(next((l for l, c in (r.get("course_of") or {1: 1}).items() if c == 1), 1)) for r in g]) if g else float("nan")
+    lines = [f"\n21. イン逃げが弱いレースを見送ると（検証期間 {len(rs):,}R。イン逃げ指数＝1コースのMINAMOの1着確率÷0.85。払戻は確定オッズ）",
+             "  ■ 帯ごと"]
+    for lo, hi, tag in ((0, 40, "40未満（イン逃し本線）"), (40, 55, "40〜55（逃げ危険）"), (55, 70, "55〜70（五分）"), (70, 85, "70〜85（逃げ優勢）"), (85, 101, "85以上（逃げ濃厚）")):
+        g = [r for r in rs if lo <= r["esc"] < hi]
+        if not g:
+            continue
+        lines.append(f"    {_pad(tag, 24)}{len(g):>6,}R（{100 * len(g) / len(rs):4.1f}%） 1コース1着 {one_won(g):5.1f}%")
+        lines.append(f"      上位6点       {_pat_cell(g, top6)}")
+        lines.append(f"      期待値1.2以上 {_pat_cell(g, ev9)}")
+    lines.append(f"  ■ 見送ったあとの残り（前半・後半）")
+    for th, tag in ((0, "見送りなし"), (40, "イン逃し本線を見送り"), (55, "逃げ危険以下を見送り")):
+        g = [r for r in rs if r["esc"] >= th]
+        a, b = [r for r in g if r["race"] < mid], [r for r in g if r["race"] >= mid]
+        lines.append(f"    {_pad(tag, 24)}{len(g):>6,}R")
+        for ptag, pick in (("上位6点", top6), ("期待値1.2以上", ev9)):
+            lines.append(f"      {_pad(ptag, 14)}前半 {_pat_cell(a, pick)}  後半 {_pat_cell(b, pick)}")
+    return lines
+
+
 BAND_LOWS = (1.0, 5.0, 10.0, 15.0, 20.0)
 BAND_HIGHS = (30.0, 50.0, 80.0, 120.0, 200.0, float("inf"))
 
@@ -1891,4 +1930,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += odds_band_report(races)
     lines += outer_report(races)
     lines += place_mult_report(races)
+    lines += escape_skip_report(races)
     return "\n".join(lines)

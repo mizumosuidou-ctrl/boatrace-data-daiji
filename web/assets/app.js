@@ -228,7 +228,8 @@ function cellHtml(v, r, now, isNext) {
   const st = statusOf(state.date, r, now);
   const dl = deadlineMs(state.date, r.deadline);
   const link = `#/race/${state.date}/${v.jcd}/${r.rno}`;
-  const cls = `cell ${st}${isNext ? " next" : ""}`;
+  const skip = weakIn(r);
+  const cls = `cell ${st}${isNext ? " next" : ""}${skip ? " weak-in" : ""}`;
   const conf = r.confidence ?? 0;
   let body;
   if (st.startsWith("finished")) {
@@ -240,11 +241,25 @@ function cellHtml(v, r, now, isNext) {
   } else {
     const t = st === "soon" || st === "imminent" ? `<b data-deadline="${dl}">${fmtCountdown(dl - now)}</b>` : `<b>${esc(r.deadline)}</b>`;
     body = `<div class="t"><span>${r.rno}R</span>${t}</div>
-      <div class="mid">${r.honmei ? boat(r.honmei, "sm") : ""}<span class="pick">${esc(r.top_pick || "")}</span></div>
+      <div class="mid">${skip ? `<span class="pick muted">見送り</span>` : `${r.honmei ? boat(r.honmei, "sm") : ""}<span class="pick">${esc(r.top_pick || "")}</span>`}</div>
       <div class="cbar"><i style="width:${conf}%"></i></div>`;
   }
   const label = `${v.name}${r.rno}R 締切${r.deadline} ${r.result ? "結果" + r.result : "本命" + (r.honmei || "")}`;
   return `<a class="${cls}" href="${link}" aria-label="${esc(label)}">${body}</a>`;
+}
+
+// イン逃げが弱いレースを見送る（この端末だけの設定）。イン逃げ指数＝MINAMOの1コースの1着確率から（40未満＝イン逃し本線、55未満＝逃げ危険以下）
+const SKIP_IN = [[0, "見送りなし"], [40, "イン逃し本線を見送り"], [55, "逃げ危険以下を見送り"]];
+const getSkipIn = () => { try { return Number(localStorage.getItem("minamo-skip-in")) || 0; } catch { return 0; } };
+const weakIn = (r, th = getSkipIn()) => th > 0 && r.escape != null && r.escape < th;
+const skipInHtml = (th = getSkipIn()) => `<div class="filters skip-in" role="group" aria-label="イン逃げが弱いレース"><span class="small muted">イン逃げが弱いレース：</span>${SKIP_IN.map(([v, l]) => `<button class="filter" data-skipin="${v}" aria-pressed="${v === th}">${l}</button>`).join("")}</div>`;
+function bindSkipIn(root, after) {
+  root.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-skipin]");
+    if (!b) return;
+    try { localStorage.setItem("minamo-skip-in", b.dataset.skipin); } catch { /* 保存できなくても切替はする */ }
+    after();
+  });
 }
 
 const FILTERS = [
@@ -283,11 +298,13 @@ function monitorHtml(day, now, filter) {
 const getHomeKind = () => { try { const k = localStorage.getItem("minamo-home-kind"); return REC_KINDS[k] ? k : "main"; } catch { return "main"; } };
 function homeKpisHtml(day, kind = getHomeKind()) {
   const seg = `<div class="seg home-kind" role="group" aria-label="成績の予想">${Object.entries(REC_KINDS).map(([k, x]) => `<button type="button" data-kind="${k}" class="${k === kind ? "on" : ""}">${x.label}</button>`).join("")}</div>`;
-  return `<div class="home-kpis">${seg}${kind === "main" ? kpisHtml(day.totals) : kindKpisHtml(kind)}</div>`;
+  return `<div class="home-kpis">${seg}${kind === "main" && !getSkipIn() ? kpisHtml(day.totals) : kindKpisHtml(kind)}</div>`;
 }
 function kindKpisHtml(kind) {
   const K = REC_KINDS[kind];
-  const races = allRaces();
+  const all = allRaces();
+  const races = all.filter((r) => !weakIn(r));  // イン逃げが弱いレースを見送る設定なら、その分を除いて数える
+  const skipped = all.length - races.length;
   const bought = races.filter((r) => (K.picks(r) || []).length).length;
   const t = sumRaces(races, kind);
   const f = (a, b) => (b ? ((a / b) * 100).toFixed(1) : "--");
@@ -296,7 +313,7 @@ function kindKpisHtml(kind) {
     <div class="kpi"><b class="num">${t.races}<span class="muted" style="font-size:.5em">/${bought}</span></b><span>確定/買う</span></div>
     <div class="kpi hit"><b>${f(t.hits, t.races)}<small style="font-size:.5em">%</small></b><span>的中 ${t.hits}R</span></div>
     <div class="kpi"><b>${f(t.ret, t.stake)}<small style="font-size:.5em">%</small></b><span>回収率</span></div>
-    <div class="kpi"><b style="font-size:.7em">${t.stake ? signedYen(t.ret - t.stake) : "--"}</b><span>収支（${unit}）</span></div>
+    <div class="kpi"><b style="font-size:.7em">${t.stake ? signedYen(t.ret - t.stake) : "--"}</b><span>収支（${unit}）${skipped ? ` · 見送り${skipped}R` : ""}</span></div>
   </div>`;
 }
 
@@ -330,6 +347,7 @@ async function renderHome(refresh = false) {
         <div id="homeKpis">${homeKpisHtml(state.day)}</div>
       </div>
       <div class="filters" role="group" aria-label="絞り込み">${FILTERS.map(([k, l]) => `<button class="filter" data-filter="${k}" aria-pressed="${k === filter}">${l}</button>`).join("")}</div>
+      <div id="skipIn">${skipInHtml()}</div>
       <div id="monitorBody">${monitorHtml(state.day, now, filter)}</div>
     </section>`;
   if (refresh && state.route.name === "home") {
@@ -348,9 +366,15 @@ async function renderHome(refresh = false) {
     try { localStorage.setItem("minamo-home-kind", b.dataset.kind); } catch { /* 保存できなくても切替はする */ }
     $("#homeKpis").innerHTML = homeKpisHtml(state.day, b.dataset.kind);
   });
-  $$(".filter", main).forEach((b) => b.addEventListener("click", () => {
+  bindSkipIn($("#skipIn"), () => {
+    $("#skipIn").innerHTML = skipInHtml();
+    $("#homeKpis").innerHTML = homeKpisHtml(state.day);
+    $("#monitorBody").innerHTML = monitorHtml(state.day, nowMs(), state.filter);
+    scrollCellsToNow(main);
+  });
+  $$("[data-filter]", main).forEach((b) => b.addEventListener("click", () => {
     state.filter = b.dataset.filter;
-    $$(".filter", main).forEach((x) => x.setAttribute("aria-pressed", x === b));
+    $$("[data-filter]", main).forEach((x) => x.setAttribute("aria-pressed", x === b));
     $("#monitorBody").innerHTML = monitorHtml(state.day, nowMs(), state.filter);
     scrollCellsToNow(main);
   }));
@@ -646,7 +670,9 @@ function betCountHtml(race) {
   if (race.fm_pick?.rule === "A") rows.push(`隊形①-② ${pts(n(race.fm_pick.combos))}`);
   if (race.ag_pick && n(race.ag_pick.combos)) rows.push(`一致 ${pts(n(race.ag_pick.combos))}`);
   const tail = value ? ` · 妙味${value}点は参考（どの成績にも入れていません）` : "";
-  return `<p class="small bet-count"><span class="chip">勝負した点数</span> ${rows.map((x) => `<span class="nowrap">${x}</span>`).join(" · ")}${tail}</p>`;
+  const ix = race.prediction?.escape?.index;
+  const weak = weakIn({ escape: ix }) ? `<p class="small bet-count"><span class="chip">見送り</span> イン逃げ指数 ${ix}（${esc(race.prediction.escape.label || "")}）。あなたの設定（${esc((SKIP_IN.find(([v]) => v === getSkipIn()) || [, ""])[1])}）では、このレースは見送りです（トップ・買い候補の設定で切り替え）</p>` : "";
+  return `${weak}<p class="small bet-count"><span class="chip">勝負した点数</span> ${rows.map((x) => `<span class="nowrap">${x}</span>`).join(" · ")}${tail}</p>`;
 }
 
 function ticketsHtml(race) {
@@ -1084,7 +1110,8 @@ const getPickKind = () => { try { return localStorage.getItem("minamo-pick-kind"
 async function renderPicks(refresh = false, k = getPickKind()) {
   if (!state.day || state.day.date !== state.date || refresh) await loadDay();
   const date = state.date, now = nowMs();
-  const races = allRaces().filter((r) => Array.isArray(r[`${k}_pick`]));
+  const weak = allRaces().filter((r) => Array.isArray(r[`${k}_pick`]) && r[`${k}_pick`].length && weakIn(r)).sort((a, b) => b.deadline.localeCompare(a.deadline));
+  const races = allRaces().filter((r) => Array.isArray(r[`${k}_pick`]) && !weakIn(r));
   const bought = races.filter((r) => r[`${k}_pick`].length);
   const skipped = races.length - bought.length;
   const skippedC2 = races.filter((r) => !FLAT_KINDS.includes(k) && r.trial_skip && !r[`${k}_pick`].length).sort((a, b) => b.deadline.localeCompare(a.deadline));
@@ -1098,6 +1125,7 @@ async function renderPicks(refresh = false, k = getPickKind()) {
   const y = scrollY;
   $("#main").innerHTML = `<div class="wrap"><section class="section">
     <div class="seg seg-big" role="group" aria-label="選び方" id="pickKind">${Object.entries(PICK_KIND).map(([kk, x]) => `<button type="button" data-kind="${kk}" class="${kk === k ? "on" : ""}">${x.label}</button>`).join("")}</div>
+    <div id="skipIn">${skipInHtml()}</div>
     <span class="eyebrow">${fmtDate(date)}（${weekday(date)}）</span>
     <h1 class="section-title" style="font-size:clamp(36px,5vw,72px)">今買う候補<small>試験中の選び方（${PICK_KIND[k].label}）：${PICK_KIND[k].rule}。無ければ見送り。${PICK_KIND[k].check}でしたが、まだ試験中です</small></h1>
     ${k === "time" ? `<p class="small muted" style="margin:0 0 6px">仮想資金で数える検証用です（実際の購入の指示ではありません）。1点の金額は設定（通常予想が6点なら6点×1点の金額、そうでなければ12点）のままです。</p>` : k === "co" ? `<form class="panel stake-form" id="stakeForm" onsubmit="return false">
@@ -1128,11 +1156,14 @@ async function renderPicks(refresh = false, k = getPickKind()) {
     ${done.length ? `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">結果<small>新しい順</small></h2></div></div><div class="pick-grid">${done.map((r) => pickCard(date, r, now, k, s)).join("")}</div>` : ""}
     ${k !== "time" && skippedC2.length ? `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">見送ったレース<small>②の平均スタート順位が①より0.5以上速いレースは、試し買いを見送ります（過去の検証で、このレースの3連単は約70%とはっきり負けていたため）</small></h2></div></div>
     <div class="panel skip-list">${skippedC2.map((r) => `<a href="#/race/${date}/${r.v.jcd}/${r.rno}" class="skip-row"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span><span class="chip">見送り</span><span class="small">${esc(r.trial_skip)}</span>${pickRes(r, k) ? `<span class="small nowrap">結果 ${esc(pickRes(r, k))}${pickPay(r, k) ? ` ${yen(pickPay(r, k) * BET_UNIT)}` : ""}</span>` : ""}</a>`).join("")}</div>` : ""}
+    ${weak.length ? `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">イン逃げが弱いので見送ったレース<small>あなたの設定（${esc((SKIP_IN.find(([v]) => v === getSkipIn()) || [, ""])[1])}）で、今日の候補・的中・回収率から外しています。サイト全体の成績は変わりません</small></h2></div></div>
+    <div class="panel skip-list">${weak.map((r) => `<a href="#/race/${date}/${r.v.jcd}/${r.rno}" class="skip-row"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span><span class="chip">イン逃げ指数 ${r.escape}</span>${pickRes(r, k) ? `<span class="small nowrap">結果 ${esc(pickRes(r, k))}${r[`${k}_hit`] ? ` <b class="pos">（買っていれば的中）</b>` : ""}</span>` : ""}</a>`).join("")}</div>` : ""}
     ${refB.length ? `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">参考：記録だけのレース（B）<small>②の平均スタート順位が①より0.5以上速く、隊形が ①〈②④③ のレース。過去の検証は164.8%ですが102レースしかないので、買い目にはせず成績だけを数えます</small></h2></div></div>
     <div class="panel skip-list">${refB.map((r) => `<a href="#/race/${date}/${r.v.jcd}/${r.rno}" class="skip-row"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span><span class="chip">記録</span><span class="small">2連単 ${esc(r.fmb_pick[0])}</span>${r.result_ex ? `<span class="small nowrap">結果 ${esc(r.result_ex)}${r.fmb_hit ? ` <b class="pos">的中 ${yen((r.payout_ex || 0) * BET_UNIT)}</b>` : ""}</span>` : ""}</a>`).join("")}</div>` : ""}
     <p class="small muted" style="margin-top:22px;line-height:1.7">これまでの通算は<a href="#/record">成績</a>の「試験中：オッズで絞った買い目」にあります。舟券の購入はご自身の判断でお願いします。</p>
   </section></div>`;
   if (refresh) scrollTo({ top: y });
+  bindSkipIn($("#skipIn"), () => renderPicks(false, k));
   $("#pickKind").addEventListener("click", (ev) => {
     const b = ev.target.closest("[data-kind]");
     if (!b) return;

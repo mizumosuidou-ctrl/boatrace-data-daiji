@@ -397,6 +397,8 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .cell.soon .t b { color: var(--accent); }
 .cell.imminent { background: rgba(255, 107, 107, .08); }
 .cell.imminent .t b { color: var(--miss); }
+.cell.weak-in { opacity: .45; }
+.skip-in { align-items: center; }
 .cell.next { box-shadow: inset 0 0 0 1px rgba(var(--water-a), .55); }
 .cell.next::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--accent); }
 .cell.closed .t b { color: var(--muted); }
