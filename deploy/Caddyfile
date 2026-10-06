@@ -3,7 +3,8 @@
 	encode zstd gzip
 	file_server
 	header /data/* Cache-Control "no-cache"
-	header /assets/* Cache-Control "public, max-age=3600"
+	# 見た目・動き（app.js・style.css など）は毎回新しい版があるか確かめる（⌘+R で入れ替わる。変わっていなければ 304 で軽い）
+	header /assets/* Cache-Control "no-cache"
 	header {
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin
