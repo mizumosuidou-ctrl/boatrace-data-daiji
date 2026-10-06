@@ -659,6 +659,28 @@ def test_place_models_change_second_and_third(monkeypatch):
     assert [b.win for b in mixed.boats] == pytest.approx([b.win for b in plain.boats])
 
 
+def test_place_mult_lowers_course_one_in_second_and_third(monkeypatch):
+    """2着・3着の残りやすさの倍率で1コースを下げると、①が2着・3着の組が下がる。1着の確率は変わらない。"""
+    from minamo import model
+
+    card = parsers.parse_racelist(RACELIST_HTML, "20261001", "01", 12)
+    boats = [e.boat for e in card.entries if not e.absent]
+    p = {b: (0.5 if b == boats[0] else 0.1) for b in boats}
+
+    def fake(mult):
+        return lambda card, before: {"engine": "lightgbm-pre", "pl_decay": 0.82, "place_mult": mult,
+                                     "boats": {b: {"p": p[b], "factors": {}, "start_order": float(b)} for b in boats}}
+
+    monkeypatch.setattr(model, "_ml_result", fake(None))
+    plain = predict(card)
+    monkeypatch.setattr(model, "_ml_result", fake([0.6, 1.0, 1.0, 1.0, 1.2, 1.2]))
+    fixed = predict(card)
+    one_place = lambda pred: sum(v for k, v in pred.trifecta if str(boats[0]) in k.split("-")[1:])
+    assert one_place(fixed) < one_place(plain)
+    assert sum(v for _, v in fixed.trifecta) == pytest.approx(1.0)
+    assert [b.win for b in fixed.boats] == pytest.approx([b.win for b in plain.boats])
+
+
 def test_facts_backfill_adds_days_after_the_database(tmp_path):
     """データベースの実績が止まった次の日から、公式サイトの結果・出走表・直前情報で実績・展示・風を足す。"""
     import pandas as pd

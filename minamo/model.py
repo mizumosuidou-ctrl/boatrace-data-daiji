@@ -213,6 +213,12 @@ def predict(card: RaceCard, before: Optional[BeforeInfo] = None, odds: Optional[
     if w > 0 and all("q" in ml["boats"].get(b, {}) for b in boats):
         s2 = {b: soft[b] ** (1 - w) * ml["boats"][b]["q"][0] ** w for b in boats}
         s3 = {b: soft[b] ** (1 - w) * ml["boats"][b]["q"][1] ** w for b in boats}
+    mult = ml.get("place_mult") if ml and engine.startswith("lightgbm") else None
+    if mult and len(mult) == 6:  # 2着・3着の残りやすさ（進入コース別の倍率。学習で良くなったときだけ）
+        cof = {s.boat: s.course for s in scores}
+        f = {b: float(mult[cof[b] - 1]) if 1 <= (cof.get(b) or 0) <= 6 else 1.0 for b in boats}
+        s2 = {b: s2[b] * f[b] for b in boats}
+        s3 = {b: s3[b] * f[b] for b in boats}
     tri: dict[str, float] = {}
     ex: dict[str, float] = {}
     for a, b, c in permutations(boats, 3):
