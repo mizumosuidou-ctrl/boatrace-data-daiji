@@ -42,6 +42,8 @@ RULES = {"ev": [("", "補正なし・最大6点", (94.9, None, None)), ("2026100
          "fmb": [("", "②が速い＋①〈②④③（記録だけ）", (164.8, None, None))],
          # 一致（rtm-learn「4.」）：RTMの1番手が①以外で MINAMO も35%以上 → 2連単 その艇-①（レース前の予想 DEEP 134.3%・NORMAL 130.2%）
          "ag": [("", "RTMとMINAMOが①以外の同じ艇 → 2連単 その艇-①", (130.2, None, None))],
+         # 2連単（全レース。見送りなし・確率の上位3点）：ユーザーの希望（10/6）。過去の検証は ev-check「6.」の確率上位3点
+         "xa": [("", "全レース・MINAMOの確率の上位3点", (None, None, None))],
          # 🍒穴狙い🍒（記録だけ。ev-check「16.」：A 74.2%・B 75.7%）
          "ch": [("", "🍒 A：MINAMOの上位12点（①頭以外）", (74.2, None, None))],
          "chb": [("", "🍒 B：攻める艇とその外の頭で12点", (75.7, None, None))]}
@@ -50,6 +52,7 @@ LABEL = {"ev": "3連単（期待値1.2以上）", "ex": "2連単（期待値1.2�
          "time": "TIME予想（あなたの予想方法・仮想資金）", "fm": "隊形①-②（①〈③②④ → 2連単①-②）",
          "fmb": "隊形①-② B（②が速い＋①〈②④③ → 2連単①-②。記録だけ）",
          "ag": "一致（RTMの1番手が①以外で、MINAMOもその艇を35%以上 → 2連単 その艇-①）",
+         "xa": "2連単（全レース。見送りなし・MINAMOの確率の上位3点）",
          "ch": "🍒穴狙い🍒 A（外の方がスタートが0.4以上速い所があるレースで、イン逃しだけ12点。記録だけ）",
          "chb": "🍒穴狙い🍒 B（攻める艇とその外の頭で12点。記録だけ）"}
 # ev-check「10.」の目安：資金10万円・平掛けの1点・ケリー1/4の1点の上限
@@ -61,7 +64,7 @@ def rows(data_dir: Path, k: str) -> list[dict]:
     """試験中の買い目を買って結果の出たレースを、締切順に。stake・ret は1点100円で数えた円。
     レースごとのファイル（日付/場-R.json）の settle を読む（day.json の一覧は、古い日だと払戻の欄が無いことがある）。"""
     out, src = [], {"co": "ev", "fmb": "fm", "chb": "ch"}.get(k, k)  # 合成オッズ配分の組・オッズ・時刻は3連単のもの
-    exa = k in ("ex", "fm", "fmb", "ag")  # 2連単
+    exa = k in ("ex", "fm", "fmb", "ag", "xa")  # 2連単
     for path in sorted(Path(data_dir).glob("*/[0-9][0-9]-[0-9][0-9].json")):
         race = store.read_json(path) or {}
         st, res = race.get("settle") or {}, race.get("result") or {}
@@ -77,7 +80,7 @@ def rows(data_dir: Path, k: str) -> list[dict]:
                     "result": combo, "pay": (res.get("exacta_payout" if exa else "payout") or 0),
                     "items": [] if k in ("time", "fmb", "chb") else race.get(f"{src}_items") or [],
                     "mins": mins_before(date, race.get("deadline"), tp.get("at") if k == "time" else
-                                        (race.get(f"{src}_pick") or {}).get("at") if src in ("fm", "ag", "ch") else race.get(f"{src}_at")),
+                                        (race.get(f"{src}_pick") or {}).get("at") if src in ("fm", "ag", "ch", "xa") else race.get(f"{src}_at")),
                     "n": len(tp.get("combos") or []) if k == "time" else None,
                     "s12": float(st.get("time12_stake") or 0), "r12": float(st.get("time12_return") or 0),
                     "in_escape": st.get("time_in_escape"), "edge": (race.get("ch_pick") or {}).get("edge")})
@@ -245,6 +248,6 @@ def daily(rs: list[dict]) -> list[str]:
 
 def build(data_dir: Path = store.DATA_DIR) -> str:
     lines = ["実戦の成績（試験中の買い目。締切前に決めた組を、その時のオッズで。幅はレースを入れ替えて1000回数え直した下5%〜上95%）"]
-    for k in ("ev", "co", "ex", "time", "fm", "fmb", "ag", "ch", "chb"):
+    for k in ("ev", "co", "ex", "time", "fm", "fmb", "ag", "xa", "ch", "chb"):
         lines += section(rows(data_dir, k), k)
     return "\n".join(lines)

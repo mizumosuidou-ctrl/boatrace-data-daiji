@@ -168,6 +168,21 @@ def ag_pick(boats, rtm: Optional[dict]) -> Optional[dict]:
             "rtm_at": rtm.get("at"), "p": round(p, 3), "rule": rule, "combos": [f"{b.boat}-{one}"] if ok else []}
 
 
+# 2連単（全レース）：見送りなしで、MINAMOの2連単の確率（3連単の確率を足したもの・補正なし）の上位 XA_N 点を毎レース。
+#   ユーザーの希望（10/6）。期待値・オッズの帯・②が速い見送りは使わない。成績は試し買いの2連単（ex）とは別に数える
+XA_N = 3
+
+
+def xa_pick(trifecta: list, odds2: Optional[dict[str, float]] = None, n: int = XA_N) -> dict:
+    """2連単（全レース）の買い目：MINAMOの2連単の確率の上位 n 点（確率・そのときのオッズ）。"""
+    xp: dict[str, float] = {}
+    for c, p in trifecta:
+        k = c.rsplit("-", 1)[0]
+        xp[k] = xp.get(k, 0.0) + p
+    cs = sorted(xp, key=xp.get, reverse=True)[:n]
+    return {"combos": cs, "items": [{"combo": c, "p": round(xp[c], 4), "odds": (odds2 or {}).get(c)} for c in cs]}
+
+
 # 🍒穴狙い🍒（ユーザーの予想方法。記録だけ）：展示の並びで ①〈②・②〈③・③〈④・④〈⑤ のどこかに、外の艇の方が平均スタート順位で
 #   CHERRY_GAP 以上速い所があれば、イン逃し（①頭以外）だけの12点。A＝MINAMOの確率の上位12点、B＝攻める艇（一番差の大きい所の外）とその外の頭で12点。
 #   10/5 ev-check「16.」：A 74.2%・B 75.7%（全部のレースと同じ）→ お金はかけずに記録し、MINAMOが①を市場より弱いと見たレース（edge）で絞れるかを見る
@@ -263,7 +278,8 @@ def co_picks(trifecta: list, odds: Optional[dict[str, float]], th: float = CO_MI
 
 def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Optional[list] = None,
            ex: Optional[list] = None, ev_items: Optional[list] = None, time_pick: Optional[dict] = None,
-           fm_pick: Optional[dict] = None, ag_pick: Optional[dict] = None, ch_pick: Optional[dict] = None) -> dict:
+           fm_pick: Optional[dict] = None, ag_pick: Optional[dict] = None, ch_pick: Optional[dict] = None,
+           xa_pick: Optional[dict] = None) -> dict:
     picks = [p["combo"] for p in ai.get("picks", [])]
     order = result.order
     hit = result.trifecta if result.trifecta in picks else None
@@ -338,6 +354,14 @@ def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Option
         out["ag_hit"] = result.exacta in cs
         out["ag_stake"] = 100 * len(cs)
         out["ag_return"] = (result.exacta_payout or 0) if result.exacta in cs else 0
+    # 2連単（全レース。見送りなし・確率の上位3点）
+    if xa_pick is not None and result.exacta:
+        cs = xa_pick.get("combos") or []
+        out["xa_bought"] = bool(cs)
+        out["xa_hit"] = result.exacta in cs
+        out["xa_rank"] = cs.index(result.exacta) + 1 if result.exacta in cs else None
+        out["xa_stake"] = 100 * len(cs)
+        out["xa_return"] = (result.exacta_payout or 0) if result.exacta in cs else 0
     # 🍒穴狙い🍒（記録だけ。A＝ch、B＝chb。3連単12点）
     if ch_pick is not None:
         for k, key in (("ch", "combos"), ("chb", "combos_b")):
@@ -375,6 +399,7 @@ def build_race(
     fm_pick: Optional[dict] = None,
     ag_pick: Optional[dict] = None,
     ch_pick: Optional[dict] = None,
+    xa_pick: Optional[dict] = None,
 ) -> dict:
     be = {b.boat: b for b in (before.entries if before else [])}
     rt = (getattr(card, "racetime", None) or {}).get("racers") or {}
@@ -457,7 +482,7 @@ def build_race(
             "rows": [asdict(r) for r in result.rows],
         }
         if not result.cancelled and result.trifecta:
-            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick, fm_pick, ag_pick, ch_pick)
+            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick, fm_pick, ag_pick, ch_pick, xa_pick)
     return payload
 
 
@@ -543,6 +568,11 @@ def race_summary(race: dict) -> dict:
         "ag_items": race.get("ag_items"),
         "ag_at": (race.get("ag_pick") or {}).get("at"),
         "ag_info": {k: (race.get("ag_pick") or {}).get(k) for k in ("rtm_top", "rtm_mode", "p", "rule")} if race.get("ag_pick") else None,
+        # 2連単（全レース）
+        **{f"xa_{f}": st.get(f"xa_{f}") for f in ("bought", "hit", "rank", "stake", "return")},
+        "xa_pick": (race.get("xa_pick") or {}).get("combos") if race.get("xa_pick") else None,
+        "xa_items": race.get("xa_items"),
+        "xa_at": (race.get("xa_pick") or {}).get("at"),
         # 🍒穴狙い🍒（記録だけ）
         **{f"{k}_{f}": st.get(f"{k}_{f}") for k in ("ch", "chb") for f in ("bought", "hit", "rank", "stake", "return")},
         "ch_pick": (race.get("ch_pick") or {}).get("combos") if race.get("ch_pick") else None,
@@ -637,6 +667,7 @@ def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
               "fm_races": 0, "fm_bought": 0, "fm_hits": 0, "fm_stake": 0, "fm_return": 0,
               "fmb_bought": 0, "fmb_hits": 0, "fmb_stake": 0, "fmb_return": 0,
               "ag_races": 0, "ag_bought": 0, "ag_hits": 0, "ag_stake": 0, "ag_return": 0,
+              "xa_races": 0, "xa_bought": 0, "xa_hits": 0, "xa_stake": 0, "xa_return": 0,
               "ch_races": 0, "ch_bought": 0, "ch_hits": 0, "ch_stake": 0, "ch_return": 0,
               "chb_bought": 0, "chb_hits": 0, "chb_stake": 0, "chb_return": 0}
     for vd in sorted(vdays, key=lambda v: v.jcd):
@@ -707,6 +738,12 @@ def build_day(date: str, vdays: list[VenueDay], demo: bool = False) -> dict:
                     totals["ag_hits"] += int(st["ag_hit"])
                     totals["ag_stake"] += st["ag_stake"]
                     totals["ag_return"] += st["ag_return"]
+                if "xa_hit" in st:
+                    totals["xa_races"] += 1
+                    totals["xa_bought"] += int(st["xa_bought"])
+                    totals["xa_hits"] += int(st["xa_hit"])
+                    totals["xa_stake"] += st["xa_stake"]
+                    totals["xa_return"] += st["xa_return"]
                 if "ch_hit" in st:
                     totals["ch_races"] += 1
                     for k in ("ch", "chb"):
@@ -745,6 +782,7 @@ def update_record(date: str, totals: dict, demo: bool) -> None:
                                                     "fm_races", "fm_bought", "fm_hits", "fm_stake", "fm_return",
                                                     "fmb_bought", "fmb_hits", "fmb_stake", "fmb_return",
                                                     "ag_races", "ag_bought", "ag_hits", "ag_stake", "ag_return",
+                                                    "xa_races", "xa_bought", "xa_hits", "xa_stake", "xa_return",
                                                     "ch_races", "ch_bought", "ch_hits", "ch_stake", "ch_return",
                                                     "chb_bought", "chb_hits", "chb_stake", "chb_return")}
     day_files = [read_json(DATA_DIR / d["date"] / "day.json") for d in days]
