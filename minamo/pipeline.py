@@ -140,6 +140,7 @@ class Pipeline:
         payload["ch_items"] = [{"combo": c, "p": round(tri_p.get(c, 0.0), 4), "odds": (ch.get("odds") or {}).get(c)}
                                for c in ch.get("combos") or []] if ch else None
         payload["odds2"] = st.get("odds2") or {}
+        payload["mkt_hist"] = st.get("mkt_hist") or []  # オッズからの読み：取り直すたびの市場の1着の見込み
         payload["formation"] = self._formation(card, pred, vday)
         store.write_json(store.race_path(date, jcd, rno), payload)
         return payload
@@ -303,6 +304,11 @@ class Pipeline:
             for tag, hi, lo in LATE_FIX:
                 if lo < mins_left <= hi and f"ev{tag}_pick" not in st:
                     self._late_pick(st, tag, date, card, before, odds, odds2, now)
+        if odds and len(odds) >= 60:  # オッズからの読み：取り直すたびに市場の1着の見込みを残す（人気の動きを見るため）
+            mins = self._mins_left(date, card.deadline, now)
+            hist = st.get("mkt_hist") or []
+            hist.append({"min": round(mins, 1) if mins != float("inf") else None, "win": store.market_win(odds)})
+            st["mkt_hist"] = hist[-12:]
         st["odds"] = odds or st.get("odds")
         st["odds2"] = odds2 or st.get("odds2")
         st["before_at"] = now.isoformat()

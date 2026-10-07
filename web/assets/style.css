@@ -896,3 +896,7 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .sheet table.compare-t th:first-child { width: 22%; }
 .sheet .compare-t td, .sheet .compare-t th { text-align: left; white-space: normal; line-height: 1.6; vertical-align: top; }
 .sheet .compare-t td { font-family: var(--f-sans); }
+
+.odds-say { margin: 0 2px 12px; line-height: 1.9; }
+.sheet table.odds-read { min-width: 720px; }
+.sheet td.neg { color: var(--miss); }

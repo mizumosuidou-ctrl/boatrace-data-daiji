@@ -675,6 +675,56 @@ function betCountHtml(race) {
   return `${weak}<p class="small bet-count"><span class="chip">勝負した点数</span> ${rows.map((x) => `<span class="nowrap">${x}</span>`).join(" · ")}${tail}</p>`;
 }
 
+// オッズからの読み（推奨買い目とは別の欄。予想には混ぜない）：MINAMOと市場（オッズ）の見立ての比べと、人気の動き
+function oddsReadHtml(race) {
+  const O3 = race.odds_all || {}, O2 = race.odds2 || {};
+  const inv3 = Object.entries(O3).filter(([, v]) => v > 0).map(([c, v]) => [c, 1 / v]);
+  if (inv3.length < 60) return "";
+  const t3 = inv3.reduce((a, [, x]) => a + x, 0);
+  const inv2 = Object.entries(O2).filter(([, v]) => v > 0).map(([c, v]) => [c, 1 / v]);
+  const t2 = inv2.reduce((a, [, x]) => a + x, 0);
+  const C = courseOf(race);
+  const P = Object.fromEntries(race.prediction.boats.map((b) => [b.boat, b]));
+  const name = Object.fromEntries(race.entries.map((e) => [e.boat, e.name]));
+  const boats = race.prediction.boats.map((b) => b.boat).sort((a, b) => (C[a] ?? a) - (C[b] ?? b));
+  const mWin = Object.fromEntries(boats.map((b) => [b, inv3.filter(([c]) => c.split("-")[0] === String(b)).reduce((a, [, x]) => a + x, 0) / t3]));
+  const mTop2 = inv2.length >= 20 ? Object.fromEntries(boats.map((b) => [b, inv2.filter(([c]) => c.split("-").includes(String(b))).reduce((a, [, x]) => a + x, 0) / t2])) : null;
+  const H = (race.mkt_hist || []).filter((h) => h.win);
+  const first = H.length >= 2 ? H[0] : null, last = H.length ? H[H.length - 1] : null;
+  const move = (b) => (first && last && first.win[b] != null && last.win[b] != null ? last.win[b] - first.win[b] : null);
+  const pt = (x) => (x == null ? "--" : `${x > 0 ? "+" : x < 0 ? "−" : "±"}${Math.abs(x * 100).toFixed(1)}`);
+  const gapCls = (g) => (g >= 0.05 ? "pos" : g <= -0.05 ? "neg" : "");
+  const rows = boats.map((b) => {
+    const g = P[b].win - mWin[b], g2 = mTop2 ? (P[b].top2 || 0) - mTop2[b] : null, mv = move(b);
+    return `<tr><td>${C[b] ? courseTag(C[b], b, exEntry(race)) : "--"}</td><td>${boat(b, "sm")}</td><td class="name">${esc(name[b] || "")}</td>
+      <td>${pct(P[b].win, 1)}</td><td>${pct(mWin[b], 1)}</td><td class="${gapCls(g)}">${pt(g)}</td>
+      <td class="${mv == null ? "muted" : mv >= 0.03 ? "pos" : mv <= -0.03 ? "neg" : ""}">${pt(mv)}</td>
+      ${mTop2 ? `<td>${pct(P[b].top2 || 0, 1)}</td><td>${pct(mTop2[b], 1)}</td><td class="${gapCls(g2)}">${pt(g2)}</td>` : ""}</tr>`;
+  }).join("");
+  // ひとことの読み
+  const fav = boats.slice().sort((a, b) => mWin[b] - mWin[a])[0];
+  const best = boats.slice().sort((a, b) => (P[b].win - mWin[b]) - (P[a].win - mWin[a]))[0];
+  const worst = boats.slice().sort((a, b) => (P[a].win - mWin[a]) - (P[b].win - mWin[b]))[0];
+  const up = first ? boats.slice().sort((a, b) => (move(b) ?? -1) - (move(a) ?? -1))[0] : null;
+  const say = [`市場の1番人気は${boat(fav, "sm")}（1着の見込み ${pct(mWin[fav], 0)}%、MINAMO ${pct(P[fav].win, 0)}%）。`];
+  if (P[best].win - mWin[best] >= 0.05) say.push(`MINAMOは${boat(best, "sm")}を市場より${pct(P[best].win - mWin[best], 0)}ポイント高く見ている（妙味の候補）。`);
+  if (P[worst].win - mWin[worst] <= -0.05) say.push(`${boat(worst, "sm")}は市場の人気がMINAMOより${pct(mWin[worst] - P[worst].win, 0)}ポイント高い（人気しすぎの可能性）。`);
+  if (up && (move(up) ?? 0) >= 0.03) say.push(`締切${first.min ?? "?"}分前→${last.min ?? "?"}分前で、${boat(up, "sm")}にお金が集まっている（＋${pct(move(up), 0)}ポイント）。`);
+  if (say.length === 1) say.push("MINAMOと市場の見立てに大きな違いはありません。");
+  const mTop = Object.entries(O3).filter(([, v]) => v > 0).sort((a, b) => a[1] - b[1]).slice(0, 3).map(([c, v]) => `${esc(c)}（${v}倍）`).join(" ");
+  const tri = race.tri_all || {};
+  const mnTop = Object.keys(tri).sort((a, b) => tri[b] - tri[a]).slice(0, 3).map((c) => `${esc(c)}${O3[c] ? `（${O3[c]}倍）` : ""}`).join(" ");
+  return `<section class="section">
+      <div class="section-head"><div><h2 class="section-title">オッズからの読み<small>MINAMOの見立てと、市場（オッズ＝みんなの予想）の見立ての比べ。推奨買い目には混ぜていません（混ぜると当たりは増えても回収率が下がるため）${last && last.min != null ? `。オッズは締切${last.min}分前のもの` : ""}</small></h2></div></div>
+      <p class="odds-say">${say.join("<br>")}</p>
+      <div class="panel sheet"><table class="odds-read">
+        <thead><tr><th>進入</th><th>艇</th><th>選手</th><th>1着 MINAMO</th><th>1着 市場</th><th>差</th><th>人気の動き</th>${mTop2 ? "<th>2連対 MINAMO</th><th>2連対 市場</th><th>差</th>" : ""}</tr></thead>
+        <tbody>${rows}</tbody></table></div>
+      <p class="small muted" style="margin:10px 2px 0;line-height:1.7">市場の見込み＝オッズの逆数を合計100%にしたもの（1着は3連単、2連対は2連単から）。差＝MINAMO−市場（ポイント。＋5以上は緑＝MINAMOの方が高く見ている、−5以下は赤＝市場の人気がMINAMOより高い）。人気の動き＝直前情報を取り始めてから今までの、市場の1着の見込みの変化。<br>
+      市場の人気上位：${mTop}　／　MINAMOの確率上位：${mnTop}</p>
+    </section>`;
+}
+
 function ticketsHtml(race) {
   const ai = race.ai || {};
   const odds = race.odds || {};
@@ -992,6 +1042,7 @@ async function renderRace(r, refresh = false) {
       ${fmNoteHtml(race)}
       ${agNoteHtml(race)}
     </section>
+    ${oddsReadHtml(race)}
     ${timeHtml(race)}
 
     <section class="section">

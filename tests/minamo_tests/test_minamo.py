@@ -393,6 +393,7 @@ def test_pipeline_full_day(sandbox, monkeypatch):
     race = json.loads(race_file.read_text())
     assert race["stage"] == "exhibition" and race["weather"]["wind_speed"] == 6
     assert race["odds"] and race["entries"][3]["ex_course"] == 3
+    assert race["mkt_hist"][-1]["min"] == 20.0 and abs(sum(race["mkt_hist"][-1]["win"].values()) - 1) < 0.01  # オッズからの読み
     assert race["entries"][0]["lap_time"] == pytest.approx(37.6) and race["entries"][0]["straight_time"] is None
     # 直後は再取得しない（間隔制御）
     assert pipe.tick(date, deadline - timedelta(minutes=19)) == 0
