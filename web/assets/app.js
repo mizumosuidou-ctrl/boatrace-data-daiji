@@ -61,7 +61,7 @@ function toast(msg) {
 }
 
 /* ------------------------------------------------------------ state */
-const state = { latest: null, date: null, day: null, record: null, route: null, race: null, sim: null, firstPaint: {} };
+const state = { latest: null, date: null, day: null, record: null, route: null, race: null, sim: null, firstPaint: {}, picked: false };
 
 async function loadLatest() {
   state.latest = await getJSON("data/latest.json");
@@ -1796,17 +1796,34 @@ async function boot() {
   }
   $("#dateSelect").addEventListener("change", (e) => {
     state.date = e.target.value;
+    state.picked = state.date !== (state.latest.dates || [state.latest.date]).slice(-1)[0];  // 自分で過去の日を選んだら、自動では切り替えない
     state.day = null;
     if (location.hash && location.hash !== "#/") location.hash = "#/";
     else route();
   });
   addEventListener("hashchange", route);
+  // 左上の MINAMO：いつでも最新の日のトップへ
+  $(".brand").addEventListener("click", async (e) => {
+    e.preventDefault();
+    state.date = null; state.day = null; state.picked = false;
+    try { await loadLatest(); } catch { /* 読めなければ今のまま */ }
+    if (location.hash && location.hash !== "#/") location.hash = "#/";
+    else route();
+  });
   await route();
 
   // 定期更新：一覧は60秒、レース詳細は締切前のみ30秒
   setInterval(async () => {
     if (document.hidden) return;
     try {
+      // 新しい日のデータができたら（朝の取り込み）、自分で日付を選んでいなければ今日へ切り替える
+      if (!state.picked && state.date !== todayJst()) {
+        const old = state.date;
+        state.date = null;
+        try { await loadLatest(); } catch { /* 読めなければ今のまま */ }
+        if (!state.date) state.date = old;
+        if (state.date !== old) { state.day = null; if (["home", "picks"].includes(state.route.name)) await route(); return; }
+      }
       if (state.route.name === "home" && state.date === todayJst()) await renderHome(true);
       else if (state.route.name === "picks" && state.date === todayJst() && !document.activeElement?.closest("#stakeForm")) await renderPicks(true);
       else if (state.route.name === "race" && state.race && !state.race.result && nowMs() > deadlineMs(state.race.date, state.race.deadline) - 35 * 60e3) {
