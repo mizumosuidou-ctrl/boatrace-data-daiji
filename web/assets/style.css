@@ -891,3 +891,8 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
   .home-kpis { align-items: stretch; width: 100%; }
   .home-kind button { flex: 1 0 33.3%; padding: 8px 2px; }
 }
+
+.sheet table.compare-t { min-width: 0; table-layout: fixed; }
+.sheet table.compare-t th:first-child { width: 22%; }
+.sheet .compare-t td, .sheet .compare-t th { text-align: left; white-space: normal; line-height: 1.6; vertical-align: top; }
+.sheet .compare-t td { font-family: var(--f-sans); }

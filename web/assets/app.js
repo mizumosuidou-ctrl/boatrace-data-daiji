@@ -1108,6 +1108,47 @@ function timeCard(date, r, now, items, meta, res, done) {
     <div class="small muted">${items.length}点 · 仮想 ${yen(unit * items.length)} · Version ${esc(meta.version || "")} · ${hhmm(r.time_at)} 時点${done ? ` · <span class="nowrap">結果 ${esc(res)}</span>` : ""}</div>
   </a>`;
 }
+// 買い候補の画面の下：普通の予想（推奨買い目）とこの買い方の違い
+const NORMAL_COL = ["当てること", "MINAMOが「来やすい」と見た順に、上から約6点", "見ない", "全レース", "朝に出して、展示のあとに更新", "高い（3連単で約37%）", "約88%（続けると負ける）"];
+const COMPARE_ROWS = ["目的", "選び方", "オッズ", "出るレース", "決める時刻", "当たりやすさ", "回収率"];
+const PICK_COMPARE = {
+  ev: ["回収率で勝つこと", "「来る確率×オッズ」が1.2以上の割安な3連単だけ（最大9点）", "見る（市場の見立てと合わせて補正。15〜120倍の組だけ）", "割安な組があるレースだけ。無ければ見送り", "締切5分前に決めて固定", "低い（1割前後）", "過去の検証で約120%（実戦で確かめている最中）"],
+  co: ["回収率で勝つこと", "3連単（試し）と同じ組を、合成オッズ配分で買う", "見る", "3連単（試し）を買うレースだけ", "締切5分前に決めて固定", "低い（1割前後）", "過去の検証で約122%（実戦で確かめている最中）"],
+  ex: ["回収率で勝つこと", "「来る確率×オッズ」が1.2以上の割安な2連単だけ（最大3点）", "見る（市場の見立てと合わせて補正。10〜80倍の組だけ）", "割安な組があるレースだけ。無ければ見送り", "締切5分前に決めて固定", "中くらい（2割前後）", "過去の検証で約117%（実戦で確かめている最中）"],
+  xa: ["全レースの見立てを見ること", "MINAMOの2連単の確率の上位3点", "見ない", "全レース（見送りなし）", "締切5分前に決めて固定", "高い（5割前後）", "過去の検証で約95%（続けると少し負ける）"],
+  ag: ["回収率で勝つこと", "レースタイムモニターとMINAMOが①以外の同じ艇を推す → 2連単「その艇-①」1点", "見ない", "2つの予想が一致したレースだけ", "締切5分前に決めて固定", "中くらい（2〜3割）", "過去の検証で130〜134%（約90レースだけ。実戦で確かめている最中）"],
+  fm: ["回収率で勝つこと", "スタート隊形が ①〈③②④ のとき、2連単①-②を1点", "見ない", "その隊形のレースだけ", "締切5分前に決めて固定", "低め（1〜2割）", "過去の検証で約115%（実戦で確かめている最中）"],
+  ch: ["記録（あなたの予想方法）", "外の艇がスタートで0.4以上速い所があるレースで、イン逃しだけ12点", "見ない", "差があるレースだけ", "締切5分前に決めて固定", "低め（2割前後）", "過去の検証で約75%（お金はかけない記録だけ）"],
+  time: ["あなたの予想方法の検証", "MINAMOの本線に、レースタイムの良い選手（キーマン）を必ず入れる3連単", "見ない", "キーマンがいるレースだけ", "締切5分前に決めて固定", "中くらい（2割前後）", "500レースまでは判断しない（仮想資金で数える）"],
+};
+function compareHtml(k) {
+  const col = PICK_COMPARE[k];
+  if (!col) return "";
+  return `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">普通の予想との違い<small>「普通の予想」は当たりやすい組、「買い候補」はオッズや決まった形で選んだ組。目的が違います</small></h2></div></div>
+    <div class="panel sheet"><table class="compare-t"><thead><tr><th></th><th>普通の予想（推奨買い目）</th><th>${esc(PICK_KIND[k].label)}（買い候補）</th></tr></thead>
+    <tbody>${COMPARE_ROWS.map((h, i) => `<tr><th scope="row">${h}</th><td>${esc(NORMAL_COL[i])}</td><td>${esc(col[i])}</td></tr>`).join("")}</tbody></table></div>`;
+}
+// 買い候補の画面の下：この買い方のこれまでの成績（直近30日。成績ページと同じ数え方）
+async function pickHistoryHtml(k) {
+  if (!REC_KINDS[k]) return "";
+  if (!state.histDays) {
+    const dates = (state.latest.dates || []).slice(-30);
+    state.histDays = (await Promise.all(dates.map((d) => getJSON(`data/${d}/day.json`).catch(() => null)))).filter(Boolean);
+  }
+  // 今日の分は、いま読み込んでいる一覧（締切ごとに更新される）を使う
+  const days = state.histDays.map((d) => (state.day && d.date === state.day.date ? state.day : d));
+  const sum = (ds) => sumRaces(ds.flatMap((d) => d.venues.flatMap((v) => v.races)), k);
+  const tile = ([name, ds]) => {
+    const t = sum(ds);
+    return `<div class="panel rb-tile"><h4>${name}</h4>
+      <div class="rb-big ${t.stake && t.ret >= t.stake ? "up" : ""}">${t.stake ? ((t.ret / t.stake) * 100).toFixed(1) : "--"}<small>%</small></div>
+      <div class="small">回収率 · 的中 ${t.hits}/${t.races}R（${rate(t.hits, t.races)}）</div>
+      <div class="small">${t.stake ? `収支 ${plus(t.ret - t.stake)}` : "まだ結果がありません"}</div></div>`;
+  };
+  return `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">これまでの成績<small>${esc(PICK_KIND[k].label)}：${esc(REC_KINDS[k].note)}（直近30日、見送りは数えません）。場別・レースごとは<a href="#/record">成績</a>で</small></h2></div></div>
+    <div class="rb-tiles">${[["直近7日", days.slice(-7)], ["直近30日", days]].map(tile).join("")}</div>
+    <div class="panel ledger" style="margin-top:14px">${ledgerDays(days, k).replace(/<button class="linkish" data-ledger="\d+">([^<]*)<\/button>/g, "$1")}</div>`;
+}
 const getPickKind = () => { try { return localStorage.getItem("minamo-pick-kind") || "ev"; } catch { return "ev"; } };
 async function renderPicks(refresh = false, k = getPickKind()) {
   if (!state.day || state.day.date !== state.date || refresh) await loadDay();
@@ -1162,8 +1203,11 @@ async function renderPicks(refresh = false, k = getPickKind()) {
     <div class="panel skip-list">${weak.map((r) => `<a href="#/race/${date}/${r.v.jcd}/${r.rno}" class="skip-row"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span><span class="chip">イン逃げ指数 ${r.escape}</span>${pickRes(r, k) ? `<span class="small nowrap">結果 ${esc(pickRes(r, k))}${r[`${k}_hit`] ? ` <b class="pos">（買っていれば的中）</b>` : ""}</span>` : ""}</a>`).join("")}</div>` : ""}
     ${refB.length ? `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">参考：記録だけのレース（B）<small>②の平均スタート順位が①より0.5以上速く、隊形が ①〈②④③ のレース。過去の検証は164.8%ですが102レースしかないので、買い目にはせず成績だけを数えます</small></h2></div></div>
     <div class="panel skip-list">${refB.map((r) => `<a href="#/race/${date}/${r.v.jcd}/${r.rno}" class="skip-row"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span><span class="chip">記録</span><span class="small">2連単 ${esc(r.fmb_pick[0])}</span>${r.result_ex ? `<span class="small nowrap">結果 ${esc(r.result_ex)}${r.fmb_hit ? ` <b class="pos">的中 ${yen((r.payout_ex || 0) * BET_UNIT)}</b>` : ""}</span>` : ""}</a>`).join("")}</div>` : ""}
-    <p class="small muted" style="margin-top:22px;line-height:1.7">これまでの通算は<a href="#/record">成績</a>の「試験中：オッズで絞った買い目」にあります。舟券の購入はご自身の判断でお願いします。</p>
+    <div id="pickHistory"></div>
+    ${compareHtml(k)}
+    <p class="small muted" style="margin-top:22px;line-height:1.7">これまでの通算は<a href="#/record">成績</a>にもあります。舟券の購入はご自身の判断でお願いします。</p>
   </section></div>`;
+  pickHistoryHtml(k).then((html) => { const box = $("#pickHistory"); if (box && getPickKind() === k) box.innerHTML = html; }).catch(() => {});
   if (refresh) scrollTo({ top: y });
   bindSkipIn($("#skipIn"), () => renderPicks(false, k));
   $("#pickKind").addEventListener("click", (ev) => {
