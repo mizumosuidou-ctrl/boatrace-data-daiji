@@ -1219,7 +1219,7 @@ function pickCard(date, r, now, k = "ev", s = getStake(k)) {
   const total = stakes.reduce((a, v) => a + (v || 0), 0);
   const hitStake = done ? stakes[items.findIndex((x) => x.combo === res)] : null;
   return `<a class="panel pick-card ${done ? (won ? "won" : "lost") : ""}" href="#/race/${date}/${r.v.jcd}/${r.rno}">
-    <div class="pick-h"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span>${!done && !r.cancelled ? `<span class="chip fix ${r.pick_fixed ? "src-claude" : ""}">${r.pick_fixed ? "決定" : "仮"}</span>` : ""}
+    <div class="pick-h"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span><span class="chip">${(items || []).length}点</span>${!done && !r.cancelled ? `<span class="chip fix ${r.pick_fixed ? "src-claude" : ""}">${r.pick_fixed ? "決定" : "仮"}</span>` : ""}
       ${done ? `<span class="chip ${won ? "src-claude" : ""}">${won ? `的中（${rankIn(r[`${k}_pick`], res) || "?"}点目） ${yen(k === "co" ? (r.co_return || 0) * BET_UNIT : (pickPay(r, k) || 0) * BET_UNIT)}` : "はずれ"}</span>`
         : r.cancelled ? `<span class="chip">中止</span>` : dl > now ? `<span class="cd" data-deadline="${dl}">${fmtCountdown(dl - now)}</span>` : `<span class="chip">締切</span>`}</div>
     <table class="pick-t"><thead><tr><th>${PICK_KIND[k].label}</th><th>確率</th><th>オッズ</th><th>${k === "co" ? "配分" : "期待値"}</th><th>1点</th></tr></thead><tbody>
@@ -1235,7 +1235,7 @@ function timeCard(date, r, now, items, meta, res, done) {
   const unit = meta.unit || 0;
   const km = (meta.keymen || []).map((k, i) => `<div>キーマン${i + 1} ${boat(k.boat, "sm")} ${esc(k.name || "")}（${k.course}コース・役割 ${esc(k.role || "")}）</div>`).join("");
   return `<a class="panel pick-card ${done ? (won ? "won" : "lost") : ""}" href="#/race/${date}/${r.v.jcd}/${r.rno}">
-    <div class="pick-h"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span>${!done && !r.cancelled ? `<span class="chip fix ${r.pick_fixed ? "src-claude" : ""}">${r.pick_fixed ? "決定" : "仮"}</span>` : ""}
+    <div class="pick-h"><b>${esc(r.v.name)} ${r.rno}R</b><span class="muted">締切 ${esc(r.deadline)}</span><span class="chip">${(items || []).length}点</span>${!done && !r.cancelled ? `<span class="chip fix ${r.pick_fixed ? "src-claude" : ""}">${r.pick_fixed ? "決定" : "仮"}</span>` : ""}
       ${done ? `<span class="chip ${won ? "src-claude" : ""}">${won ? `的中（${r.time_rank}番目） ${yen((r.time_return || 0) * BET_UNIT)}` : "はずれ"}</span>`
         : r.cancelled ? `<span class="chip">中止</span>` : dl > now ? `<span class="cd" data-deadline="${dl}">${fmtCountdown(dl - now)}</span>` : `<span class="chip">締切</span>`}</div>
     <div class="small" style="margin:0 0 8px;line-height:1.8">${km}</div>
@@ -1289,6 +1289,8 @@ async function pickHistoryHtml(k) {
     <div class="rb-tiles">${[["直近7日", days.slice(-7)], ["直近30日", days]].map(tile).join("")}</div>
     <div class="panel ledger" style="margin-top:14px">${ledgerDays(days, k).replace(/<button class="linkish" data-ledger="\d+">([^<]*)<\/button>/g, "$1")}</div>`;
 }
+// 買い方ごとの1レースの点数（画面に出す）
+const PICK_POINTS = { ev: "最大9点", co: "最大9点（3連単（試し）と同じ組）", ex: "最大3点", xa: "3点（毎レース）", ag: "1点", fm: "1点", ch: "12点", time: "6〜12点" };
 const getPickKind = () => { try { return localStorage.getItem("minamo-pick-kind") || "ev"; } catch { return "ev"; } };
 async function renderPicks(refresh = false, k = getPickKind()) {
   if (!state.day || state.day.date !== state.date || refresh) await loadDay();
@@ -1304,12 +1306,17 @@ async function renderPicks(refresh = false, k = getPickKind()) {
   const stake = settled.reduce((a, r) => a + r[`${k}_stake`], 0), ret = settled.reduce((a, r) => a + (r[`${k}_return`] || 0), 0);
   const hits = settled.filter((r) => r[`${k}_hit`]).length;
   const s = getStake(k);
+  // 今日の点数（決めた・仮の買い目の組の数）
+  const ptsList = bought.map((r) => (k === "time" ? ((r.time_items || []).filter((x) => x.kind !== "追加候補").length || (r.time_pick || []).length) : (r[`${k}_pick`] || []).length));
+  const ptsSum = ptsList.reduce((a, v) => a + v, 0);
+  const ptsAvg = ptsList.length ? (ptsSum / ptsList.length).toFixed(1) : null;
   const refB = k === "fm" ? allRaces().filter((r) => (r.fmb_pick || []).length).sort((a, b) => b.deadline.localeCompare(a.deadline)) : [];
   const y = scrollY;
   $("#main").innerHTML = `<div class="wrap"><section class="section">
     <div class="seg seg-big" role="group" aria-label="選び方" id="pickKind">${Object.entries(PICK_KIND).map(([kk, x]) => `<button type="button" data-kind="${kk}" class="${kk === k ? "on" : ""}">${x.label}</button>`).join("")}</div>
     <div id="skipIn">${skipInHtml()}</div>
     <span class="eyebrow">${fmtDate(date)}（${weekday(date)}）</span>
+    <p class="pick-points"><span class="chip src-claude">${esc(PICK_KIND[k].label)}</span> 1レース <b>${esc(PICK_POINTS[k] || "")}</b>${ptsAvg ? `（今日の平均 ${ptsAvg}点・合計 ${ptsSum}点）` : ""}</p>
     <h1 class="section-title" style="font-size:clamp(36px,5vw,72px)">今買う候補<small>試験中の選び方（${PICK_KIND[k].label}）：${PICK_KIND[k].rule}。無ければ見送り。${PICK_KIND[k].check}でしたが、まだ試験中です</small></h1>
     ${k === "time" ? `<p class="small muted" style="margin:0 0 6px">仮想資金で数える検証用です（実際の購入の指示ではありません）。1点の金額は設定（通常予想が6点なら6点×1点の金額、そうでなければ12点）のままです。</p>` : k === "co" ? `<form class="panel stake-form" id="stakeForm" onsubmit="return false">
       <label>1レースの金額<input type="number" inputmode="numeric" name="budget" min="100" step="100" value="${s.budget}">円</label>

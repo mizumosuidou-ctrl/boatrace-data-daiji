@@ -912,3 +912,6 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .streak-box { margin: 4px 2px 10px; }
 .streak-box summary { cursor: pointer; }
 .streak-rank { margin: 6px 0 0; padding: 0; list-style: none; line-height: 1.9; }
+
+.pick-points { margin: 6px 0 4px; font-size: 15px; }
+.pick-points b { font-size: 18px; }
