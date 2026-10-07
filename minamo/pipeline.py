@@ -30,6 +30,7 @@ PRE_WINDOW = timedelta(minutes=int(os.environ.get("MINAMO_PRE_WINDOW_MIN", "30")
 MORE_ODDS_MIN = float(os.environ.get("MINAMO_MORE_ODDS_MIN", "12"))  # ほかの券種のオッズを取り始める、締切の何分前か
 BEFORE_REFRESH = timedelta(minutes=int(os.environ.get("MINAMO_BEFORE_REFRESH_MIN", "4")))
 # 試験中の買い目を決めて固定する、締切の何分前か（人が買えるのは5〜3分前まで。10/4 の検証：5分前のオッズで決めると3連単124%・2連単120%）
+SYNC_HOUR = int(os.environ.get("MINAMO_SYNC_HOUR", "5"))  # この時刻から、その日の出走表を取り込む（夜中の学習のあと。前は7時）
 PICK_FIX_MIN = float(os.environ.get("MINAMO_PICK_FIX_MIN", "5.5"))
 # 記録だけ：同じルールの試し買い（3連単・2連単）を、締切の2分前・1分前に決め直した組（5分前に固定した組と同じレースで比べる）
 LATE_FIX = (("2", 2.0, 1.0), ("1", 1.0, 0.0))  # (名前, この分数以下で, この分数より前)
@@ -478,7 +479,7 @@ class Pipeline:
             now = store.now_jst()
             date = now.strftime("%Y%m%d")
             try:
-                if date not in synced and now.hour >= 7:
+                if date not in synced and now.hour >= SYNC_HOUR:
                     self.sync_day(date)
                     synced.add(date)
                 self.tick(date, now)
