@@ -173,6 +173,17 @@ def ag_pick(boats, rtm: Optional[dict]) -> Optional[dict]:
 XA_N = 3
 
 
+def market_win(odds: Optional[dict[str, float]]) -> dict[str, float]:
+    """3連単のオッズ → 艇ごとの市場の1着の見込み（オッズの逆数を合計1にして、頭ごとに足す）。"""
+    inv = {c: 1 / o for c, o in (odds or {}).items() if o and o > 0}
+    tot = sum(inv.values())
+    out: dict[str, float] = {}
+    for c, v in inv.items():
+        h = c.split("-")[0]
+        out[h] = out.get(h, 0.0) + v / tot
+    return {b: round(v, 4) for b, v in sorted(out.items())}
+
+
 def xa_pick(trifecta: list, odds2: Optional[dict[str, float]] = None, n: int = XA_N) -> dict:
     """2連単（全レース）の買い目：MINAMOの2連単の確率の上位 n 点（確率・そのときのオッズ）。"""
     xp: dict[str, float] = {}

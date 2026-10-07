@@ -147,6 +147,7 @@
 - 週報（PR #162）：minamo/weekly.py・`python -m minamo weekly [--send]`。直近7日の買い方ごとの成績（今週プラス／マイナス、今のルールでの通算と過去の検証）、決める時刻（5分前・2分前・1分前）の比べ、学習の様子（meta.json）。install_cron.sh に「月曜8時5分 weekly --send」（ログ var/cron_weekly.log）。Discord には1,800字ずつに分けて送る。
 - PR #163：Caddyfile の /assets/* を Cache-Control "no-cache" に（前は max-age=3600 で、⌘+R でも最大1時間古い app.js のままだった）。反映は `sudo docker compose restart web`。
 - 買い候補の画面の下（PR #164）：「これまでの成績」（選んだ買い方の直近7日・30日の回収率と日別の表。成績ページと同じ数え方。今日の分は state.day）と「普通の予想との違い」の表（PICK_COMPARE・買い方ごと）。
+- オッズからの読み（PR #165）：レース画面の推奨買い目の下に別の欄（予想には混ぜない）。艇ごとに1着・2連対の MINAMO と市場（3連単・2連単のオッズの逆数を100%に）と差、人気の動き（_refresh ごとに st.mkt_hist へ store.market_win を残す・最大12件）、ひとことの読み、市場の人気上位とMINAMOの確率上位。
   pipeline は date ≥ BAND_FROM（20261007）で band。live-check は 10/7 からの期間（3連単 120.9%・2連単 117.0%・合成は検証なし）。
 - チルトは展示後モデルですでに使っている。部品交換は本番で読んでいない（直前情報のページの列は分かった）・データベースの分も少ないので、まず集めるところから（次）。
 
