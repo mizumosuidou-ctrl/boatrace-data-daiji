@@ -310,8 +310,10 @@ function hitRows(day, kind) {
 function hitRowHtml(date, r, kind) {
   const K = REC_KINDS[kind];
   const rk = K.rank(r);
+  const n = (K.picks(r) || []).length;  // そのレースで買った点数
   return `<a class="hit-row" href="#/race/${date}/${r.v.jcd}/${r.rno}"><span class="muted num">${esc(r.deadline)}</span><b>${esc(r.v.name)} ${r.rno}R</b>
-    <span class="num">${esc(K.res(r) || "")}</span><span class="num">配当 ${yen(K.pay(r))}</span>${rk ? `<span class="small">${rk}点目</span>` : ""}
+    <span class="num">${esc(K.res(r) || "")}</span><span class="num">配当 ${yen(K.pay(r))}</span>
+    <span class="chip">${n ? `${n}点中 ` : ""}${rk ? `${rk}点目で的中` : "的中"}</span><span class="small muted">投資 ${yen(K.stake(r) * BET_UNIT)}</span>
     <span class="pos num">払戻 ${yen((K.ret(r) || 0) * BET_UNIT)}</span></a>`;
 }
 // その日（または期間）の、買ったレース・的中・投資・払戻・回収率・収支（1点1,000円。見送りは数えない）
