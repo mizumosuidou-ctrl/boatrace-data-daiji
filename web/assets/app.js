@@ -300,6 +300,46 @@ function homeKpisHtml(day, kind = getHomeKind()) {
   const seg = `<div class="seg home-kind" role="group" aria-label="成績の予想">${Object.entries(REC_KINDS).map(([k, x]) => `<button type="button" data-kind="${k}" class="${k === kind ? "on" : ""}">${x.label}</button>`).join("")}</div>`;
   return `<div class="home-kpis">${seg}${kind === "main" && !getSkipIn() ? kpisHtml(day.totals) : kindKpisHtml(kind)}</div>`;
 }
+// トップ：選んだ予想で的中したレースを締切の順に（今日＝選んでいる日、または直近30日）
+const getHitScope = () => { try { return localStorage.getItem("minamo-hit-scope") || "day"; } catch { return "day"; } };
+function hitRows(day, kind) {
+  const K = REC_KINDS[kind];
+  return allRaces(day).filter((r) => r.result && !r.cancelled && K.bought(r) && K.stake(r) != null && K.hit(r))
+    .sort((a, b) => (a.deadline || "").localeCompare(b.deadline || ""));
+}
+function hitRowHtml(date, r, kind) {
+  const K = REC_KINDS[kind];
+  const rk = K.rank(r);
+  return `<a class="hit-row" href="#/race/${date}/${r.v.jcd}/${r.rno}"><span class="muted num">${esc(r.deadline)}</span><b>${esc(r.v.name)} ${r.rno}R</b>
+    <span class="num">${esc(K.res(r) || "")}</span><span class="num">配当 ${yen(K.pay(r))}</span>${rk ? `<span class="small">${rk}点目</span>` : ""}
+    <span class="pos num">払戻 ${yen((K.ret(r) || 0) * BET_UNIT)}</span></a>`;
+}
+async function hitListHtml(kind = getHomeKind(), scope = getHitScope()) {
+  const K = REC_KINDS[kind];
+  const seg = `<div class="seg" role="group" aria-label="的中の期間">${[["day", "この日"], ["30", "直近30日"]].map(([v, l]) => `<button type="button" data-hitscope="${v}" class="${v === scope ? "on" : ""}">${l}</button>`).join("")}</div>`;
+  if (scope === "day") {
+    const rows = hitRows(state.day, kind);
+    const total = rows.reduce((a, r) => a + (K.ret(r) || 0) * BET_UNIT, 0);
+    return `<details class="hit-list" ${state.hitOpen ? "open" : ""}><summary><b>的中したレース（${esc(K.label)}）</b> <span class="muted small">${fmtDate(state.date)} · ${rows.length}R${rows.length ? ` · 払戻 ${yen(total)}（1点1,000円）` : ""}</span></summary>
+      ${seg}<div class="hit-rows">${rows.map((r) => hitRowHtml(state.date, r, kind)).join("") || `<p class="small muted">この日はまだ的中がありません</p>`}</div></details>`;
+  }
+  const days = (await loadHistDays()).slice().reverse();
+  const blocks = days.map((d) => {
+    const rows = hitRows(d, kind);
+    if (!rows.length) return "";
+    const total = rows.reduce((a, r) => a + (K.ret(r) || 0) * BET_UNIT, 0);
+    return `<div class="hit-day"><h4>${fmtDate(d.date)}（${weekday(d.date)}） <span class="muted small">${rows.length}R · 払戻 ${yen(total)}</span></h4>${rows.map((r) => hitRowHtml(d.date, r, kind)).join("")}</div>`;
+  }).join("");
+  return `<details class="hit-list" ${state.hitOpen ? "open" : ""}><summary><b>的中したレース（${esc(K.label)}）</b> <span class="muted small">直近30日（新しい日から）</span></summary>
+    ${seg}<div class="hit-rows">${blocks || `<p class="small muted">直近30日に的中がありません</p>`}</div></details>`;
+}
+async function refreshHitList(kind = getHomeKind()) {
+  const box = $("#hitList");
+  if (!box) return;
+  const html = await hitListHtml(kind);
+  if ($("#hitList") === box) box.innerHTML = html;
+}
+
 function kindKpisHtml(kind) {
   const K = REC_KINDS[kind];
   const all = allRaces();
@@ -348,6 +388,7 @@ async function renderHome(refresh = false) {
       </div>
       <div class="filters" role="group" aria-label="絞り込み">${FILTERS.map(([k, l]) => `<button class="filter" data-filter="${k}" aria-pressed="${k === filter}">${l}</button>`).join("")}</div>
       <div id="skipIn">${skipInHtml()}</div>
+      <div id="hitList"></div>
       <div id="monitorBody">${monitorHtml(state.day, now, filter)}</div>
     </section>`;
   if (refresh && state.route.name === "home") {
@@ -365,6 +406,17 @@ async function renderHome(refresh = false) {
     if (!b) return;
     try { localStorage.setItem("minamo-home-kind", b.dataset.kind); } catch { /* 保存できなくても切替はする */ }
     $("#homeKpis").innerHTML = homeKpisHtml(state.day, b.dataset.kind);
+    refreshHitList(b.dataset.kind);
+  });
+  refreshHitList();
+  // 開いた・閉じたを覚える（1分ごとの描き直しで閉じないように）
+  $("#hitList").addEventListener("toggle", (ev) => { if (ev.target.matches(".hit-list")) state.hitOpen = ev.target.open; }, true);
+  $("#hitList").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-hitscope]");
+    if (!b) return;
+    ev.preventDefault();
+    try { localStorage.setItem("minamo-hit-scope", b.dataset.hitscope); } catch { /* 保存できなくても切替はする */ }
+    refreshHitList();
   });
   bindSkipIn($("#skipIn"), () => {
     $("#skipIn").innerHTML = skipInHtml();
@@ -1180,14 +1232,17 @@ function compareHtml(k) {
     <tbody>${COMPARE_ROWS.map((h, i) => `<tr><th scope="row">${h}</th><td>${esc(NORMAL_COL[i])}</td><td>${esc(col[i])}</td></tr>`).join("")}</tbody></table></div>`;
 }
 // 買い候補の画面の下：この買い方のこれまでの成績（直近30日。成績ページと同じ数え方）
-async function pickHistoryHtml(k) {
-  if (!REC_KINDS[k]) return "";
+// 直近30日の一覧（day.json）。今日の分は、いま読み込んでいる一覧（締切ごとに更新される）を使う
+async function loadHistDays() {
   if (!state.histDays) {
     const dates = (state.latest.dates || []).slice(-30);
     state.histDays = (await Promise.all(dates.map((d) => getJSON(`data/${d}/day.json`).catch(() => null)))).filter(Boolean);
   }
-  // 今日の分は、いま読み込んでいる一覧（締切ごとに更新される）を使う
-  const days = state.histDays.map((d) => (state.day && d.date === state.day.date ? state.day : d));
+  return state.histDays.map((d) => (state.day && d.date === state.day.date ? state.day : d));
+}
+async function pickHistoryHtml(k) {
+  if (!REC_KINDS[k]) return "";
+  const days = await loadHistDays();
   const sum = (ds) => sumRaces(ds.flatMap((d) => d.venues.flatMap((v) => v.races)), k);
   const tile = ([name, ds]) => {
     const t = sum(ds);

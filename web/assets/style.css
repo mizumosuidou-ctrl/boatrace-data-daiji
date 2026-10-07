@@ -900,3 +900,11 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .odds-say { margin: 0 2px 12px; line-height: 1.9; }
 .sheet table.odds-read { min-width: 720px; }
 .sheet td.neg { color: var(--miss); }
+
+.hit-list { margin: 0 0 14px; }
+.hit-list > summary { cursor: pointer; padding: 8px 2px; list-style: revert; }
+.hit-list .seg { margin: 6px 0 8px; }
+.hit-rows { display: grid; gap: 6px; }
+.hit-row { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); text-decoration: none; }
+.hit-row:hover { border-color: var(--line-2); }
+.hit-day h4 { margin: 14px 2px 6px; }
