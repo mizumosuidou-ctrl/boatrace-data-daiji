@@ -320,22 +320,52 @@ function moneyLine(races, kind) {
   if (!t.races) return "買ったレースなし";
   return `${t.races}R中 ${t.hits}R的中（${rate(t.hits, t.races)}） · 投資 ${yen(t.stake)} · 払戻 ${yen(t.ret)} · 回収率 <b class="${t.ret >= t.stake ? "pos" : "neg"}">${rate(t.ret, t.stake)}</b> · 収支 ${plus(t.ret - t.stake)}`;
 }
+// 連敗：買って結果の出たレースを締切の順に並べ、当たるまで続けてはずれた数（見送り・中止は数えない）
+function streaksOf(days, kind) {
+  const K = REC_KINDS[kind];
+  const seq = days.flatMap((d) => allRaces(d).filter((r) => r.result && !r.cancelled && K.bought(r) && K.stake(r) != null).map((r) => ({ date: d.date, r })))
+    .sort((a, b) => `${a.date}${a.r.deadline || ""}`.localeCompare(`${b.date}${b.r.deadline || ""}`));
+  const runs = [];
+  let cur = null;
+  for (const x of seq) {
+    if (K.hit(x.r)) {
+      if (cur) { cur.next = x; runs.push(cur); cur = null; }
+    } else {
+      if (!cur) cur = { n: 0, stake: 0, from: x };
+      cur.n++; cur.stake += K.stake(x.r) * BET_UNIT; cur.to = x;
+    }
+  }
+  if (cur) runs.push({ ...cur, ongoing: true });
+  return { runs, current: cur ? cur.n : 0 };
+}
+const streakLabel = (x) => `${x.date.slice(4, 6)}/${x.date.slice(6)} ${esc(x.r.v.name)}${x.r.rno}R`;
+function streakBoxHtml(days, kind, today) {
+  const all = streaksOf(days, kind);
+  const day = streaksOf(days.filter((d) => d.date === today), kind);
+  const dayMax = Math.max(0, ...day.runs.map((x) => x.n));
+  const top = all.runs.slice().sort((a, b) => b.n - a.n || `${b.from.date}${b.from.r.deadline}`.localeCompare(`${a.from.date}${a.from.r.deadline}`)).slice(0, 5);
+  const rows = top.map((x, i) => `<li><b>${i + 1}位 ${x.n}連敗</b> <span class="small">${streakLabel(x.from)} → ${streakLabel(x.to)} · その間の投資 ${yen(x.stake)}${x.ongoing ? ' · <b class="neg">いま続いている</b>' : x.next ? ` · 次の ${streakLabel(x.next)} で的中 ${yen((REC_KINDS[kind].ret(x.next.r) || 0) * BET_UNIT)}` : ""}</span></li>`).join("");
+  return `<div class="streak-box"><p class="small"><b>連敗</b>：いま <b class="${all.current >= 10 ? "neg" : ""}">${all.current}連敗中</b> · ${fmtDate(today)}の最長 ${dayMax}連敗 · 直近30日の最長 ${top.length ? top[0].n : 0}連敗</p>
+    ${rows ? `<details><summary class="small">連敗ランキング（直近30日・長い順）</summary><ul class="streak-rank">${rows}</ul></details>` : ""}</div>`;
+}
 async function hitListHtml(kind = getHomeKind(), scope = getHitScope()) {
   const K = REC_KINDS[kind];
   const seg = `<div class="seg" role="group" aria-label="的中の期間">${[["day", "この日"], ["30", "直近30日"]].map(([v, l]) => `<button type="button" data-hitscope="${v}" class="${v === scope ? "on" : ""}">${l}</button>`).join("")}</div>`;
+  const hist = await loadHistDays();
+  const streak = streakBoxHtml(hist.some((d) => d.date === state.date) ? hist : [...hist, state.day], kind, state.date);
   if (scope === "day") {
     const rows = hitRows(state.day, kind);
     return `<details class="hit-list" ${state.hitOpen ? "open" : ""}><summary><b>的中したレース（${esc(K.label)}）</b> <span class="small">${fmtDate(state.date)} · ${moneyLine(allRaces(state.day), kind)}</span></summary>
-      ${seg}<div class="hit-rows">${rows.map((r) => hitRowHtml(state.date, r, kind)).join("") || `<p class="small muted">この日はまだ的中がありません</p>`}</div></details>`;
+      ${seg}${streak}<div class="hit-rows">${rows.map((r) => hitRowHtml(state.date, r, kind)).join("") || `<p class="small muted">この日はまだ的中がありません</p>`}</div></details>`;
   }
-  const days = (await loadHistDays()).slice().reverse();
+  const days = hist.slice().reverse();
   const blocks = days.map((d) => {
     const rows = hitRows(d, kind);
     if (!rows.length) return "";
     return `<div class="hit-day"><h4>${fmtDate(d.date)}（${weekday(d.date)}） <span class="small" style="font-weight:400">${moneyLine(allRaces(d), kind)}</span></h4>${rows.map((r) => hitRowHtml(d.date, r, kind)).join("")}</div>`;
   }).join("");
   return `<details class="hit-list" ${state.hitOpen ? "open" : ""}><summary><b>的中したレース（${esc(K.label)}）</b> <span class="small">直近30日の合計 · ${moneyLine(days.flatMap((d) => allRaces(d)), kind)}</span></summary>
-    ${seg}<div class="hit-rows">${blocks || `<p class="small muted">直近30日に的中がありません</p>`}</div></details>`;
+    ${seg}${streak}<div class="hit-rows">${blocks || `<p class="small muted">直近30日に的中がありません</p>`}</div></details>`;
 }
 async function refreshHitList(kind = getHomeKind()) {
   const box = $("#hitList");
