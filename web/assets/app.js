@@ -314,23 +314,27 @@ function hitRowHtml(date, r, kind) {
     <span class="num">${esc(K.res(r) || "")}</span><span class="num">配当 ${yen(K.pay(r))}</span>${rk ? `<span class="small">${rk}点目</span>` : ""}
     <span class="pos num">払戻 ${yen((K.ret(r) || 0) * BET_UNIT)}</span></a>`;
 }
+// その日（または期間）の、買ったレース・的中・投資・払戻・回収率・収支（1点1,000円。見送りは数えない）
+function moneyLine(races, kind) {
+  const t = sumRaces(races, kind);
+  if (!t.races) return "買ったレースなし";
+  return `${t.races}R中 ${t.hits}R的中（${rate(t.hits, t.races)}） · 投資 ${yen(t.stake)} · 払戻 ${yen(t.ret)} · 回収率 <b class="${t.ret >= t.stake ? "pos" : "neg"}">${rate(t.ret, t.stake)}</b> · 収支 ${plus(t.ret - t.stake)}`;
+}
 async function hitListHtml(kind = getHomeKind(), scope = getHitScope()) {
   const K = REC_KINDS[kind];
   const seg = `<div class="seg" role="group" aria-label="的中の期間">${[["day", "この日"], ["30", "直近30日"]].map(([v, l]) => `<button type="button" data-hitscope="${v}" class="${v === scope ? "on" : ""}">${l}</button>`).join("")}</div>`;
   if (scope === "day") {
     const rows = hitRows(state.day, kind);
-    const total = rows.reduce((a, r) => a + (K.ret(r) || 0) * BET_UNIT, 0);
-    return `<details class="hit-list" ${state.hitOpen ? "open" : ""}><summary><b>的中したレース（${esc(K.label)}）</b> <span class="muted small">${fmtDate(state.date)} · ${rows.length}R${rows.length ? ` · 払戻 ${yen(total)}（1点1,000円）` : ""}</span></summary>
+    return `<details class="hit-list" ${state.hitOpen ? "open" : ""}><summary><b>的中したレース（${esc(K.label)}）</b> <span class="small">${fmtDate(state.date)} · ${moneyLine(allRaces(state.day), kind)}</span></summary>
       ${seg}<div class="hit-rows">${rows.map((r) => hitRowHtml(state.date, r, kind)).join("") || `<p class="small muted">この日はまだ的中がありません</p>`}</div></details>`;
   }
   const days = (await loadHistDays()).slice().reverse();
   const blocks = days.map((d) => {
     const rows = hitRows(d, kind);
     if (!rows.length) return "";
-    const total = rows.reduce((a, r) => a + (K.ret(r) || 0) * BET_UNIT, 0);
-    return `<div class="hit-day"><h4>${fmtDate(d.date)}（${weekday(d.date)}） <span class="muted small">${rows.length}R · 払戻 ${yen(total)}</span></h4>${rows.map((r) => hitRowHtml(d.date, r, kind)).join("")}</div>`;
+    return `<div class="hit-day"><h4>${fmtDate(d.date)}（${weekday(d.date)}） <span class="small" style="font-weight:400">${moneyLine(allRaces(d), kind)}</span></h4>${rows.map((r) => hitRowHtml(d.date, r, kind)).join("")}</div>`;
   }).join("");
-  return `<details class="hit-list" ${state.hitOpen ? "open" : ""}><summary><b>的中したレース（${esc(K.label)}）</b> <span class="muted small">直近30日（新しい日から）</span></summary>
+  return `<details class="hit-list" ${state.hitOpen ? "open" : ""}><summary><b>的中したレース（${esc(K.label)}）</b> <span class="small">直近30日の合計 · ${moneyLine(days.flatMap((d) => allRaces(d)), kind)}</span></summary>
     ${seg}<div class="hit-rows">${blocks || `<p class="small muted">直近30日に的中がありません</p>`}</div></details>`;
 }
 async function refreshHitList(kind = getHomeKind()) {
