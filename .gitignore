@@ -4,3 +4,9 @@ __pycache__/
 var/
 web/data/
 deploy/.env
+
+# Obsidian：あなた個人のメモ（GitHub に上げない）
+obsidian/自分のメモ/*
+!obsidian/自分のメモ/README.md
+obsidian/.obsidian/workspace*.json
+obsidian/.trash/
