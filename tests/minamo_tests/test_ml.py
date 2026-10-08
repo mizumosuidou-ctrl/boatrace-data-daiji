@@ -1497,3 +1497,16 @@ def test_block_wins_splits_the_valid_period_by_date():
     diffs = train.block_wins(te, flat, sharp)
     assert len(diffs) == 3 and all(d < 0 for d in diffs)
     assert all(d > 0 for d in train.block_wins(te, sharp, flat))
+
+
+def test_tune_params_compares_settings_without_saving_models(trained):
+    from minamo.ml import train
+
+    out, _ = trained
+    before = (out / "model_pre.txt").read_bytes()
+    text = train.tune_params(out.parent / "raw", out, grid=[{}, {"num_leaves": 7}], test_days=20, valid_days=12)
+    assert "今の設定" in text and "num_leaves=7" in text
+    assert (out / "tune.json").exists()
+    assert (out / "model_pre.txt").read_bytes() == before  # モデルは書き換えない
+    res = json.loads((out / "tune.json").read_text(encoding="utf-8"))
+    assert len(res) == 2 and res[0]["blocks"] == [0.0, 0.0, 0.0]

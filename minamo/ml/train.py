@@ -307,13 +307,13 @@ def lgb_booster(path: Path):
     return lgb.Booster(model_file=str(path)) if Path(path).exists() else None
 
 
-def _fit(train: pd.DataFrame, valid: pd.DataFrame, feats: list[str], label: str = "win"):
+def _fit(train: pd.DataFrame, valid: pd.DataFrame, feats: list[str], label: str = "win", params: Optional[dict] = None):
     import lightgbm as lgb
 
     cats = [f for f in ("course", "venue_i") if f in feats]
     dtr = lgb.Dataset(train[feats], train[label], categorical_feature=cats, free_raw_data=True)
     dva = lgb.Dataset(valid[feats], valid[label], categorical_feature=cats, reference=dtr)
-    booster = lgb.train(PARAMS, dtr, num_boost_round=2000, valid_sets=[dva], callbacks=[lgb.early_stopping(100, verbose=False)])
+    booster = lgb.train({**PARAMS, **(params or {})}, dtr, num_boost_round=2000, valid_sets=[dva], callbacks=[lgb.early_stopping(100, verbose=False)])
     return booster
 
 
@@ -526,6 +526,74 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
+
+
+# 調整してみる設定の候補（先頭は今の設定そのまま。ここを基準に、ほかを比べる）
+TUNE_GRID = [
+    {},
+    {"num_leaves": 15},
+    {"num_leaves": 63},
+    {"min_data_in_leaf": 100},
+    {"min_data_in_leaf": 400},
+    {"learning_rate": 0.02},
+    {"feature_fraction": 0.7},
+    {"lambda_l2": 10.0},
+    {"num_leaves": 63, "min_data_in_leaf": 400},
+]
+
+
+def tune_params(raw_dir: Path, out_dir: Path, grid: Optional[list] = None, test_days: int = 90, valid_days: int = 45) -> str:
+    """LightGBM の設定（木の大きさ・学習率など）を何通りか試し、同じ調整・検証期間で比べる表を返す（モデルは保存しない）。
+
+    特徴量は今のモデル（meta.json の pre_features）のまま。調整期間（valid）の対数損失で並べ、学習に使っていない検証期間（test）の
+    対数損失と、今の設定との差を3期間に分けて見る。2期間以上で下がり、調整期間でも下がったものだけ「候補」と印を付ける。
+    """
+    raw_dir, out_dir = Path(raw_dir), Path(out_dir)
+    grid = grid or TUNE_GRID
+    rows, *_ = ds.build(raw_dir)
+    rows["course"] = rows["course"].astype(int)
+    last = rows["date"].max()
+    test_start = last - pd.Timedelta(days=test_days)
+    valid_start = test_start - pd.Timedelta(days=valid_days)
+    tr = rows[rows["date"] < valid_start]
+    window = ds.train_window(raw_dir).get("since")
+    if window:
+        tr = tr[tr["date"] >= pd.Timestamp(window)]
+    va = rows[(rows["date"] >= valid_start) & (rows["date"] < test_start)]
+    te = rows[rows["date"] >= test_start]
+    try:
+        feats = json.loads((out_dir / "meta.json").read_text(encoding="utf-8")).get("pre_features") or ds.BASE_FEATURES
+    except (OSError, ValueError):
+        feats = ds.BASE_FEATURES
+    feats = [f for f in feats if f in rows.columns]
+    del rows
+    ds.release_memory()
+    log.info("tune: train=%d valid=%d test=%d features=%d %s", len(tr), len(va), len(te), len(feats), rss_mb())
+    results, base_te = [], None
+    for params in grid:
+        model = _fit(tr, va, feats, params=params)
+        p_va = normalize(va, model.predict(va[feats]))
+        p_te = normalize(te, model.predict(te[feats]))
+        row = {"params": params, "rounds": int(model.best_iteration or model.current_iteration()),
+               "valid": evaluate(va, p_va)["logloss"], "test": evaluate(te, p_te)["logloss"]}
+        if base_te is None:
+            base_te, row["blocks"] = p_te, [0.0] * ADOPT_BLOCKS
+        else:
+            row["blocks"] = block_wins(te, base_te, p_te)
+        results.append(row)
+        log.info("tune: %s valid=%.4f test=%.4f %s", params or "今の設定", row["valid"], row["test"], rss_mb())
+        del model
+        ds.release_memory()
+    base = results[0]
+    lines = ["設定                                 木の数   調整期間   検証期間  差(検証−今)  3期間の差(新−今)   候補"]
+    for r in sorted(results, key=lambda x: x["valid"]):
+        wins = sum(d < 0 for d in r["blocks"])
+        mark = "◎" if r is not base and r["valid"] < base["valid"] and r["test"] < base["test"] and wins >= ADOPT_BLOCKS_MIN else ""
+        name = "今の設定" if not r["params"] else " ".join(f"{k}={v}" for k, v in r["params"].items())
+        lines.append(f"{name:<36s} {r['rounds']:>5d}   {r['valid']:.4f}   {r['test']:.4f}   {r['test'] - base['test']:+.4f}   "
+                     + " / ".join(f"{d:+.4f}" for d in r["blocks"]) + f"   {mark}")
+    (out_dir / "tune.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    return "\n".join(lines)
 
 
 YEARS_STARTS = ("20250101", "20240101", "20230101", "20220101", "20210101", "20200101")

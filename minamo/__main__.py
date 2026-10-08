@@ -7,6 +7,7 @@
   python -m minamo serve [--port]   web/ をローカル配信
   python -m minamo rebuild          日ごとの一覧と成績を作り直す（表示項目を増やしたとき）
   python -m minamo ml-train         LightGBMを学習（var/ml/raw のCSVから）
+  python -m minamo ml-tune          LightGBM の設定を何通りか試して比べる（モデルは保存しない）
   python -m minamo ml-backfill      過去の展示データを公式サイトから取り寄せる
   python -m minamo ml-facts         データベースの実績が止まった日の次の日から、実績・展示・風を公式サイトで足す
   python -m minamo ml-original      過去のオリジナル展示をボートレース日和から取り寄せる
@@ -42,6 +43,9 @@ def main() -> None:
     mlt = sub.add_parser("ml-train", help="LightGBMを学習・検証して var/ml に保存")
     mlt.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
     mlt.add_argument("--test-days", type=int, default=90)
+    mlu = sub.add_parser("ml-tune", help="LightGBM の設定（木の大きさ・学習率など）を何通りか試して比べる（モデルは保存しない）")
+    mlu.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
+    mlu.add_argument("--test-days", type=int, default=90)
     sub.add_parser("ml-synthetic", help="動作確認用の架空CSVを var/ml/raw に作る")
     mlb = sub.add_parser("ml-backfill", help="過去の展示データを公式サイトから取り寄せる（1秒1件）")
     mlb.add_argument("--from", dest="date_from", default="20250101")
@@ -134,6 +138,11 @@ def main() -> None:
             store.write_json(store.DATA_DIR / "insights.json", {"racetime": meta.get("racetime_eval") or {},
                                                                  "updated_at": meta.get("trained_at")})
             print(train.summary_ja(meta))
+    elif args.cmd == "ml-tune":
+        from .ml import live, train
+
+        raw = Path(args.raw or live.ML_DIR / "raw")
+        print(train.tune_params(raw, live.ML_DIR, test_days=args.test_days))
     elif args.cmd == "ml-series":
         from .ml import live, series
 
