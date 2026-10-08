@@ -10,3 +10,10 @@ obsidian/自分のメモ/*
 !obsidian/自分のメモ/README.md
 obsidian/.obsidian/workspace*.json
 obsidian/.trash/
+
+# 手元のバックアップ置き場・鍵・ダンプ（GitHub に上げない）
+backup/
+*.sql.gz
+*.tar.gz
+*.key
+*.pem
