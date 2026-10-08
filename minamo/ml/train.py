@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import gc
 import json
 import logging
 from datetime import datetime
@@ -37,6 +38,16 @@ PARAMS = {
     "num_threads": 2,
 }
 PL_DECAY = 0.82
+
+
+def rss_mb() -> str:
+    """いまのメモリ使用量と、これまでの最大（MB）。ログに出して、どこで増えるかを見る用。読めなければ空。"""
+    try:
+        v = {k: int(x.split()[0]) // 1024 for k, x in (ln.split(":", 1) for ln in Path("/proc/self/status").read_text().splitlines())
+             if k in ("VmRSS", "VmHWM")}
+        return f"mem={v['VmRSS']}MB peak={v['VmHWM']}MB"
+    except (OSError, KeyError, ValueError):
+        return ""
 
 
 def normalize(df: pd.DataFrame, raw: np.ndarray) -> np.ndarray:
@@ -362,7 +373,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         tr = tr[tr["date"] >= pd.Timestamp(window)]
     va = rows[(rows["date"] >= valid_start) & (rows["date"] < test_start)]
     te = rows[rows["date"] >= test_start]
-    log.info("rows=%d train=%d valid=%d test=%d window=%s", len(rows), len(tr), len(va), len(te), window)
+    log.info("rows=%d train=%d valid=%d test=%d window=%s %s", len(rows), len(tr), len(va), len(te), window, rss_mb())
 
     # 修正3までの特徴量と、当地・調子・モーター実績を足したものを、同じ検証期間で比べる
     pre_v1 = _fit(tr, va, ds.BASE_FEATURES_V1)
@@ -396,6 +407,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         if adopted[name]:
             pre, pre_feats, best = model, feats, m
     post_feats = pre_feats + ds.EX_FEATURES
+    log.info("features done %s", rss_mb())
 
     # 3連単の2着・3着の平坦化を、調整用期間で合わせる（検証期間は使わない）
     decay = tune_decay(va, normalize(va, pre.predict(va[pre_feats])))
@@ -405,6 +417,12 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     # 展示後モデル：展示データがある期間だけで、前60%学習・次15%調整・最後25%検証
     post, post_adopt, orig_adopt = None, False, False
     ex_rows = rows[rows["has_ex"]]
+    # 以降は rows を使わない（展示のあるレースの表 ex_rows と、学習・検証の表を使う）。大きな表を1つ手放してメモリを空ける
+    data_range = [rows["race_date"].min(), rows["race_date"].max()]
+    rt_eval = ds.racetime_eval(rows)
+    del rows
+    gc.collect()
+    log.info("freed rows %s", rss_mb())
     ex_dates = np.sort(ex_rows["date"].unique())
     if len(ex_rows) > 3000 and len(ex_dates) >= 20:
         cut_valid = ex_dates[int(len(ex_dates) * 0.60)]
@@ -488,7 +506,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     adopt = metrics["pre"]["logloss"] < metrics["baseline"]["logloss"]
     meta = {
         "trained_at": datetime.now().isoformat(timespec="seconds"),
-        "data_range": [rows["race_date"].min(), rows["race_date"].max()],
+        "data_range": data_range,
         "test_from": test_start.strftime("%Y%m%d"),
         "pre_features": pre_feats,
         "post_features": post_feats if post is not None and post_adopt else None,
@@ -502,7 +520,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         "metrics": metrics,
         "importance": {k: round(float(v), 1) for k, v in imp.head(15).items()},
         "adopt": bool(adopt),
-        "racetime_eval": ds.racetime_eval(rows),  # 画面の「タイム評価」（表示だけ）
+        "racetime_eval": rt_eval,  # 画面の「タイム評価」（表示だけ）
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
