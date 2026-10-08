@@ -33,7 +33,7 @@
 - バックアップ：RTモニター側 /opt/boatrace-rt-monitor/backup.sh（ubuntu の cron、毎日 3:15、pg_dump | gzip、30日分、backups/）。
   ミナモ側 deploy/backup.sh（毎週月曜 2:40、データベースは含まない・鍵 .env を含む）。KAGOYA の定期スナップショットは 2026-09-01 から停止中。
 - 変更前に Mac のデスクトップ boatrace-backup-20261008 へコピーして照合済み（RTのダンプ、ミナモの記録）。22:30以降に直前の最新版も取る。
-- 止めてよい時間帯：22:30〜2:30（rtm_live は 8〜21時台、学習は 3:10、収集は5分おき）。止める前に timelab タイマーと収集の cron を一時停止、戻したら再開する。
+- 止めてよい時間帯：0:00〜2:30（rtm_live は 8〜23時台、学習は 3:10、収集は5分おき）。止める前に timelab タイマーと収集の cron を一時停止、戻したら再開する。
 
 ## 全体像
 
@@ -234,7 +234,7 @@
 
 ## 試験中：一致（PR #131）
 
-- deploy/rtm_live.sh（cron 8〜21時台の毎分、install_cron.sh）：sql/rtm_live.sql で今日の RTM の予想の1番手（ranking[0].lane）を
+- deploy/rtm_live.sh（cron 8〜23時台の毎分、install_cron.sh）：sql/rtm_live.sql で今日の RTM の予想の1番手（ranking[0].lane）を
   var/state/rtm_live.csv に書き出す（データベースは読むだけ）。minamo/rtm_live.top：その時刻までの版で DEEP を優先、無ければ NORMAL。
   ファイルが10分より古ければ使わない。
 - store.ag_pick(boats, rtm)：RTMの1番手が①以外で、MINAMOの1着確率（BoatScore.win。検証の test_preds の p と同じもの）が AG_MIN_P=0.35 以上なら
