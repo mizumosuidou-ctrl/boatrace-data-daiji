@@ -90,6 +90,13 @@ KIMARITE_FEATURES = ["km_nige", "km_sasare", "km_makurare", "km_makusasare", "km
                      "race_c1_nige", "race_c1_sasare", "race_c1_makurare", "race_c1_makusasare"]
 # 今節成績（同じ節の前日までの走り）：走った数・平均の得点（1着10点〜6着1点、失格などは0点）・1着の数
 SERIES_FEATURES = ["ss_n", "ss_avg", "ss_wins"]
+# ファン手帳（公式・半年ごと。期の終わりより後のレースにだけ使う）：能力指数・年齢・体重・その進入コースの2連対率／平均ST／平均スタート順位
+#   fan_ability 能力指数（今期）・fan_ability_prev 前期・fan_ability_rel 同じレースの平均との差、fan_c_* はその進入コースの
+#   半年間の成績（fan_c_n 出走数、fan_c_top2 2連対率［全体の2連対率へ寄せる］、fan_c_st 平均ST、fan_c_sr 平均スタート順位）
+FAN_FEATURES = ["fan_ability", "fan_ability_prev", "fan_ability_rel", "fan_age", "fan_weight",
+                "fan_c_n", "fan_c_top2", "fan_c_top2_rel", "fan_c_st", "fan_c_sr", "fan_c_sr_rel"]
+FAN_SMOOTH = 10.0
+FAN_MAX_AGE_DAYS = 400  # 取り込めていない期があるとき、古い期の成績を使い続けない
 KIMARITE_WINDOW = 365
 KIMARITE_SMOOTH = 10.0
 KIMARITE_FILES = ("kimarite.csv", "kimarite_backfill.csv", "odds_results.csv", "kimarite_kb.csv")
@@ -110,7 +117,7 @@ FACTOR_GROUPS = {
     "start": ["n_c", "sr_c", "r1_c", "r12_c", "st_c", "sr_all", "st_all", "pred_start_order", "sr_90", "sr_c_f", "pred_start_order_f"],
     "tenkai": ["sr_gap_inner", "sr_gap_c1", "sr_gap_outer", "sr_inner_slowest_gap", "n_inner_slower",
                ] + SHAPE_FEATURES + KIMARITE_FEATURES,
-    "skill": ["grade_o", "win_c", "top2_c", "top3_c", "n_all", "win_all", "top2_all"],
+    "skill": ["grade_o", "win_c", "top2_c", "top3_c", "n_all", "win_all", "top2_all"] + FAN_FEATURES,
     "motor": ["motor_2", "motor_2_rel", "n_m", "motor_res", "motor_kp"],
     "local": ["n_v", "win_v", "top2_v"],
     "form": ["n_90", "win_90", "top2_90"],
@@ -939,8 +946,10 @@ def add_relations(df: pd.DataFrame, score: str, prefix: str) -> pd.DataFrame:
     return df
 
 
-def add_race_features(df: pd.DataFrame, with_ex: bool) -> pd.DataFrame:
-    df = df.copy()
+def add_race_features(df: pd.DataFrame, with_ex: bool, copy: bool = True) -> pd.DataFrame:
+    """レース内の比較の列を足す。copy=False なら渡した表をそのまま書き換える（学習用の大きな表でメモリを倍にしない）。"""
+    if copy:
+        df = df.copy()
     df["course_i"] = df["course"].astype(int)
     df["venue_i"] = df["venue"].astype(int)
     df["pred_start_order"] = df.groupby("race_id")["sr_c"].rank(method="average")
@@ -950,6 +959,7 @@ def add_race_features(df: pd.DataFrame, with_ex: bool) -> pd.DataFrame:
     df["motor_2_rel"] = df["motor_2"] - df.groupby("race_id")["motor_2"].transform("mean")
     df = add_racetime(df)
     add_new_race_features(df)
+    add_fan_race_features(df)
     if with_ex:
         df["ex_time_rel"] = df["ex_time"] - df.groupby("race_id")["ex_time"].transform("mean")
         df["ex_time_rank"] = df.groupby("race_id")["ex_time"].rank(method="average")
@@ -1032,7 +1042,103 @@ def add_original(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# ------------------------------------------------------------------ ファン手帳
+
+_FAN_KEEP = ["ability", "ability_prev", "age", "weight", "top2_rate"] + [f"c{c}_{k}" for c in range(1, 7) for k in ("entries", "top2", "st", "sr")]
+
+
+def load_fan(path: Optional[Path]) -> pd.DataFrame:
+    """fan.csv（ml-official --fan）→ 選手×期の表。eff＝その期の成績を使い始められる日（期の最終日の翌日）。
+
+    期の最終日（period_to）が読めないときは、ファイル名（YYMM、04 か 10）の月の翌月1日から使う。
+    """
+    cols = ["toban", "eff"] + _FAN_KEEP
+    if path is None or not Path(path).exists():
+        return pd.DataFrame(columns=cols)
+    f = pd.read_csv(path, dtype=str)
+    if f.empty or "toban" not in f:
+        return pd.DataFrame(columns=cols)
+    end = pd.to_datetime(f.get("period_to", pd.Series(index=f.index, dtype=str)).str.strip(), format="%Y%m%d", errors="coerce")
+    yy = pd.to_numeric(f["file"].str[:2], errors="coerce") + 2000
+    mm = pd.to_numeric(f["file"].str[2:4], errors="coerce")
+    fallback = pd.to_datetime(pd.DataFrame({"year": yy, "month": mm, "day": 1}), errors="coerce") + pd.offsets.MonthBegin(1)
+    f["eff"] = (end + pd.Timedelta(days=1)).fillna(fallback)
+    f = f.dropna(subset=["eff"])
+    out = pd.DataFrame({"toban": f["toban"].str.strip(), "eff": f["eff"].dt.normalize()})
+    for c in _FAN_KEEP:
+        out[c] = pd.to_numeric(f[c], errors="coerce") if c in f else np.nan
+    return out.sort_values(["eff", "toban"]).drop_duplicates(["toban", "eff"], keep="last").reset_index(drop=True)
+
+
+def fan_live_table(fan: pd.DataFrame, next_date: pd.Timestamp) -> pd.DataFrame:
+    """当日予想用：選手ごとに、次の日までに使える最新の期。"""
+    t = fan[fan["eff"] <= next_date]
+    return t.sort_values("eff").drop_duplicates("toban", keep="last").reset_index(drop=True)
+
+
+def apply_fan(rows: pd.DataFrame, fan: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """rows（toban, date, course）に、その日より前に終わった最新の期のファン手帳の値を付ける。表が無ければ空のまま。"""
+    for c in FAN_FEATURES:
+        rows[c] = np.nan
+    if fan is None or fan.empty or rows.empty:
+        return rows
+    left = rows[["toban", "date", "course"]].copy()
+    left["toban"] = left["toban"].astype(str)
+    left["_o"] = np.arange(len(left))
+    left["date"] = pd.to_datetime(left["date"]).dt.normalize()
+    m = pd.merge_asof(left.sort_values("date"), fan.sort_values("eff"), left_on="date", right_on="eff", by="toban",
+                      direction="backward", tolerance=pd.Timedelta(days=FAN_MAX_AGE_DAYS)).sort_values("_o")
+    course = pd.to_numeric(m["course"], errors="coerce").to_numpy()
+
+    def at(k: str) -> np.ndarray:  # その進入コースの列
+        mat = np.column_stack([m[f"c{c}_{k}"].to_numpy(dtype=float) for c in range(1, 7)])
+        out = np.full(len(m), np.nan)
+        ok = (course >= 1) & (course <= 6)
+        out[ok] = mat[np.where(ok)[0], course[ok].astype(int) - 1]
+        return out
+
+    n = np.nan_to_num(at("entries"), nan=0.0)
+    top2 = at("top2")
+    base = m["top2_rate"].to_numpy(dtype=float)
+    rows["fan_ability"] = m["ability"].to_numpy()
+    rows["fan_ability_prev"] = m["ability_prev"].to_numpy()
+    rows["fan_age"] = m["age"].to_numpy()
+    rows["fan_weight"] = m["weight"].to_numpy()
+    rows["fan_c_n"] = np.where(m["eff"].notna(), n, np.nan)
+    rows["fan_c_top2"] = ((np.nan_to_num(top2, nan=0.0) * n + FAN_SMOOTH * base) / (n + FAN_SMOOTH))
+    rows["fan_c_st"] = at("st")
+    rows["fan_c_sr"] = at("sr")
+    rows.loc[n < 1, ["fan_c_st", "fan_c_sr"]] = np.nan
+    return rows
+
+
+def add_fan_race_features(df: pd.DataFrame) -> pd.DataFrame:
+    """ファン手帳の値を、同じレースの平均との差にする。"""
+    for c in ("fan_ability", "fan_c_top2", "fan_c_sr"):
+        if c not in df:
+            df[c] = np.nan
+    for c, name in (("fan_ability", "fan_ability_rel"), ("fan_c_top2", "fan_c_top2_rel"), ("fan_c_sr", "fan_c_sr_rel")):
+        v = pd.to_numeric(df[c], errors="coerce")
+        df[name] = v - v.groupby(df["race_id"]).transform("mean")
+    for c in FAN_FEATURES:
+        if c not in df:
+            df[c] = np.nan
+    return df
+
+
 # ------------------------------------------------------------------ build
+
+
+def release_memory() -> None:
+    """使い終わった表をまとめて片付け、空いたメモリをOSに返す（メモリの小さいサーバーで、学習がスワップに入らないように）。"""
+    import ctypes
+    import gc
+
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
 
 
 def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame, dict]:
@@ -1073,10 +1179,11 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     found = discover(facts, fstate, f_recent, nxt)  # 選手別アビリティの自動発見（表示だけ）
     rt = racetime_stats(facts)
     ss = series_stats(facts)
+    fan = load_fan(raw_dir / "fan.csv")
 
     rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank", "motor_no"]].copy()
     del facts
-    gc.collect()
+    release_memory()
     rows = add_day_flags(rows, raw_dir)
     rows = rows.merge(load_exhibition(raw_dir / "exhibition.csv"), on=["race_id", "lane"], how="left")
     rows = rows.merge(motors.drop(columns=["motor_no_m"]), on=["race_id", "lane"], how="left")
@@ -1094,22 +1201,26 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
         rows[c] = pd.to_numeric(rows[c], errors="coerce")
     rows = rows.merge(rt, on=["venue", "date", "toban"], how="left")
     rows = rows.merge(ss, on=["venue", "date", "toban"], how="left")
+    rows = apply_fan(rows, fan)
     del rt, ss
     del pc, pa
-    gc.collect()
-    rows = add_race_features(rows, with_ex=True)
+    release_memory()
+    rows = add_race_features(rows, with_ex=True, copy=False)
+    release_memory()
     rows["win"] = (rows["finish"] == 1).astype("int8")
     rows["top2"] = (rows["finish"] <= 2).astype("int8")  # 2着・3着を別に学習するとき用
     rows["top3"] = (rows["finish"] <= 3).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
     rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
-    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + KIMARITE_FEATURES + SERIES_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + KIMARITE_FEATURES + SERIES_FEATURES + FAN_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":
             rows[c] = rows[c].astype("float32")
-    gc.collect()
+    release_memory()
     live_tables = {k: t[t["date"] == nxt].drop(columns=["date"]) for k, t in extra.items()}
+    if len(fan):
+        live_tables["fan"] = fan_live_table(fan, nxt)  # 選手ごとの最新の期（eff 付き）
     live_tables["profile"] = profile  # 画面のデータ欄用（期間別・F持ちのとき）
     live_tables["found"] = found  # 選手別アビリティの自動発見
     priors["motor_swaps"] = swaps

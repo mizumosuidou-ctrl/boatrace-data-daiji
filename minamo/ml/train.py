@@ -10,8 +10,10 @@
 """
 from __future__ import annotations
 
+import gc
 import json
 import logging
+import os
 from datetime import datetime
 from itertools import permutations
 from pathlib import Path
@@ -34,9 +36,20 @@ PARAMS = {
     "bagging_freq": 1,
     "lambda_l2": 1.0,
     "verbose": -1,
-    "num_threads": 2,
+    # コアが増えたら学習も速くなるように（環境変数 MINAMO_THREADS で固定もできる）。今の2コアのサーバーでは今までと同じ2
+    "num_threads": int(os.environ.get("MINAMO_THREADS") or 0) or min(os.cpu_count() or 2, 6),
 }
 PL_DECAY = 0.82
+
+
+def rss_mb() -> str:
+    """いまのメモリ使用量と、これまでの最大（MB）。ログに出して、どこで増えるかを見る用。読めなければ空。"""
+    try:
+        v = {k: int(x.split()[0]) // 1024 for k, x in (ln.split(":", 1) for ln in Path("/proc/self/status").read_text().splitlines())
+             if k in ("VmRSS", "VmHWM")}
+        return f"mem={v['VmRSS']}MB peak={v['VmHWM']}MB"
+    except (OSError, KeyError, ValueError):
+        return ""
 
 
 def normalize(df: pd.DataFrame, raw: np.ndarray) -> np.ndarray:
@@ -304,6 +317,25 @@ def _fit(train: pd.DataFrame, valid: pd.DataFrame, feats: list[str], label: str 
     return booster
 
 
+ADOPT_BLOCKS = 3      # 検証期間を日付で等分して、特徴量の採用を何回の比べで確かめるか
+ADOPT_BLOCKS_MIN = 2  # そのうち何回で対数損失が下がっていないと採用しないか（0 なら全体の比べだけ。これまでと同じ）
+
+
+def block_wins(te: pd.DataFrame, p_old: np.ndarray, p_new: np.ndarray, n: int = ADOPT_BLOCKS) -> list[float]:
+    """検証期間を日付で n 等分し、それぞれで 1着の対数損失（新 − 旧）を返す。マイナスなら新しい方が良い。"""
+    dates = np.sort(te["date"].unique())
+    cuts = [dates[int(len(dates) * i / n)] for i in range(n)] + [dates[-1] + np.timedelta64(1, "D")]
+    out = []
+    for i in range(n):
+        mask = ((te["date"] >= cuts[i]) & (te["date"] < cuts[i + 1])).to_numpy()
+        if mask.sum() < 60:
+            out.append(float("nan"))
+            continue
+        sub = te[mask]
+        out.append(evaluate(sub, p_new[mask])["logloss"] - evaluate(sub, p_old[mask])["logloss"])
+    return out
+
+
 def _place_experiment(split, model, feats, decay: float, name: str, out_dir: Path, metrics: dict) -> dict:
     """2着以内・3着以内のモデルを作り、3連単の2着・3着に混ぜる割合を調整期間で決め、検証期間で今の方法と比べる。"""
     files = [out_dir / f"model_top2_{name}.txt", out_dir / f"model_top3_{name}.txt"]
@@ -343,7 +375,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         tr = tr[tr["date"] >= pd.Timestamp(window)]
     va = rows[(rows["date"] >= valid_start) & (rows["date"] < test_start)]
     te = rows[rows["date"] >= test_start]
-    log.info("rows=%d train=%d valid=%d test=%d window=%s", len(rows), len(tr), len(va), len(te), window)
+    log.info("rows=%d train=%d valid=%d test=%d window=%s %s", len(rows), len(tr), len(va), len(te), window, rss_mb())
 
     # 修正3までの特徴量と、当地・調子・モーター実績を足したものを、同じ検証期間で比べる
     pre_v1 = _fit(tr, va, ds.BASE_FEATURES_V1)
@@ -362,15 +394,22 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     adopted = {}
     best = m_v2 if extra_adopt else m_v1
     for name, group in (("fhold", ds.FHOLD_FEATURES), ("wall", ds.WALL_FEATURES), ("race", ds.RACE_FEATURES), ("day", ds.DAY_FEATURES),
-                        ("shape", ds.SHAPE_FEATURES), ("kimarite", ds.KIMARITE_FEATURES), ("series", ds.SERIES_FEATURES)):
+                        ("shape", ds.SHAPE_FEATURES), ("kimarite", ds.KIMARITE_FEATURES), ("series", ds.SERIES_FEATURES), ("fan", ds.FAN_FEATURES)):
         feats = pre_feats + group
         model = _fit(tr, va, feats)
         m = evaluate(te, normalize(te, model.predict(te[feats])))
         metrics[f"pre_{name}"] = m
         adopted[name] = m["logloss"] < best["logloss"]
+        if len(te) and ADOPT_BLOCKS_MIN:
+            # 全体では良くても、検証期間の一部の偶然かもしれない。期間を分けて、下がった回数も見る
+            diffs = block_wins(te, normalize(te, pre.predict(te[pre_feats])), normalize(te, model.predict(te[feats])))
+            m["blocks"] = [round(d, 5) for d in diffs]
+            if adopted[name] and sum(d < 0 for d in diffs) < ADOPT_BLOCKS_MIN:
+                adopted[name] = False
         if adopted[name]:
             pre, pre_feats, best = model, feats, m
     post_feats = pre_feats + ds.EX_FEATURES
+    log.info("features done %s", rss_mb())
 
     # 3連単の2着・3着の平坦化を、調整用期間で合わせる（検証期間は使わない）
     decay = tune_decay(va, normalize(va, pre.predict(va[pre_feats])))
@@ -380,6 +419,12 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     # 展示後モデル：展示データがある期間だけで、前60%学習・次15%調整・最後25%検証
     post, post_adopt, orig_adopt = None, False, False
     ex_rows = rows[rows["has_ex"]]
+    # 以降は rows を使わない（展示のあるレースの表 ex_rows と、学習・検証の表を使う）。大きな表を1つ手放してメモリを空ける
+    data_range = [rows["race_date"].min(), rows["race_date"].max()]
+    rt_eval = ds.racetime_eval(rows)
+    del rows
+    ds.release_memory()
+    log.info("freed rows %s", rss_mb())
     ex_dates = np.sort(ex_rows["date"].unique())
     if len(ex_rows) > 3000 and len(ex_dates) >= 20:
         cut_valid = ex_dates[int(len(ex_dates) * 0.60)]
@@ -463,7 +508,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     adopt = metrics["pre"]["logloss"] < metrics["baseline"]["logloss"]
     meta = {
         "trained_at": datetime.now().isoformat(timespec="seconds"),
-        "data_range": [rows["race_date"].min(), rows["race_date"].max()],
+        "data_range": data_range,
         "test_from": test_start.strftime("%Y%m%d"),
         "pre_features": pre_feats,
         "post_features": post_feats if post is not None and post_adopt else None,
@@ -477,7 +522,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         "metrics": metrics,
         "importance": {k: round(float(v), 1) for k, v in imp.head(15).items()},
         "adopt": bool(adopt),
-        "racetime_eval": ds.racetime_eval(rows),  # 画面の「タイム評価」（表示だけ）
+        "racetime_eval": rt_eval,  # 画面の「タイム評価」（表示だけ）
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
@@ -562,11 +607,11 @@ def summary_ja(meta: dict) -> str:
         "",
         f"{'':14}{'1着的中':>8}{'3連単1点':>9}{'5点':>7}{'10点':>7}{'対数損失':>9}",
     ]
-    names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre_fhold": "＋F持ち", "pre_wall": "＋壁", "pre_race": "＋レース番号", "pre_day": "＋初日・最終日", "pre_shape": "＋展開の形", "pre_kimarite": "＋決まり手", "pre_series": "＋今節成績",
+    names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre_fhold": "＋F持ち", "pre_wall": "＋壁", "pre_race": "＋レース番号", "pre_day": "＋初日・最終日", "pre_shape": "＋展開の形", "pre_kimarite": "＋決まり手", "pre_series": "＋今節成績", "pre_fan": "＋ファン手帳",
              "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
              "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後", "post_wind": "└展示後＋風",
              "orig_pre": "└直近 展示前", "orig_post": "└直近 展示後", "orig_post_orig": "└直近 +ｵﾘｼﾞﾅﾙ"}
-    for key in ("baseline", "pre_v1", "pre_fhold", "pre_wall", "pre_race", "pre_day", "pre_shape", "pre_kimarite", "pre_series", "pre", "baseline_ex_races", "pre_ex_races", "post", "post_wind",
+    for key in ("baseline", "pre_v1", "pre_fhold", "pre_wall", "pre_race", "pre_day", "pre_shape", "pre_kimarite", "pre_series", "pre_fan", "pre", "baseline_ex_races", "pre_ex_races", "post", "post_wind",
                 "orig_pre", "orig_post", "orig_post_orig"):
         if key in m:
             r = m[key]
@@ -593,9 +638,12 @@ def summary_ja(meta: dict) -> str:
     labels = {"fhold": "F持ちのスタート順位", "wall": "壁（2〜6コースの選手が入ったときの1コース1着率）", "wind": "風（展示後）", "race": "レース番号", "day": "節の初日・最終日",
               "shape": "展開の形（スタート隊形・一番大きなスタート順位の差の場所と大きさ）",
               "kimarite": "決まり手（逃げ・差され・まくられ・逃し・差し・まくり・まくり差しの率）",
-              "series": "今節成績（同じ節の前日までの走った数・平均の得点・1着の数）"}
+              "series": "今節成績（同じ節の前日までの走った数・平均の得点・1着の数）",
+              "fan": "ファン手帳（能力指数・年齢・体重・進入コース別の半年成績）"}
     for k, v in (meta.get("new_adopt") or {}).items():
-        lines.append(f"{labels.get(k, k)}: " + ("使う（入れた方が良い）" if v else "使わない（入れても良くならない）"))
+        blocks = (m.get(f"pre_{k}") or {}).get("blocks")
+        tail = "　期間を3つに分けた対数損失の差（新−旧、マイナスが良い）: " + " / ".join(f"{d:+.4f}" for d in blocks) if blocks else ""
+        lines.append(f"{labels.get(k, k)}: " + ("使う（入れた方が良い）" if v else "使わない（入れても良くならない）") + tail)
     swaps = (meta.get("priors") or {}).get("motor_swaps") or {}
     if swaps:
         from ..venues import venue

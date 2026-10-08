@@ -1,6 +1,6 @@
 # MINAMO 引き継ぎメモ（新しい会話用）
 
-最終更新: 2026-10-03（1つ目の会話から、日別・場別の収支を追加。下の「2026-10-03 1つ目の会話」を参照）
+最終更新: 2026-10-08（精度向上のための学習の改良・サーバー8GBへの変更の準備。下の「2026-10-08」を参照）
 
 ## ユーザーについて（必ず守ること）
 
@@ -11,6 +11,29 @@
 - **ANTHROPIC_API_KEY は GitHub（公開リポジトリ）に絶対に置かない。** サーバーの `/opt/minamo/deploy/.env` にだけ置く。
 - SSH 鍵 `~/Downloads/ログイン用認証キー_20260826171914.key` は共有・アップロードしない。
 - ユーザーのデータベース（Postgres `rtmonitor`、`site_archive.records`）は**読むだけ**。書き込まない。
+
+## 2026-10-08（クラウドセッションで精度向上の作業、PR #173）
+
+- ファン手帳（fan.csv）を学習の材料に追加（dataset.FAN_FEATURES：能力指数・前期・年齢・体重・進入コース別の半年成績と、レース内の差）。
+  期の最終日の翌日以降のレースにだけ使う（load_fan／apply_fan／fan_live_table）。当日用は stats_fan.csv.gz（live.py が読む）。
+  実データの学習：採用。3期間の対数損失の差 −0.0051／−0.0062／−0.0023、全体 1.183→1.179、10点的中 48.9→50.0%。
+- 新しい特徴量の採用判定を厳しくした：検証期間を日付で3等分し、2期間以上で下がったときだけ採用（train.ADOPT_BLOCKS_MIN、0 で従来どおり）。要約に3期間ごとの差が出る。
+- メモリ削減（学習用の表を作る段階が最大だった）：add_race_features(copy=False)、dataset.release_memory()（gc＋malloc_trim）、train.rss_mb() のログ。
+  模擬データ29万行で最大 1,069MB→約820MB、表を作り終えた時点 650MB→335MB。実データ（約159万行）は2GBでは足りずスワップに入っていた。
+- 学習のスレッド数：MINAMO_THREADS か、無ければ min(コア数, 6)（2コアのときは今までと同じ2）。
+- 学習のコマンドは1回だけ実行する（2つ同時に走らせるとメモリ不足で1つが強制終了された。cron_ml.sh のロックは cron 同士だけを守る）。
+- 本番サーバーは機能用のブランチ（claude/cloud-session-usage-6f3ey8）で動かしている。PR #173 を main に入れたら、サーバーを main に戻す（`git checkout main && git pull`）。
+
+### サーバー（KAGOYA CLOUD VPS・boatrace-rt-monitor）の構成メモ
+- 2コア・2GB・200GB NVMe（2026-10-08 時点）→ 8GB（6コア・800GB NVMe、月額上限3,410円。変更には停止が必要）に変更する予定。IP は 133.18.146.150。
+- docker：deploy-worker-1（ミナモ、unless-stopped）・boatrace-postgres（RTモニターのDB、unless-stopped、データ /opt/boatrace-rt-monitor/data/postgres、DB rtmonitor 4.4GB）。
+  手で `docker stop` すると再起動後に戻らない。OS から止める（shutdown）。
+- docker の外：/opt/boatrace-rt-monitor（collector：root の cron で5分おき、archive_api.py：systemd の boatrace-archive-api.service）、nginx、
+  /opt/timelab-drafts と timelab-*.timer（WordPress への投稿。別の仕組み）。すべて enabled で、再起動後に自動で戻る。
+- バックアップ：RTモニター側 /opt/boatrace-rt-monitor/backup.sh（ubuntu の cron、毎日 3:15、pg_dump | gzip、30日分、backups/）。
+  ミナモ側 deploy/backup.sh（毎週月曜 2:40、データベースは含まない・鍵 .env を含む）。KAGOYA の定期スナップショットは 2026-09-01 から停止中。
+- 変更前に Mac のデスクトップ boatrace-backup-20261008 へコピーして照合済み（RTのダンプ、ミナモの記録）。22:30以降に直前の最新版も取る。
+- 止めてよい時間帯：22:30〜2:30（rtm_live は 8〜21時台、学習は 3:10、収集は5分おき）。止める前に timelab タイマーと収集の cron を一時停止、戻したら再開する。
 
 ## 全体像
 
