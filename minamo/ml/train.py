@@ -13,6 +13,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import os
 from datetime import datetime
 from itertools import permutations
 from pathlib import Path
@@ -35,7 +36,8 @@ PARAMS = {
     "bagging_freq": 1,
     "lambda_l2": 1.0,
     "verbose": -1,
-    "num_threads": 2,
+    # コアが増えたら学習も速くなるように（環境変数 MINAMO_THREADS で固定もできる）。今の2コアのサーバーでは今までと同じ2
+    "num_threads": int(os.environ.get("MINAMO_THREADS") or 0) or min(os.cpu_count() or 2, 6),
 }
 PL_DECAY = 0.82
 
