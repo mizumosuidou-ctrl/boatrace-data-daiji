@@ -421,7 +421,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     data_range = [rows["race_date"].min(), rows["race_date"].max()]
     rt_eval = ds.racetime_eval(rows)
     del rows
-    gc.collect()
+    ds.release_memory()
     log.info("freed rows %s", rss_mb())
     ex_dates = np.sort(ex_rows["date"].unique())
     if len(ex_rows) > 3000 and len(ex_dates) >= 20:

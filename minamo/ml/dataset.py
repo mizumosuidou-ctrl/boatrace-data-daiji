@@ -946,8 +946,10 @@ def add_relations(df: pd.DataFrame, score: str, prefix: str) -> pd.DataFrame:
     return df
 
 
-def add_race_features(df: pd.DataFrame, with_ex: bool) -> pd.DataFrame:
-    df = df.copy()
+def add_race_features(df: pd.DataFrame, with_ex: bool, copy: bool = True) -> pd.DataFrame:
+    """レース内の比較の列を足す。copy=False なら渡した表をそのまま書き換える（学習用の大きな表でメモリを倍にしない）。"""
+    if copy:
+        df = df.copy()
     df["course_i"] = df["course"].astype(int)
     df["venue_i"] = df["venue"].astype(int)
     df["pred_start_order"] = df.groupby("race_id")["sr_c"].rank(method="average")
@@ -1127,6 +1129,18 @@ def add_fan_race_features(df: pd.DataFrame) -> pd.DataFrame:
 # ------------------------------------------------------------------ build
 
 
+def release_memory() -> None:
+    """使い終わった表をまとめて片付け、空いたメモリをOSに返す（メモリの小さいサーバーで、学習がスワップに入らないように）。"""
+    import ctypes
+    import gc
+
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame, dict]:
     """学習用の表（1行＝1艇）と、平滑化の基準・当日予想用の累積（全期間）・当日予想用の追加成績を返す。"""
     import gc
@@ -1169,7 +1183,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
 
     rows = facts[["race_id", "race_date", "date", "venue", "race_no", "lane", "course", "toban", "grade_o", "finish", "start_rank", "motor_no"]].copy()
     del facts
-    gc.collect()
+    release_memory()
     rows = add_day_flags(rows, raw_dir)
     rows = rows.merge(load_exhibition(raw_dir / "exhibition.csv"), on=["race_id", "lane"], how="left")
     rows = rows.merge(motors.drop(columns=["motor_no_m"]), on=["race_id", "lane"], how="left")
@@ -1190,8 +1204,9 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows = apply_fan(rows, fan)
     del rt, ss
     del pc, pa
-    gc.collect()
-    rows = add_race_features(rows, with_ex=True)
+    release_memory()
+    rows = add_race_features(rows, with_ex=True, copy=False)
+    release_memory()
     rows["win"] = (rows["finish"] == 1).astype("int8")
     rows["top2"] = (rows["finish"] <= 2).astype("int8")  # 2着・3着を別に学習するとき用
     rows["top3"] = (rows["finish"] <= 3).astype("int8")
@@ -1202,7 +1217,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     for c in rows.columns:
         if rows[c].dtype == "float64":
             rows[c] = rows[c].astype("float32")
-    gc.collect()
+    release_memory()
     live_tables = {k: t[t["date"] == nxt].drop(columns=["date"]) for k, t in extra.items()}
     if len(fan):
         live_tables["fan"] = fan_live_table(fan, nxt)  # 選手ごとの最新の期（eff 付き）
