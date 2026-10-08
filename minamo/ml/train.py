@@ -587,11 +587,11 @@ def summary_ja(meta: dict) -> str:
         "",
         f"{'':14}{'1着的中':>8}{'3連単1点':>9}{'5点':>7}{'10点':>7}{'対数損失':>9}",
     ]
-    names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre_fhold": "＋F持ち", "pre_wall": "＋壁", "pre_race": "＋レース番号", "pre_day": "＋初日・最終日", "pre_shape": "＋展開の形", "pre_kimarite": "＋決まり手", "pre_series": "＋今節成績",
+    names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre_fhold": "＋F持ち", "pre_wall": "＋壁", "pre_race": "＋レース番号", "pre_day": "＋初日・最終日", "pre_shape": "＋展開の形", "pre_kimarite": "＋決まり手", "pre_series": "＋今節成績", "pre_fan": "＋ファン手帳",
              "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
              "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後", "post_wind": "└展示後＋風",
              "orig_pre": "└直近 展示前", "orig_post": "└直近 展示後", "orig_post_orig": "└直近 +ｵﾘｼﾞﾅﾙ"}
-    for key in ("baseline", "pre_v1", "pre_fhold", "pre_wall", "pre_race", "pre_day", "pre_shape", "pre_kimarite", "pre_series", "pre", "baseline_ex_races", "pre_ex_races", "post", "post_wind",
+    for key in ("baseline", "pre_v1", "pre_fhold", "pre_wall", "pre_race", "pre_day", "pre_shape", "pre_kimarite", "pre_series", "pre_fan", "pre", "baseline_ex_races", "pre_ex_races", "post", "post_wind",
                 "orig_pre", "orig_post", "orig_post_orig"):
         if key in m:
             r = m[key]
