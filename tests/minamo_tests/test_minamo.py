@@ -1144,3 +1144,12 @@ def test_weekly_report_sums_last_week_and_splits_for_discord(tmp_path):
     assert "2連単：5分前 0.0%（1R） / 2分前 500.0%（1R） / 1分前 --" in text
     parts = weekly.chunks("\n".join(["あ" * 100] * 40), size=1800)
     assert len(parts) == 3 and all(len(p) <= 1800 for p in parts)
+
+
+def test_late_message_for_two_minute_exacta():
+    """参考：2分前に決め直した2連単の Discord の文（空なら送らない）。"""
+    from minamo import notify
+
+    assert notify.late_message("20261009", "01", 5, "12:00", 1.8, {"combos": []}) is None
+    text = notify.late_message("20261009", "01", 5, "12:00", 1.8, {"combos": ["1-3"], "items": [{"combo": "1-3", "odds": 12.5}]})
+    assert "参考・2分前" in text and "2連単 1点：1-3（12.5倍）" in text and "#/race/20261009/01/5" in text

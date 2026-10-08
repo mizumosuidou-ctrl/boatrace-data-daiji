@@ -305,6 +305,8 @@ class Pipeline:
             for tag, hi, lo in LATE_FIX:
                 if lo < mins_left <= hi and f"ev{tag}_pick" not in st:
                     self._late_pick(st, tag, date, card, before, odds, odds2, now)
+                    if tag == "2":  # 参考：2分前の2連単を Discord に（記録だけ）
+                        notify.maybe_notify_late(st, date, vd.jcd, rno, card.deadline, mins_left)
         if odds and len(odds) >= 60:  # オッズからの読み：取り直すたびに市場の1着の見込みを残す（人気の動きを見るため）
             mins = self._mins_left(date, card.deadline, now)
             hist = st.get("mkt_hist") or []
