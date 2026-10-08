@@ -1442,3 +1442,37 @@ def test_place_mult_fit_finds_course_one_too_sticky():
     base = train.evaluate(df, prob, 0.82, mult=[1.0] * 6)
     assert base["tri_ll"] == pytest.approx(train.evaluate(df, prob, 0.82)["tri_ll"])
     assert train.evaluate(df, prob, 0.82, mult=mult)["tri_ll"] < base["tri_ll"]
+
+
+def test_fan_features_use_only_periods_that_ended_before_the_race(tmp_path):
+    """ファン手帳：期の最終日より後のレースにだけ、その期の値（能力指数・進入コースの2連対率など）を付ける。"""
+    cols = ["file", "toban", "period_to", "ability", "ability_prev", "age", "weight", "top2_rate", "c1_entries", "c1_top2", "c1_st", "c1_sr",
+            "c2_entries", "c2_top2", "c2_st", "c2_sr"]
+    rows = [
+        ["2410", "4074", "20241031", "5.10", "4.80", "40", "52", "45.0", "20", "60.0", "0.15", "2.50", "10", "30.0", "0.17", "3.00"],
+        ["2504", "4074", "20250430", "6.20", "5.10", "41", "53", "50.0", "30", "70.0", "0.14", "2.40", "0", "", "", ""],
+    ]
+    pd.DataFrame(rows, columns=cols).to_csv(tmp_path / "fan.csv", index=False)
+    fan = ds.load_fan(tmp_path / "fan.csv")
+    assert list(fan["eff"]) == [pd.Timestamp("2024-11-01"), pd.Timestamp("2025-05-01")]
+    race = pd.DataFrame({
+        "race_id": ["a", "a", "b", "c"], "toban": ["4074", "4074", "4074", "4074"],
+        "date": pd.to_datetime(["2024-10-31", "2024-11-01", "2025-04-30", "2025-05-01"]), "course": [1, 2, 1, 1],
+    })
+    out = ds.apply_fan(race.copy(), fan)
+    assert np.isnan(out.loc[0, "fan_ability"])  # 期の最終日当日は使わない
+    assert out.loc[1, "fan_ability"] == 5.10 and out.loc[1, "fan_c_st"] == 0.17 and out.loc[1, "fan_c_n"] == 10
+    assert out.loc[2, "fan_ability"] == 5.10  # 新しい期はまだ
+    assert out.loc[3, "fan_ability"] == 6.20 and out.loc[3, "fan_ability_prev"] == 5.10
+    # 2連対率は全体の2連対率（50.0）へ寄せる
+    assert out.loc[3, "fan_c_top2"] == pytest.approx((70.0 * 30 + ds.FAN_SMOOTH * 50.0) / (30 + ds.FAN_SMOOTH))
+    # 当日用の表は、次の日までに使える最新の期だけ
+    live = ds.fan_live_table(fan, pd.Timestamp("2025-05-02"))
+    assert len(live) == 1 and live.iloc[0]["ability"] == 6.20
+    # レース内の差
+    two = pd.DataFrame({"race_id": ["r", "r"], "fan_ability": [6.0, 4.0], "fan_c_top2": [50.0, 30.0], "fan_c_sr": [2.0, 4.0]})
+    two = ds.add_fan_race_features(two)
+    assert list(two["fan_ability_rel"]) == [1.0, -1.0]
+    # 表が無くても動く
+    empty = ds.apply_fan(race.copy(), ds.load_fan(tmp_path / "none.csv"))
+    assert empty["fan_ability"].isna().all()

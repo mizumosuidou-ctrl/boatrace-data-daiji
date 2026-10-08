@@ -362,7 +362,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     adopted = {}
     best = m_v2 if extra_adopt else m_v1
     for name, group in (("fhold", ds.FHOLD_FEATURES), ("wall", ds.WALL_FEATURES), ("race", ds.RACE_FEATURES), ("day", ds.DAY_FEATURES),
-                        ("shape", ds.SHAPE_FEATURES), ("kimarite", ds.KIMARITE_FEATURES), ("series", ds.SERIES_FEATURES)):
+                        ("shape", ds.SHAPE_FEATURES), ("kimarite", ds.KIMARITE_FEATURES), ("series", ds.SERIES_FEATURES), ("fan", ds.FAN_FEATURES)):
         feats = pre_feats + group
         model = _fit(tr, va, feats)
         m = evaluate(te, normalize(te, model.predict(te[feats])))

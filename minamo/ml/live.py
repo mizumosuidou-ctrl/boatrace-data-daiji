@@ -52,6 +52,9 @@ class MLPredictor:
             path = self.dir / f"stats_{name}.csv.gz"
             if path.exists():
                 self.new[name] = pd.read_csv(path, dtype={"toban": str}).assign(date=self.stats_date)
+        # ファン手帳（選手ごとの最新の期。無ければ使わない）
+        path = self.dir / "stats_fan.csv.gz"
+        self.fan = pd.read_csv(path, dtype={"toban": str}, parse_dates=["eff"]) if path.exists() else None
         # 画面のデータ欄：選手×コースの期間別（半年・1年・全期間）と F持ちのときの成績
         self.profile = {}
         path = self.dir / "stats_profile.csv.gz"
@@ -121,7 +124,7 @@ class MLPredictor:
         df = ds.apply_stats(df, self.pc, self.pa, self.meta["priors"])
         df = ds.apply_extra(df, self.extra)
         df = ds.apply_new(df, self.new, self.meta["priors"])
-        return df
+        return ds.apply_fan(df, self.fan)
 
     @staticmethod
     def _series(rt: dict, toban: str) -> dict:
