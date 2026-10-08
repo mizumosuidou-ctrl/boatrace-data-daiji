@@ -304,6 +304,25 @@ def _fit(train: pd.DataFrame, valid: pd.DataFrame, feats: list[str], label: str 
     return booster
 
 
+ADOPT_BLOCKS = 3      # 検証期間を日付で等分して、特徴量の採用を何回の比べで確かめるか
+ADOPT_BLOCKS_MIN = 2  # そのうち何回で対数損失が下がっていないと採用しないか（0 なら全体の比べだけ。これまでと同じ）
+
+
+def block_wins(te: pd.DataFrame, p_old: np.ndarray, p_new: np.ndarray, n: int = ADOPT_BLOCKS) -> list[float]:
+    """検証期間を日付で n 等分し、それぞれで 1着の対数損失（新 − 旧）を返す。マイナスなら新しい方が良い。"""
+    dates = np.sort(te["date"].unique())
+    cuts = [dates[int(len(dates) * i / n)] for i in range(n)] + [dates[-1] + np.timedelta64(1, "D")]
+    out = []
+    for i in range(n):
+        mask = ((te["date"] >= cuts[i]) & (te["date"] < cuts[i + 1])).to_numpy()
+        if mask.sum() < 60:
+            out.append(float("nan"))
+            continue
+        sub = te[mask]
+        out.append(evaluate(sub, p_new[mask])["logloss"] - evaluate(sub, p_old[mask])["logloss"])
+    return out
+
+
 def _place_experiment(split, model, feats, decay: float, name: str, out_dir: Path, metrics: dict) -> dict:
     """2着以内・3着以内のモデルを作り、3連単の2着・3着に混ぜる割合を調整期間で決め、検証期間で今の方法と比べる。"""
     files = [out_dir / f"model_top2_{name}.txt", out_dir / f"model_top3_{name}.txt"]
@@ -368,6 +387,12 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         m = evaluate(te, normalize(te, model.predict(te[feats])))
         metrics[f"pre_{name}"] = m
         adopted[name] = m["logloss"] < best["logloss"]
+        if len(te) and ADOPT_BLOCKS_MIN:
+            # 全体では良くても、検証期間の一部の偶然かもしれない。期間を分けて、下がった回数も見る
+            diffs = block_wins(te, normalize(te, pre.predict(te[pre_feats])), normalize(te, model.predict(te[feats])))
+            m["blocks"] = [round(d, 5) for d in diffs]
+            if adopted[name] and sum(d < 0 for d in diffs) < ADOPT_BLOCKS_MIN:
+                adopted[name] = False
         if adopted[name]:
             pre, pre_feats, best = model, feats, m
     post_feats = pre_feats + ds.EX_FEATURES
@@ -593,9 +618,12 @@ def summary_ja(meta: dict) -> str:
     labels = {"fhold": "F持ちのスタート順位", "wall": "壁（2〜6コースの選手が入ったときの1コース1着率）", "wind": "風（展示後）", "race": "レース番号", "day": "節の初日・最終日",
               "shape": "展開の形（スタート隊形・一番大きなスタート順位の差の場所と大きさ）",
               "kimarite": "決まり手（逃げ・差され・まくられ・逃し・差し・まくり・まくり差しの率）",
-              "series": "今節成績（同じ節の前日までの走った数・平均の得点・1着の数）"}
+              "series": "今節成績（同じ節の前日までの走った数・平均の得点・1着の数）",
+              "fan": "ファン手帳（能力指数・年齢・体重・進入コース別の半年成績）"}
     for k, v in (meta.get("new_adopt") or {}).items():
-        lines.append(f"{labels.get(k, k)}: " + ("使う（入れた方が良い）" if v else "使わない（入れても良くならない）"))
+        blocks = (m.get(f"pre_{k}") or {}).get("blocks")
+        tail = "　期間を3つに分けた対数損失の差（新−旧、マイナスが良い）: " + " / ".join(f"{d:+.4f}" for d in blocks) if blocks else ""
+        lines.append(f"{labels.get(k, k)}: " + ("使う（入れた方が良い）" if v else "使わない（入れても良くならない）") + tail)
     swaps = (meta.get("priors") or {}).get("motor_swaps") or {}
     if swaps:
         from ..venues import venue

@@ -1476,3 +1476,24 @@ def test_fan_features_use_only_periods_that_ended_before_the_race(tmp_path):
     # 表が無くても動く
     empty = ds.apply_fan(race.copy(), ds.load_fan(tmp_path / "none.csv"))
     assert empty["fan_ability"].isna().all()
+
+
+def test_block_wins_splits_the_valid_period_by_date():
+    from minamo.ml import train
+
+    rng = np.random.default_rng(0)
+    n_days, per = 30, 40
+    rows = []
+    for d in range(n_days):
+        for r in range(per):
+            win = int(rng.integers(0, 6))
+            for lane in range(6):
+                rows.append({"race_id": f"{d}-{r}", "date": pd.Timestamp("2026-01-01") + pd.Timedelta(days=d), "lane": lane + 1,
+                             "win": int(lane == win), "top2": 0, "top3": 0, "finish": 1 if lane == win else 3, "course": lane + 1,
+                             "course_winrate_prior": 1 / 6})
+    te = pd.DataFrame(rows)
+    flat = np.full(len(te), 1 / 6)
+    sharp = np.where(te["win"] == 1, 0.5, 0.1)  # 当たりを知っている（必ず良くなる）
+    diffs = train.block_wins(te, flat, sharp)
+    assert len(diffs) == 3 and all(d < 0 for d in diffs)
+    assert all(d > 0 for d in train.block_wins(te, sharp, flat))
