@@ -1497,3 +1497,52 @@ def test_block_wins_splits_the_valid_period_by_date():
     diffs = train.block_wins(te, flat, sharp)
     assert len(diffs) == 3 and all(d < 0 for d in diffs)
     assert all(d > 0 for d in train.block_wins(te, sharp, flat))
+
+
+def test_tune_params_compares_settings_without_saving_models(trained):
+    from minamo.ml import train
+
+    out, _ = trained
+    before = (out / "model_pre.txt").read_bytes()
+    text = train.tune_params(out.parent / "raw", out, grid=[{}, {"num_leaves": 7}], test_days=20, valid_days=12)
+    assert "今の設定" in text and "num_leaves=7" in text
+    assert (out / "tune.json").exists()
+    assert (out / "model_pre.txt").read_bytes() == before  # モデルは書き換えない
+    res = json.loads((out / "tune.json").read_text(encoding="utf-8"))
+    assert len(res) == 2 and res[0]["blocks"] == [0.0, 0.0, 0.0]
+
+
+def test_features_do_not_look_ahead(trained):
+    """未来の走りを消しても、その日までの特徴量の値が変わらない（データ漏れの見張り）。
+    例外：モーターの m_res だけは、コース別の2連対の「全期間の平均」を引くので、未来の平均が少し混ざる（既知。影響は小さい）。"""
+    from minamo.ml import dataset as ds
+
+    f = ds.load_facts(trained[0].parent / "raw" / "facts.csv")
+    cut_day = f["date"].sort_values().iloc[len(f) // 2]
+    cut = f[f["date"] <= cut_day].reset_index(drop=True)
+
+    def differing(a, b, keys, real=None):
+        a, b = a[a["date"] <= cut_day], b[b["date"] <= cut_day]
+        m = a.merge(b, on=keys, suffixes=("_f", "_t"), how="inner")
+        if real is not None:  # 実際に走った（選手・日）の行だけ見る
+            m = m.merge(real, on=keys)
+        bad = set()
+        for c in a.columns:
+            if c in keys:
+                continue
+            if not np.allclose(m[f"{c}_f"].to_numpy(float), m[f"{c}_t"].to_numpy(float), equal_nan=True, rtol=1e-9, atol=1e-9):
+                bad.add(c)
+        return bad
+
+    real = cut[["venue", "date", "toban"]].drop_duplicates()
+    pcf, paf = ds.racer_stats(f)
+    pct, pat = ds.racer_stats(cut)
+    assert not differing(pcf, pct, ["toban", "course_i", "date"])
+    assert not differing(paf, pat, ["toban", "date"])
+    ef, et = ds.extra_stats(f), ds.extra_stats(cut)
+    assert not differing(ef["local"], et["local"], ["toban", "venue", "date"])
+    assert not differing(ef["form"], et["form"], ["toban", "date"])
+    assert differing(ef["motor"], et["motor"], ["venue", "motor_no", "date"]) <= {"m_res"}
+    assert not differing(ds.wall_stats(f), ds.wall_stats(cut), ["toban", "course_i", "date"])
+    assert not differing(ds.racetime_stats(f), ds.racetime_stats(cut), ["venue", "date", "toban"], real)
+    assert not differing(ds.series_stats(f), ds.series_stats(cut), ["venue", "date", "toban"], real)
