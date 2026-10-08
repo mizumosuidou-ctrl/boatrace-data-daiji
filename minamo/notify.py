@@ -86,3 +86,24 @@ def maybe_notify(st: dict, date: str, jcd: str, rno: int, deadline: Optional[str
     text = pick_message(date, jcd, rno, deadline, mins_left, ev, ex, fm, ag)
     if text:
         send(text)
+
+
+def late_message(date: str, jcd: str, rno: int, deadline: str, mins_left: float, ex2: Optional[dict]) -> Optional[str]:
+    """参考（記録だけ）：締切2分前に決め直した2連単。空なら None。"""
+    exa = (ex2 or {}).get("combos") or []
+    if not exa:
+        return None
+    return "\n".join([f"⏱ 参考・2分前 {venue(jcd).name} {rno}R　締切 {deadline}（あと{max(0.0, mins_left):.1f}分）",
+                      f"2連単 {len(exa)}点：{_fmt((ex2 or {}).get('items'), exa)}",
+                      "（記録だけ。本番にするかは週報で決めます）",
+                      f"{SITE_URL}#/race/{date}/{jcd}/{rno}"])
+
+
+def maybe_notify_late(st: dict, date: str, jcd: str, rno: int, deadline: Optional[str], mins_left: float) -> None:
+    """2分前に決め直した2連単を1回だけ送る（環境変数 MINAMO_NOTIFY_LATE=0 で止められる）。"""
+    if os.environ.get("MINAMO_NOTIFY_LATE", "1") == "0" or not webhook() or not deadline or mins_left <= 0 or st.get("notified_late"):
+        return
+    st["notified_late"] = True
+    text = late_message(date, jcd, rno, deadline, mins_left, st.get("ex2_pick"))
+    if text:
+        send(text)
