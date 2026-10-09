@@ -66,6 +66,14 @@ ORIG_FEATURES = [
     "lap_rel", "lap_rank", "turn_rel", "turn_rank", "straight_rel", "straight_rank",
 ]
 ORIG_BOUNDS = {"lap_time": (15.0, 45.0), "turn_time": (3.0, 15.0), "straight_time": (5.0, 10.0)}
+# 展示後の体重（直前情報）：ex_weight 当日の体重・ex_weight_rel 同じレースの平均との差・ex_weight_fan ファン手帳の体重との差。
+# 本番の直前情報には体重がある（BeforeEntry.weight）。まだ予想には使っていない（ml-cv --post で効き方を確かめる用）
+WEIGHT_FEATURES = ["ex_weight", "ex_weight_rel", "ex_weight_fan"]
+# 部品交換（直前情報。データベースに残っている分だけ。バックアップ・ダウンロードの行は分からないので空）：
+# ex_parts_any 何か交換した・ex_parts_major ピストン／シリンダ／シャフト／クランク・ex_parts_ring リングの数・キャブ／ギヤ／電気。
+# 本番ではまだ読んでいない（これも ml-cv --post で、読む価値があるかを確かめる用）
+PARTS_FEATURES = ["ex_parts_any", "ex_parts_major", "ex_parts_ring", "ex_parts_carb", "ex_parts_gear", "ex_parts_elec"]
+_PARTS_MAJOR = ("ピストン", "シリンダ", "シャフト", "クランク")
 # 修正7で試す特徴量（それぞれ、入れた方が良いときだけ採用）
 # F持ち：F持ちのときに、ふだんよりどれだけスタート順位が遅くなる選手か（選手ごと、前日まで）
 FHOLD_FEATURES = ["f_hold", "sr_fgap", "sr_c_f", "pred_start_order_f"]
@@ -256,24 +264,50 @@ def load_facts(path: Path) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def parse_parts(text) -> dict:
+    """部品交換の文字（例 'ピストン×2 リング×4 シリンダ'）→ 数の列。空なら全部 0。"""
+    t = text if isinstance(text, str) else ""
+    ring = 0
+    if "リング" in t:
+        m = re.search(r"リング×(\d+)", t)
+        ring = int(m.group(1)) if m else 1
+    return {"ex_parts_any": float(bool(t.strip())), "ex_parts_major": float(any(k in t for k in _PARTS_MAJOR)),
+            "ex_parts_ring": float(ring), "ex_parts_carb": float("キャブ" in t), "ex_parts_gear": float("ギヤ" in t),
+            "ex_parts_elec": float("電気" in t)}
+
+
 def load_exhibition(path: Optional[Path]) -> pd.DataFrame:
-    cols = ["race_id", "lane", "ex_time", "ex_st", "ex_course", "tilt"]
+    cols = ["race_id", "lane", "ex_time", "ex_st", "ex_course", "tilt", "ex_weight"] + PARTS_FEATURES
     frames = []
     if path and Path(path).exists():
-        frames.append(pd.read_csv(path, dtype=str))
+        frames.append(pd.read_csv(path, dtype=str).assign(parts_known=True))  # 部品交換が分かるのは、データベースから書き出した分だけ
     for name in ("exhibition_backfill.csv", "original.csv", "exhibition_kb.csv"):  # 公式サイト・ボートレース日和・ダウンロードデータ
         extra = Path(path).with_name(name) if path else None
         if extra and extra.exists():
-            frames.append(pd.read_csv(extra, dtype=str))
+            frames.append(pd.read_csv(extra, dtype=str).assign(parts_known=False))
     if not frames:
         return pd.DataFrame(columns=cols)
     ex = pd.concat(frames, ignore_index=True)
+    for c in ("weight", "parts_exchange"):
+        if c not in ex:
+            ex[c] = None
     ex["race_date"] = ex["race_date"].str.replace("-", "", regex=False).str[:8]
     ex["venue"] = ex["venue"].str.zfill(2)
     ex["race_no"] = _num(ex["race_no"])
     ex["lane"] = _num(ex["lane"])
-    ex = ex.dropna(subset=["race_date", "venue", "race_no", "lane"])
-    ex = ex.sort_values("captured_at").drop_duplicates(["race_date", "venue", "race_no", "lane"], keep="last")
+    keys = ["race_date", "venue", "race_no", "lane"]
+    ex = ex.dropna(subset=keys)
+    # 体重・部品交換は、ほかの列とは別に拾う（同じ艇の行が複数あるとき、残る行に体重が無くても、ほかの行の体重を使う）
+    ex["ex_weight"] = _num(ex["weight"])
+    ex.loc[~ex["ex_weight"].between(35.0, 90.0), "ex_weight"] = np.nan
+    w = ex.dropna(subset=["ex_weight"]).sort_values(["parts_known", "captured_at"]).drop_duplicates(keys, keep="last")[keys + ["ex_weight"]]
+    pk = ex[ex["parts_known"]].sort_values("captured_at").drop_duplicates(keys, keep="last")
+    pp = pd.concat([pk[keys].reset_index(drop=True), pd.DataFrame([parse_parts(t) for t in pk["parts_exchange"].to_numpy()])], axis=1)
+    ex = ex.sort_values("captured_at").drop_duplicates(keys, keep="last").drop(columns=["ex_weight"])
+    ex = ex.merge(w, on=keys, how="left").merge(pp, on=keys, how="left")  # 部品交換は、データベースの行がある艇だけ（無ければ空）
+    for c in PARTS_FEATURES:
+        if c not in ex:
+            ex[c] = np.nan
     ex["race_id"] = _race_id(ex)
     ex["lane"] = ex["lane"].astype(int)
     ex["ex_time"] = _num(ex["exhibition_time"])
@@ -963,6 +997,9 @@ def add_race_features(df: pd.DataFrame, with_ex: bool, copy: bool = True) -> pd.
     if with_ex:
         df["ex_time_rel"] = df["ex_time"] - df.groupby("race_id")["ex_time"].transform("mean")
         df["ex_time_rank"] = df.groupby("race_id")["ex_time"].rank(method="average")
+        if "ex_weight" in df:
+            df["ex_weight_rel"] = df["ex_weight"] - df.groupby("race_id")["ex_weight"].transform("mean")
+            df["ex_weight_fan"] = df["ex_weight"] - df["fan_weight"] if "fan_weight" in df else np.nan
         df["ex_st_abs"] = df["ex_st"].abs()
         df["ex_st_rank"] = df.groupby("race_id")["ex_st"].rank(method="average")
         df = add_relations(df, "ex_st", "exst")
@@ -1212,7 +1249,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     rows["top3"] = (rows["finish"] <= 3).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
     rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
-    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + KIMARITE_FEATURES + SERIES_FEATURES + FAN_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + KIMARITE_FEATURES + SERIES_FEATURES + FAN_FEATURES + WEIGHT_FEATURES + PARTS_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":

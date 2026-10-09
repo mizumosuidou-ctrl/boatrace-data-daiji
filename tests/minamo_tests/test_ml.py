@@ -1701,3 +1701,43 @@ def test_cv_ablation_runs_without_touching_models(trained):
     for r in res["groups"].values():  # 外したのは、今のモデルに入っている特徴量だけ
         assert set(r["features"]) <= feats and len(r["per_fold"]) == 2
     assert (out / "model_pre.txt").read_bytes() == before
+
+
+def test_parse_parts_reads_counts_and_kinds():
+    from minamo.ml import dataset as ds
+
+    p = ds.parse_parts("ピストン×2 リング×4 シリンダ")
+    assert p["ex_parts_any"] == 1 and p["ex_parts_major"] == 1 and p["ex_parts_ring"] == 4 and p["ex_parts_carb"] == 0
+    assert ds.parse_parts("キャブ")["ex_parts_carb"] == 1 and ds.parse_parts("ギヤ")["ex_parts_gear"] == 1
+    assert ds.parse_parts("リング")["ex_parts_ring"] == 1  # 数が書かれていなければ1つ
+    assert ds.parse_parts("")["ex_parts_any"] == 0 and ds.parse_parts(None)["ex_parts_ring"] == 0
+
+
+def test_load_exhibition_weight_and_parts_only_known_for_database_rows(tmp_path):
+    from minamo.ml import dataset as ds
+
+    cols = "race_date,venue,race_no,lane,exhibition_time,exhibition_rank,ex_st,ex_course,tilt,weight,parts_exchange,captured_at\n"
+    (tmp_path / "exhibition.csv").write_text(
+        cols + "2026-10-01,02,1,1,6.70,1,0.10,1,-0.5,52.0,リング×2,2026-10-01T10:00:00Z\n"
+               "2026-10-01,02,1,2,6.75,2,0.12,2,-0.5,53.5,,2026-10-01T10:00:00Z\n", encoding="utf-8")
+    (tmp_path / "exhibition_backfill.csv").write_text(
+        cols + "2026-10-01,02,1,3,6.80,3,0.14,3,0.0,54.0,,0000-backfill\n"
+               "2026-10-01,02,1,1,6.71,1,0.10,1,-0.5,51.9,,0000-backfill\n", encoding="utf-8")
+    ex = ds.load_exhibition(tmp_path / "exhibition.csv").set_index("lane")
+    assert ex.loc[1, "ex_weight"] == 52.0 and ex.loc[1, "ex_parts_ring"] == 2  # 同じ艇は、データベースの行が残る
+    assert ex.loc[2, "ex_parts_any"] == 0  # データベースの行で部品交換が空＝交換なし
+    assert ex.loc[3, "ex_weight"] == 54.0 and np.isnan(ex.loc[3, "ex_parts_any"])  # バックアップの行は部品交換が分からない
+
+
+def test_cv_ablation_post_mode_compares_exhibition_and_candidates(trained, monkeypatch):
+    from minamo.ml import cv_ablation
+
+    monkeypatch.setattr(cv_ablation, "MIN_TRAIN_ROWS", 500)  # 小さな模擬データでも2回比べられるように
+    out, _ = trained
+    before = (out / "model_pre.txt").read_bytes()
+    text = cv_ablation.build(out.parent / "raw", out, folds=2, fold_days=8, valid_days=6, post=True)
+    assert "展示後モデル" in text and "体重" in text and "部品交換" in text and "足す" in text
+    res = json.loads((out / "cv_ablation_post.json").read_text(encoding="utf-8"))
+    assert {"ex", "weight", "parts"} <= set(res["groups"]) and res["groups"]["weight"]["add"] is True
+    assert res["groups"]["ex"]["add"] is False and len(res["groups"]["ex"]["per_fold"]) == 2
+    assert (out / "model_pre.txt").read_bytes() == before

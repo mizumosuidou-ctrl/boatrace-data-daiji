@@ -5,6 +5,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 echo "--- 今: $(git branch --show-current) $(git log --oneline | head -1)"
+# .git の中に root のファイルがあると、ubuntu では取り込めない（sudo 付きで git を動かしたとき）。分かりにくいエラーになる前に止める
+if [ -n "$(find .git ! -user "$(id -un)" 2>/dev/null | head -1)" ]; then
+  echo "サーバーの .git に、持ち主が $(id -un) でないファイルがあるので、更新できません（以前 sudo 付きで git を動かしたため）。"
+  echo "次を実行して持ち主を戻してから、もう一度 update.sh を実行してください："
+  echo "  sudo find /opt/minamo -path /opt/minamo/var -prune -o ! -user $(id -un) -exec chown $(id -un):$(id -un) {} +"
+  exit 1
+fi
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "サーバーのファイルが書き換えられているので、更新しません（git status を見せてください）"; git status --short | head -8; exit 1
 fi

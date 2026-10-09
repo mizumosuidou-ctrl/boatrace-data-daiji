@@ -7,6 +7,9 @@
   ・毎回、学習はその回の調整期間より前だけ。調整期間（45日）で止める位置を決め、検証期間のレースで比べる（未来は使わない）。
   ・差は「外したとき − 全部入り」のレースごとの対数損失。プラスなら、そのまとまりが効いている。
   ・全部の回をまとめた差と、その誤差から z を出す。何回の検証で効いていたかも数える。
+
+post=True（ml-cv --post）なら展示後モデル：展示のあるレースだけで、展示・風・オリジナル展示を外したときと、
+まだ使っていない材料（体重・部品交換）を足したときの差を比べる（「足す」は 足したとき − 足さないとき が良くなる向きでプラス）。
 """
 from __future__ import annotations
 
@@ -59,7 +62,7 @@ def race_losses(df: pd.DataFrame, raw: np.ndarray) -> pd.Series:
     return s[~s.index.duplicated()]
 
 
-def verdict(fold_diffs: list[pd.Series]) -> dict:
+def verdict(fold_diffs: list[pd.Series], add: bool = False) -> dict:
     """回ごとの、レースごとの差（外した − 全部入り）から、全部の回をまとめた差・z・効いていた回数と判定を出す。"""
     use = [d.dropna() for d in fold_diffs if len(d.dropna())]
     if not use:
@@ -73,42 +76,68 @@ def verdict(fold_diffs: list[pd.Series]) -> dict:
     helped = sum(x > 0 for x in per_fold)
     need = int(np.ceil(len(use) * 0.75))
     if z >= Z_CLEAR and helped >= need:
-        label = "効いている"
+        label = "足すと効く" if add else "効いている"
     elif z <= -Z_CLEAR and (len(use) - helped) >= need:
-        label = "外した方が良い"
+        label = "足さない方が良い" if add else "外した方が良い"
     else:
         label = "はっきりしない"
     return {"mean": mean, "z": float(z), "helped": int(helped), "folds": len(use), "label": label, "per_fold": per_fold}
 
 
-def build(raw_dir: Path, out_dir: Path, folds: int = 4, fold_days: int = 60, valid_days: int = 45, write: bool = True) -> str:
+POST_GROUPS = (
+    ("ex", "展示（展示タイム・チルト）", ds.EX_FEATURES, False),
+    ("wind", "風・波", ds.WIND_FEATURES, False),
+    ("orig", "オリジナル展示（一周・まわり足・直線）", ds.ORIG_FEATURES, False),
+    ("weight", "体重（本番の直前情報で取れる）", ds.WEIGHT_FEATURES, True),
+    ("parts", "部品交換（本番ではまだ読めない）", ds.PARTS_FEATURES, True),
+)
+
+
+def build(raw_dir: Path, out_dir: Path, folds: int = 4, fold_days: int = 60, valid_days: int = 45, write: bool = True,
+          post: bool = False) -> str:
     t0 = time.monotonic()
     raw_dir, out_dir = Path(raw_dir), Path(out_dir)
     rows = ds.build(raw_dir)[0]
     rows["course"] = rows["course"].astype(int)
     meta_path = out_dir / "meta.json"
     saved = json.loads(meta_path.read_text(encoding="utf-8")).get("pre_features") if meta_path.exists() else None
-    feats = [f for f in (saved or ds.BASE_FEATURES) if f in rows.columns]
-    keep = ["race_id", "lane", "finish", "win", "date"] + [f for f in feats if f not in ("race_id", "lane", "finish", "win", "date")]
+    post_saved = json.loads(meta_path.read_text(encoding="utf-8")).get("post_features") if post and meta_path.exists() else None
+    if post:
+        # 展示後モデルの特徴量（採用されていなければ、展示前の特徴量に展示を足したもの）。展示のあるレースだけで比べる
+        saved = post_saved or ((saved or ds.BASE_FEATURES) + ds.EX_FEATURES)
+    feats = [f for f in saved or ds.BASE_FEATURES if f in rows.columns]
+    cand = [f for _, _, g, add in POST_GROUPS if post and add for f in g if f in rows.columns]
+    if post:
+        rows = rows[rows["has_ex"]]
+        if any(f in feats for f in ds.ORIG_FEATURES):
+            rows = rows[rows["has_orig"]]  # オリジナル展示を使うモデルは、オリジナル展示のあるレースだけで学習している
+    keep = ["race_id", "lane", "finish", "win", "date"] + [f for f in feats + cand if f not in ("race_id", "lane", "finish", "win", "date")]
     last = rows["date"].max()
     since = ds.train_window(raw_dir).get("since")
     rows = rows[keep].copy()
     ds.release_memory()
     log.info("cv: rows=%d feats=%d %s", len(rows), len(feats), rss_mb())
 
+    # 比べるまとまり：（キー, 名前, 特徴量, 足すか）。外す＝今の特徴量から抜く、足す＝今の特徴量に加える
     groups = []
-    for key, name, g in GROUPS:
-        inside = [f for f in g if f in feats]
-        if inside:
-            groups.append((key, name, inside))
-    v1 = [f for f in feats if f in ds.BASE_FEATURES_V1]
-    if len(v1) < len(feats):
-        groups.append(("v1", "追加した特徴量を全部外す（基本だけ）", [f for f in feats if f not in v1]))
+    if post:
+        for key, name, g, add in POST_GROUPS:
+            inside = [f for f in g if f in (cand if add else feats)]
+            if inside:
+                groups.append((key, name, inside, add))
+    else:
+        for key, name, g in GROUPS:
+            inside = [f for f in g if f in feats]
+            if inside:
+                groups.append((key, name, inside, False))
+        v1 = [f for f in feats if f in ds.BASE_FEATURES_V1]
+        if len(v1) < len(feats):
+            groups.append(("v1", "追加した特徴量を全部外す（基本だけ）", [f for f in feats if f not in v1], False))
 
     windows = fold_windows(last, folds, fold_days, valid_days)
     full_loss: list[Optional[float]] = []
     base_loss: list[Optional[float]] = []
-    diffs: dict[str, list[pd.Series]] = {k: [] for k, _, _ in groups}
+    diffs: dict[str, list[pd.Series]] = {k: [] for k, _, _, _ in groups}
     spans = []
     for fi, (v_start, t_start, t_end) in enumerate(windows):
         tr = rows[rows["date"] < v_start]
@@ -127,41 +156,50 @@ def build(raw_dir: Path, out_dir: Path, folds: int = 4, fold_days: int = 60, val
             base_loss.append(float(race_losses(te, te["course_winrate_prior"].to_numpy()).mean()))
         log.info("cv fold %d/%d: train=%d test=%d full=%.4f %.0fs %s", fi + 1, len(windows), len(tr), len(te), full_loss[-1],
                  time.monotonic() - t0, rss_mb())
-        for key, name, g in groups:
-            sub = [f for f in feats if f not in g]
-            m = _fit(tr, va, sub)
-            diffs[key].append(race_losses(te, m.predict(te[sub])) - l_full)
-            log.info("cv fold %d/%d: %s を外す 差 %+.5f %.0fs", fi + 1, len(windows), name, float(diffs[key][-1].mean()), time.monotonic() - t0)
+        for key, name, g, add in groups:
+            if add:  # 足すとき：足した方が良くなる向きをプラスにする（足さない − 足した）
+                sub = feats + g
+                m = _fit(tr, va, sub)
+                diffs[key].append(l_full - race_losses(te, m.predict(te[sub])))
+            else:
+                sub = [f for f in feats if f not in g]
+                m = _fit(tr, va, sub)
+                diffs[key].append(race_losses(te, m.predict(te[sub])) - l_full)
+            log.info("cv fold %d/%d: %s を%s 差 %+.5f %.0fs", fi + 1, len(windows), name, "足す" if add else "外す", float(diffs[key][-1].mean()),
+                     time.monotonic() - t0)
         del tr, va, te, full
         ds.release_memory()
 
     n_ok = len(spans)
     if n_ok == 0:
         return "期間をずらして比べるには、データが足りません（学習2000艇・調整と検証が各600艇以上の回が1つもない）"
-    lines = [f"期間をずらした「特徴量を外す」実験（展示前モデル・特徴量 {len(feats)} 個。調整 {valid_days}日・検証 {fold_days}日 × {n_ok}回。"
+    lines = [f"期間をずらした「特徴量を{'外す・足す' if post else '外す'}」実験（{'展示後モデル（展示のあるレースだけ）' if post else '展示前モデル'}・特徴量 {len(feats)} 個。調整 {valid_days}日・検証 {fold_days}日 × {n_ok}回。"
              "学習はその回の調整より前すべて。モデルは書き換えません）"]
     for i, (a, b, ntr, nr) in enumerate(spans):
         lines.append(f"  {i + 1}回目 検証 {a:%Y/%m/%d}〜{b:%Y/%m/%d}（{nr:,}レース・学習 {ntr:,}艇）全部入りの1着の対数損失 {full_loss[i]:.4f}"
                      + (f"（コース別の平均だけだと {base_loss[i]:.4f}）" if i < len(base_loss) else ""))
-    lines += ["", "差 ＝ 外したときの対数損失 − 全部入り（プラスならそのまとまりが効いている。マイナスなら外した方が良い）。z は全回をまとめた差の確からしさ（±2 を超えるとはっきり）",
+    lines += ["", "差 ＝ 外したときの対数損失 − 全部入り（プラスならそのまとまりが効いている。マイナスなら外した方が良い）。"
+              + ("足す場合は 足さないとき − 足したとき（プラスなら足した方が良い）。" if post else "")
+              + "z は全回をまとめた差の確からしさ（±2 を超えるとはっきり）",
               ]
     results = {}
-    for key, name, g in groups:
-        v = verdict(diffs[key])
-        results[key] = {"name": name, "features": g, **v}
+    for key, name, g, add in groups:
+        v = verdict(diffs[key], add)
+        results[key] = {"name": name, "features": g, "add": add, **v}
         cells = " ".join(f"{x:+.4f}" for x in v["per_fold"])
-        lines.append(f"  {name}（{len(g)}個を外す）\n      回ごとの差 {cells} ／ 全体 {v['mean']:+.4f}  z {v['z']:+.1f}  → {v['label']}（{v['helped']}/{v['folds']}回で効いた）")
-    ok = [k for k, r in results.items() if r["label"] == "効いている"]
-    bad = [k for k, r in results.items() if r["label"] == "外した方が良い"]
+        lines.append(f"  {name}（{len(g)}個を{'足す' if add else '外す'}）\n      回ごとの差 {cells} ／ 全体 {v['mean']:+.4f}  z {v['z']:+.1f}  → {v['label']}（{v['helped']}/{v['folds']}回で効いた）")
+    ok = [k for k, r in results.items() if r["label"] in ("効いている", "足すと効く")]
+    bad = [k for k, r in results.items() if r["label"] in ("外した方が良い", "足さない方が良い")]
     lines.append("")
-    lines.append("  → 効いている: " + (", ".join(results[k]["name"] for k in ok) or "なし"))
-    lines.append("  → 外した方が良い: " + (", ".join(results[k]["name"] for k in bad) or "なし（今の採用のままで問題なし）"))
+    lines.append("  → 効いている／足すと効く: " + (", ".join(results[k]["name"] for k in ok) or "なし"))
+    lines.append("  → 外した方が良い／足さない方が良い: " + (", ".join(results[k]["name"] for k in bad) or "なし"))
     lines.append(f"  （かかった時間 {time.monotonic() - t0:.0f}秒）")
     text = "\n".join(lines)
     if write:
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "cv_ablation.txt").write_text(text + "\n", encoding="utf-8")
-        (out_dir / "cv_ablation.json").write_text(json.dumps({
+        tag = "_post" if post else ""
+        (out_dir / f"cv_ablation{tag}.txt").write_text(text + "\n", encoding="utf-8")
+        (out_dir / f"cv_ablation{tag}.json").write_text(json.dumps({
             "folds": [{"test_from": a.strftime("%Y%m%d"), "test_to": b.strftime("%Y%m%d"), "train_rows": ntr, "races": nr,
                        "full": full_loss[i], "baseline": base_loss[i] if i < len(base_loss) else None} for i, (a, b, ntr, nr) in enumerate(spans)],
             "groups": results}, ensure_ascii=False, indent=2), encoding="utf-8")
