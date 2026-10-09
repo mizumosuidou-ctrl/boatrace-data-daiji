@@ -1781,3 +1781,88 @@ def test_exdev_without_exhibition_columns_is_all_missing():
 
     out = ds.add_exdev(pd.DataFrame({"race_id": ["a"], "date": pd.to_datetime(["2026-01-01"])}))
     assert all(out[c].isna().all() for c in ds.EXDEV_FEATURES)
+
+
+def test_exdev_live_tables_give_the_same_values_as_training():
+    """学習の作り方（前日まで）と、本番の表からの作り方（apply_exdev）が、同じレースで同じ値になる（ずれると予想が壊れる）。"""
+    from minamo.ml import dataset as ds
+
+    rng = np.random.default_rng(2)
+    n_days, per_day = 12, 6
+    rows = []
+    for d in range(n_days):
+        for r in range(per_day):
+            rel = rng.normal(0, 0.05, 6)
+            rel -= rel.mean()
+            for lane in range(6):
+                rows.append({"race_id": f"{d}-{r}", "date": pd.Timestamp("2026-02-01") + pd.Timedelta(days=d), "venue": "01",
+                             "motor_no": f"{lane + 1}@x", "toban": str(1000 + (r * 6 + lane) % 9), "ex_time_rel": rel[lane],
+                             "tilt": float(rng.choice([-0.5, 0.0, 0.5]))})
+    full = pd.DataFrame(rows)
+    train_side = ds.add_exdev(full.copy())
+    last_day = full["date"].max()
+    history = full[full["date"] < last_day]
+    tables = ds.exdev_tables(history)  # その日の前日までの表（学習の最後の日の翌日に使う表と同じ作り方）
+    today = full[full["date"] == last_day].copy()
+    live_side = ds.apply_exdev(today.copy(), tables)
+    expect = train_side[train_side["date"] == last_day]
+    assert live_side[ds.EXDEV_FEATURES].notna().to_numpy().any()
+    for c in ds.EXDEV_FEATURES:
+        assert np.allclose(live_side[c].to_numpy(dtype=float), expect[c].to_numpy(dtype=float), equal_nan=True, atol=1e-9), c
+
+
+def test_exdev_apply_without_tables_is_all_missing_and_keeps_rows():
+    from minamo.ml import dataset as ds
+
+    df = pd.DataFrame({"race_id": ["live"] * 2, "venue": ["01"] * 2, "motor_no": ["1@x", None], "toban": ["1000", "1001"],
+                       "ex_time_rel": [0.01, -0.01], "tilt": [0.0, 0.5]})
+    out = ds.apply_exdev(df.copy(), {})
+    assert len(out) == 2 and all(out[c].isna().all() for c in ds.EXDEV_FEATURES)
+    t = {"exdev_motor": pd.DataFrame({"venue": ["01"], "motor_no": ["1@x"], "s": [0.3], "n": [10]}),
+         "exdev_racer": pd.DataFrame({"toban": ["1000"], "s": [0.1], "n": [4], "ts": [-1.0], "tn": [5]})}
+    out = ds.apply_exdev(df.copy(), t)
+    assert np.isclose(out["ex_motor_base"].iloc[0], 0.3 / (10 + ds.EXDEV_SMOOTH)) and np.isnan(out["ex_motor_base"].iloc[1])
+    assert np.isclose(out["tilt_racer_dev"].iloc[0], 0.0 - (-1.0 / 5)) and np.isnan(out["tilt_racer_dev"].iloc[1])
+
+
+def test_live_post_model_with_exdev_features_predicts_from_saved_tables(trained, tmp_path, monkeypatch):
+    """展示後モデルが「普段との差」を使うとき、本番でも保存した表（モーター・選手の普段）から同じ列が作られ、予想が出る。"""
+    import shutil
+
+    from minamo.ml import live, train
+    from minamo.models import BeforeEntry, BeforeInfo, Entry, RaceCard
+
+    out, meta = trained
+    new = tmp_path / "exdev"
+    shutil.copytree(out, new)
+    rows = ds.build(out.parent / "raw")[0]
+    ex = rows[rows["has_ex"]]
+    feats = list(meta["post_features"]) + [f for f in ds.EXDEV_FEATURES if f not in meta["post_features"]]
+    cut = ex["date"].sort_values().iloc[int(len(ex) * 0.8)]
+    booster = train._fit(ex[ex["date"] < cut], ex[ex["date"] >= cut], feats)
+    booster.save_model(str(new / "model_post.txt"))
+    m = json.loads((new / "meta.json").read_text())
+    m["post_features"] = feats
+    (new / "meta.json").write_text(json.dumps(m))
+
+    pred = live.MLPredictor(new)
+    assert set(pred.exdev) == {"exdev_motor", "exdev_racer"}
+    motors = pd.read_csv(new / "stats_exdev_motor.csv.gz", dtype={"venue": str, "motor_no": str})
+    era = motors.apply(lambda r: r["motor_no"].endswith(f"@{pred.motor_era(r['venue'], '20250315')}") and r["n"] >= ds.EXDEV_MIN_N, axis=1)
+    motor = motors[era].iloc[0]
+    racers = pd.read_csv(new / "stats_exdev_racer.csv.gz", dtype={"toban": str})
+    tobans = list(racers[racers["n"] >= ds.EXDEV_MIN_N]["toban"][:6])
+    card = RaceCard(date="20250315", jcd=motor["venue"], rno=1, entries=[
+        Entry(boat=i + 1, toban=t, name="x", grade="B1", motor_no=int(motor["motor_no"].split("@")[0]) if i == 0 else None)
+        for i, t in enumerate(tobans)])
+    before = BeforeInfo(entries=[BeforeEntry(boat=i + 1, exhibition_time=6.70 + 0.03 * i, course=i + 1, start_st=0.15, tilt=-0.5) for i in range(6)])
+    seen = {}
+    orig = ds.apply_exdev
+    monkeypatch.setattr(ds, "apply_exdev", lambda df, t: seen.setdefault("df", orig(df, t)))
+    res = pred.predict(card, before)
+    assert res["engine"] == "lightgbm-post"
+    boats = res["boats"]
+    assert res is not None and abs(sum(v["p"] for v in boats.values()) - 1) < 1e-6
+    df = seen["df"]
+    assert df.loc[0, ["ex_motor_base", "ex_motor_dev", "ex_racer_base", "ex_racer_dev"]].notna().all()
+    assert df["ex_racer_dev_rel"].notna().sum() >= 2 and abs(df["ex_racer_dev_rel"].mean()) < 1e-9  # 表から作った列が入り、同じレース内で足すと0

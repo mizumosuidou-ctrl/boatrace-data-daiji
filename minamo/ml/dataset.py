@@ -1000,20 +1000,55 @@ def _prior_mean(df: pd.DataFrame, keys: list[str], col: str, smooth: float = 0.0
     return pd.Series(mean.where(m["p_n"] >= min_n).to_numpy(), index=df.index)
 
 
+def _finish_exdev(rows: pd.DataFrame, base_motor, base_racer, tilt_base) -> pd.DataFrame:
+    """普段（モーター・選手・チルト）から EXDEV_FEATURES を作る。学習（add_exdev）と本番（apply_exdev）で同じ式を使う。"""
+    for who, base in (("motor", base_motor), ("racer", base_racer)):
+        rows[f"ex_{who}_base"] = np.asarray(base, dtype=float)
+        rows[f"ex_{who}_dev"] = rows["ex_time_rel"] - rows[f"ex_{who}_base"]
+        rows[f"ex_{who}_dev_rel"] = rows[f"ex_{who}_dev"] - rows.groupby("race_id")[f"ex_{who}_dev"].transform("mean")
+    rows["tilt_racer_dev"] = rows["tilt"] - np.asarray(tilt_base, dtype=float)
+    return rows
+
+
+def _shrunk_base(s: pd.Series, n: pd.Series) -> pd.Series:
+    """合計 ÷ (件数 + 平滑化)。件数が EXDEV_MIN_N 未満なら空。"""
+    return (s / (n + EXDEV_SMOOTH)).where(n >= EXDEV_MIN_N)
+
+
 def add_exdev(rows: pd.DataFrame) -> pd.DataFrame:
-    """展示タイム・チルトの「普段との差」の列（EXDEV_FEATURES）を足す。ex_time_rel・tilt・motor_no・toban・venue・date が要る。
+    """展示タイム・チルトの「普段との差」の列（EXDEV_FEATURES）を足す（学習用）。ex_time_rel・tilt・motor_no・toban・venue・date が要る。
     普段は、同じモーター（場×交換後）／同じ選手の、前日までの平均。"""
     if "ex_time_rel" not in rows or "motor_no" not in rows:
         for c in EXDEV_FEATURES:
             rows[c] = np.nan
         return rows
-    for who, keys in (("motor", ["venue", "motor_no"]), ("racer", ["toban"])):
-        base = _prior_mean(rows, keys, "ex_time_rel", EXDEV_SMOOTH, EXDEV_MIN_N)
-        rows[f"ex_{who}_base"] = base
-        rows[f"ex_{who}_dev"] = rows["ex_time_rel"] - base
-        rows[f"ex_{who}_dev_rel"] = rows[f"ex_{who}_dev"] - rows.groupby("race_id")[f"ex_{who}_dev"].transform("mean")
-    rows["tilt_racer_dev"] = rows["tilt"] - _prior_mean(rows, ["toban"], "tilt", 0.0, 5)
-    return rows
+    return _finish_exdev(
+        rows, _prior_mean(rows, ["venue", "motor_no"], "ex_time_rel", EXDEV_SMOOTH, EXDEV_MIN_N),
+        _prior_mean(rows, ["toban"], "ex_time_rel", EXDEV_SMOOTH, EXDEV_MIN_N), _prior_mean(rows, ["toban"], "tilt", 0.0, 5))
+
+
+def exdev_tables(rows: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """当日予想用：モーター（場×交換後）／選手ごとの、展示タイム（同じレースの平均との差）・チルトの、これまでの合計と件数。
+    学習の最後の日までを全部入れる（次の日の予想では「前日まで」になる）。"""
+    if "ex_time_rel" not in rows or "motor_no" not in rows:
+        return {}
+    agg = lambda d, keys, col, a, b: d.dropna(subset=keys + [col]).groupby(keys, as_index=False).agg(**{a: (col, "sum"), b: (col, "count")})
+    racer = agg(rows, ["toban"], "ex_time_rel", "s", "n").merge(agg(rows, ["toban"], "tilt", "ts", "tn"), on="toban", how="outer")
+    return {"exdev_motor": agg(rows, ["venue", "motor_no"], "ex_time_rel", "s", "n"), "exdev_racer": racer}
+
+
+def apply_exdev(df: pd.DataFrame, tables: Optional[dict]) -> pd.DataFrame:
+    """本番の1レース分（ex_time_rel・tilt・venue・motor_no・toban・race_id が要る）に、exdev_tables から EXDEV_FEATURES を付ける。
+    表が無ければ全部空（その特徴量を使うモデルは、予想に使わない）。"""
+    motor_t, racer_t = (tables or {}).get("exdev_motor"), (tables or {}).get("exdev_racer")
+    if motor_t is None or racer_t is None or "ex_time_rel" not in df or "motor_no" not in df:
+        for c in EXDEV_FEATURES:
+            df[c] = np.nan
+        return df
+    m = df[["venue", "motor_no"]].astype({"venue": str}).merge(motor_t.astype({"venue": str}), on=["venue", "motor_no"], how="left")
+    r = df[["toban"]].astype(str).merge(racer_t.astype({"toban": str}), on="toban", how="left")
+    tilt_base = (r["ts"] / r["tn"]).where(r["tn"] >= 5)
+    return _finish_exdev(df, _shrunk_base(m["s"], m["n"]), _shrunk_base(r["s"], r["n"]), tilt_base)
 
 
 def add_race_features(df: pd.DataFrame, with_ex: bool, copy: bool = True) -> pd.DataFrame:
@@ -1280,6 +1315,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     release_memory()
     rows = add_race_features(rows, with_ex=True, copy=False)
     rows = add_exdev(rows)
+    exdev_t = exdev_tables(rows)  # 当日予想用（rows を絞る前に作る）
     release_memory()
     rows["win"] = (rows["finish"] == 1).astype("int8")
     rows["top2"] = (rows["finish"] <= 2).astype("int8")  # 2着・3着を別に学習するとき用
@@ -1295,6 +1331,7 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     live_tables = {k: t[t["date"] == nxt].drop(columns=["date"]) for k, t in extra.items()}
     if len(fan):
         live_tables["fan"] = fan_live_table(fan, nxt)  # 選手ごとの最新の期（eff 付き）
+    live_tables.update(exdev_t)  # モーター・選手の展示タイム／チルトの普段（stats_exdev_motor／stats_exdev_racer）
     live_tables["profile"] = profile  # 画面のデータ欄用（期間別・F持ちのとき）
     live_tables["found"] = found  # 選手別アビリティの自動発見
     priors["motor_swaps"] = swaps
