@@ -24,6 +24,9 @@
 - 学習のコマンドは1回だけ実行する（2つ同時に走らせるとメモリ不足で1つが強制終了された。cron_ml.sh のロックは cron 同士だけを守る）。
 - 本番サーバーは機能用のブランチ（claude/cloud-session-usage-6f3ey8）で動かしている。PR #173 を main に入れたら、サーバーを main に戻す（`git checkout main && git pull`）。
 
+- 学習の自動通知（朝）：学習のたびに var/ml/history.jsonl に要点を足し（train.history_row／history_append）、cron_ml.sh の最後に `python -m minamo ml-notify`（Discord に、対数損失・前回との比べ・採用した材料。失敗なら `--failed`）。
+- サーバーの更新は `bash /opt/minamo/deploy/update.sh`（ubuntu で。main に更新→worker 作り直し）、学習系の手動実行は `bash /opt/minamo/deploy/ml_bg.sh ml-train|ml-tune`（裏で・1つだけ）、朝の確認は `bash /opt/minamo/deploy/morning_check.sh`。
+
 ### サーバー（KAGOYA CLOUD VPS・boatrace-rt-monitor）の構成メモ
 - 2コア・2GB・200GB NVMe（2026-10-08 時点）→ 8GB（6コア・800GB NVMe、月額上限3,410円。変更には停止が必要）に変更する予定。IP は 133.18.146.150。
 - docker：deploy-worker-1（ミナモ、unless-stopped）・boatrace-postgres（RTモニターのDB、unless-stopped、データ /opt/boatrace-rt-monitor/data/postgres、DB rtmonitor 4.4GB）。

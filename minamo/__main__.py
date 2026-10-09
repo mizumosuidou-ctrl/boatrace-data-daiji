@@ -7,6 +7,7 @@
   python -m minamo serve [--port]   web/ をローカル配信
   python -m minamo rebuild          日ごとの一覧と成績を作り直す（表示項目を増やしたとき）
   python -m minamo ml-train         LightGBMを学習（var/ml/raw のCSVから）
+  python -m minamo ml-notify        学習の結果のひとこと（前回との比べ）を Discord に送る
   python -m minamo ml-tune          LightGBM の設定を何通りか試して比べる（モデルは保存しない）
   python -m minamo ml-backfill      過去の展示データを公式サイトから取り寄せる
   python -m minamo ml-facts         データベースの実績が止まった日の次の日から、実績・展示・風を公式サイトで足す
@@ -60,6 +61,8 @@ def main() -> None:
     mlx.add_argument("--to", dest="date_to", help="YYYYMMDD（省くと昨日）")
     mlx.add_argument("--fan", action="store_true", help="ファン手帳も（まだ取っていない期だけ）")
     mlx.add_argument("--peek", metavar="YYYYMMDD", help="1日分の中身と読み取れた数を見るだけ（書き出さない）")
+    mln = sub.add_parser("ml-notify", help="学習の結果のひとこと（対数損失・前回との比べ）を Discord に送る。--failed を付けると失敗の知らせ")
+    mln.add_argument("--failed", default=None, help="失敗の知らせの理由（例: daily status=1）")
     sub.add_parser("ml-original-live", help="本番で取ったオリジナル展示（var/state の orig）を学習の材料に書き出す（昨日まで、取り終えた日はとばす）")
     mly = sub.add_parser("ml-years", help="過去何年分を学習に使うと良くなるかを、同じ検証期間で比べる（良くなったときだけ採用）")
     mly.add_argument("--raw", default=None)
@@ -232,6 +235,14 @@ def main() -> None:
             n = official.run(raw, args.date_from, args.date_to)
             f = official.run_fan(raw) if args.fan else 0
             print(f"取り込み完了: 競走成績・番組表 {n} 日" + (f"、ファン手帳 {f} 期" if args.fan else ""))
+    elif args.cmd == "ml-notify":
+        from . import notify
+        from .ml import live, train
+
+        text = train.notify_text(train.history_load(live.ML_DIR), failed=args.failed)
+        print(text or "（送る内容がありません）")
+        if text:
+            print("送信しました" if notify.send(text) else "送信しませんでした（Webhook が未設定、または失敗）")
     elif args.cmd == "ml-original-live":
         from .ml import live, original_live
 

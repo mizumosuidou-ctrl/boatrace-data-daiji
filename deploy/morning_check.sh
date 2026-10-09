@@ -6,6 +6,9 @@ echo "=== 時刻・負荷"; date; uptime; free -h | head -2; df -h / | tail -1
 echo "=== コンテナ"; sudo docker ps --format '{{.Names}} | {{.Status}}'
 echo "=== 手動で動かした学習（~/train_log3.txt）"
 if [ -f ~/train_log3.txt ]; then grep -E "^開始|^終了" ~/train_log3.txt; grep -E "INFO minamo.ml.train" ~/train_log3.txt | cut -c1-150 | tail -6; else echo "（ログなし）"; fi
+echo "=== 裏で動かした学習・調整（ml_bg.sh）"
+for f in /opt/minamo/var/ml_bg_*.log; do [ -f "$f" ] && { echo "[$f]"; grep -E "^開始|^終了" "$f"; tail -3 "$f" | cut -c1-150; }; done
+echo "=== 学習の履歴（直近3回）"; tail -3 /opt/minamo/var/ml/history.jsonl 2>/dev/null | cut -c1-220 || echo "（まだありません）"
 echo "=== 自動の学習（3:10 の cron）"
 for f in /opt/minamo/var/cron_daily.log /opt/minamo/var/cron_weekly.log; do [ -f "$f" ] && { echo "[$f]"; grep -E "===|休みます|失敗|Error|Traceback" "$f" | tail -4; }; done
 echo "=== 学習の結果（要約の主な行）"

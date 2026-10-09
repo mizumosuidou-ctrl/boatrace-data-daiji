@@ -1546,3 +1546,22 @@ def test_features_do_not_look_ahead(trained):
     assert not differing(ds.wall_stats(f), ds.wall_stats(cut), ["toban", "course_i", "date"])
     assert not differing(ds.racetime_stats(f), ds.racetime_stats(cut), ["venue", "date", "toban"], real)
     assert not differing(ds.series_stats(f), ds.series_stats(cut), ["venue", "date", "toban"], real)
+
+
+def test_history_and_notify_text(trained, tmp_path):
+    from minamo.ml import train
+
+    out, meta = trained
+    row = train.history_row(meta)
+    assert row["pre"] == meta["metrics"]["pre"]["logloss"] and row["baseline"] == meta["metrics"]["baseline"]["logloss"]
+    assert (out / "history.jsonl").exists()  # run() が1行足している
+    rows = train.history_load(out)
+    assert rows and rows[-1]["trained_at"] == meta["trained_at"] and meta["elapsed_sec"] >= 0
+    # 2回分あれば前回との比べが出る。材料の採用が変わったら知らせる
+    prev = {**rows[-1], "pre": rows[-1]["pre"] + 0.01, "new_adopt": {"fan": False, "wall": True}}
+    cur = {**rows[-1], "new_adopt": {"fan": True, "wall": True}, "adopt": True}
+    text = train.notify_text([prev, cur])
+    assert "前回" in text and "-0.0100" in text and "fan→使う" in text and "使う材料" in text
+    assert train.notify_text([]) == ""
+    assert "失敗" in train.notify_text(rows, failed="daily status=1")
+    assert "基準を下回った" in train.notify_text([{**cur, "adopt": False}])
