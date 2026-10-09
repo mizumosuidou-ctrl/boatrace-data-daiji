@@ -32,5 +32,11 @@ case "$mode" in
   *)
     echo "使い方: cron_ml.sh daily|weekly"; status=2 ;;
 esac
+# 学習の結果（前回との比べ）か、失敗の知らせを Discord に送る（Webhook が無ければ何もしない。通知の失敗では止めない）
+if [ "$status" -eq 0 ]; then
+  docker compose run --rm worker python -m minamo ml-notify || true
+else
+  docker compose run --rm worker python -m minamo ml-notify --failed "$mode status=$status" || true
+fi
 echo "=== $(date '+%F %T') $mode 終わり（status=$status）==="
 exit $status

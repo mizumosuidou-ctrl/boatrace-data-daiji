@@ -14,6 +14,7 @@ import gc
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from itertools import permutations
 from pathlib import Path
@@ -362,6 +363,7 @@ def _place_experiment(split, model, feats, decay: float, name: str, out_dir: Pat
 
 
 def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45) -> dict:
+    t_start = time.monotonic()
     raw_dir, out_dir = Path(raw_dir), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rows, priors, pc_tot, pa_tot, live_tables = ds.build(raw_dir)
@@ -508,6 +510,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     adopt = metrics["pre"]["logloss"] < metrics["baseline"]["logloss"]
     meta = {
         "trained_at": datetime.now().isoformat(timespec="seconds"),
+        "elapsed_sec": round(time.monotonic() - t_start),
         "data_range": data_range,
         "test_from": test_start.strftime("%Y%m%d"),
         "pre_features": pre_feats,
@@ -525,7 +528,74 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         "racetime_eval": rt_eval,  # 画面の「タイム評価」（表示だけ）
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    history_append(out_dir, meta)
     return meta
+
+
+def history_row(meta: dict) -> dict:
+    """学習のたびに残す要点（history.jsonl の1行）。前回との比べ・Discord への通知に使う。"""
+    m = meta.get("metrics") or {}
+    return {
+        "trained_at": meta.get("trained_at"), "elapsed_sec": meta.get("elapsed_sec"),
+        "baseline": (m.get("baseline") or {}).get("logloss"), "pre": (m.get("pre") or {}).get("logloss"),
+        "pre_top10": (m.get("pre") or {}).get("tri_top10"), "post": (m.get("post") or {}).get("logloss"),
+        "post_adopt": bool(meta.get("post_adopt")), "adopt": bool(meta.get("adopt")),
+        "new_adopt": meta.get("new_adopt") or {}, "data_range": meta.get("data_range"),
+    }
+
+
+def history_append(out_dir: Path, meta: dict) -> None:
+    """history.jsonl に1行足す（学習の成績の移り変わり）。書けなくても学習は止めない。"""
+    try:
+        with (Path(out_dir) / "history.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(history_row(meta), ensure_ascii=False) + "\n")
+    except OSError:
+        log.warning("history.jsonl に書けませんでした")
+
+
+def history_load(out_dir: Path) -> list[dict]:
+    path = Path(out_dir) / "history.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return rows
+
+
+def notify_text(rows: list[dict], failed: Optional[str] = None) -> str:
+    """Discord に送る、学習の結果のひとこと（直近の行と、その前の行との比べ）。failed があれば失敗の知らせ。"""
+    if failed:
+        return f"⚠️ MINAMO 学習が失敗しました（{failed}）。今のモデルのまま予想を続けています。ログ：var/cron_daily.log"
+    if not rows:
+        return ""
+    cur = rows[-1]
+    prev = rows[-2] if len(rows) > 1 else None
+    t = (cur.get("trained_at") or "")[:16].replace("T", " ")
+    mins = f"{round(cur['elapsed_sec'] / 60)}分" if cur.get("elapsed_sec") else "?"
+    line = f"MINAMO 学習 {t}（{mins}）"
+    if cur.get("pre") is not None:
+        line += f"\n対数損失 {cur['pre']:.4f}"
+        if prev and prev.get("pre") is not None:
+            line += f"（前回 {prev['pre']:.4f}、{cur['pre'] - prev['pre']:+.4f}）"
+        if cur.get("baseline"):
+            line += f"／基準 {cur['baseline']:.4f}"
+    if cur.get("pre_top10") is not None:
+        line += f"\n3連単10点的中 {cur['pre_top10'] * 100:.1f}%"
+    used = [k for k, v in (cur.get("new_adopt") or {}).items() if v]
+    dropped = [k for k, v in (cur.get("new_adopt") or {}).items() if not v]
+    if used:
+        line += "\n使う材料：" + "・".join(used)
+    if prev and prev.get("new_adopt") and prev["new_adopt"] != cur.get("new_adopt"):
+        changed = [k for k in (cur.get("new_adopt") or {}) if (cur["new_adopt"].get(k) != prev["new_adopt"].get(k))]
+        if changed:
+            line += "\n前回から変わった：" + "・".join(f"{k}{'→使う' if cur['new_adopt'][k] else '→使わない'}" for k in changed)
+    if not cur.get("adopt"):
+        line += "\n⚠️ 基準を下回ったので、統計モデルで予想します"
+    return line
 
 
 # 調整してみる設定の候補（先頭は今の設定そのまま。ここを基準に、ほかを比べる）
