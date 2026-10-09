@@ -598,6 +598,106 @@ def notify_text(rows: list[dict], failed: Optional[str] = None) -> str:
     return line
 
 
+def load_splits(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45):
+    """学習用の表を作り、学習・調整・検証に分ける（ml-tune・ml-softmax 用）。特徴量は今のモデル（meta.json の pre_features）のまま。
+    各表はレースごとにまとまるように並べて返す。"""
+    raw_dir, out_dir = Path(raw_dir), Path(out_dir)
+    rows, *_ = ds.build(raw_dir)
+    rows["course"] = rows["course"].astype(int)
+    last = rows["date"].max()
+    test_start = last - pd.Timedelta(days=test_days)
+    valid_start = test_start - pd.Timedelta(days=valid_days)
+    tr = rows[rows["date"] < valid_start]
+    window = ds.train_window(raw_dir).get("since")
+    if window:
+        tr = tr[tr["date"] >= pd.Timestamp(window)]
+    va = rows[(rows["date"] >= valid_start) & (rows["date"] < test_start)]
+    te = rows[rows["date"] >= test_start]
+    try:
+        feats = json.loads((out_dir / "meta.json").read_text(encoding="utf-8")).get("pre_features") or ds.BASE_FEATURES
+    except (OSError, ValueError):
+        feats = ds.BASE_FEATURES
+    feats = [f for f in feats if f in rows.columns]
+    order = lambda d: d.sort_values(["race_id", "lane"], kind="stable").reset_index(drop=True)
+    out = order(tr), order(va), order(te), feats
+    del rows, tr, va, te
+    ds.release_memory()
+    return out
+
+
+# ------------------------------------------------------------------ レース内の softmax（条件付きロジット）で学習する
+# 今は「各艇が勝つか」を別々に当てて、あとでレースごとに合計1にそろえている。
+# レースごとの softmax を直接学習すれば、評価（レースの対数損失）と同じものを最小にできる。
+
+
+def group_starts(race_id: pd.Series) -> np.ndarray:
+    """race_id が続いて並んでいる表で、各レースの先頭の位置。"""
+    r = race_id.to_numpy()
+    return np.flatnonzero(np.r_[True, r[1:] != r[:-1]])
+
+
+def softmax_by_group(score: np.ndarray, starts: np.ndarray) -> np.ndarray:
+    """レースごとの softmax（合計1）。"""
+    sizes = np.diff(np.r_[starts, len(score)])
+    mx = np.repeat(np.maximum.reduceat(score, starts), sizes)
+    e = np.exp(score - mx)
+    return e / np.repeat(np.add.reduceat(e, starts), sizes)
+
+
+def fit_softmax(train: pd.DataFrame, valid: pd.DataFrame, feats: list[str], params: Optional[dict] = None):
+    """レース内 softmax の対数損失を直接小さくする LightGBM（train・valid はレースごとにまとまっていること）。
+    返す Booster の predict(raw_score=True) が各艇の強さ。確率は softmax_by_group で出す。"""
+    import lightgbm as lgb
+
+    st_tr, st_va = group_starts(train["race_id"]), group_starts(valid["race_id"])
+    y_tr, y_va = train["win"].to_numpy(float), valid["win"].to_numpy(float)
+
+    def objective(preds, _data):
+        p = softmax_by_group(preds, st_tr)
+        return p - y_tr, np.maximum(p * (1.0 - p), 1e-6)
+
+    def race_logloss(preds, _data):
+        p = softmax_by_group(preds, st_va)
+        return "race_logloss", float(-np.log(np.clip(p[y_va == 1], 1e-12, 1.0)).mean()), False
+
+    cats = [f for f in ("course", "venue_i") if f in feats]
+    dtr = lgb.Dataset(train[feats], train["win"], categorical_feature=cats, free_raw_data=True)
+    dva = lgb.Dataset(valid[feats], valid["win"], categorical_feature=cats, reference=dtr)
+    prm = {**PARAMS, **(params or {}), "objective": objective, "metric": "None"}
+    return lgb.train(prm, dtr, num_boost_round=2000, valid_sets=[dva], feval=race_logloss,
+                     callbacks=[lgb.early_stopping(100, verbose=False)])
+
+
+def softmax_experiment(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45) -> str:
+    """今のやり方（各艇を別々に当てて、レースごとに合計1にそろえる）と、レース内 softmax を、同じ分け方・同じ特徴量で比べる表を返す。
+    モデルは保存しない。検証期間を3つに分けた対数損失の差（softmax − 今、マイナスが良い）も出す。"""
+    tr, va, te, feats = load_splits(raw_dir, out_dir, test_days, valid_days)
+    log.info("softmax: train=%d valid=%d test=%d features=%d %s", len(tr), len(va), len(te), len(feats), rss_mb())
+    b_model = _fit(tr, va, feats)
+    p_va_b, p_te_b = normalize(va, b_model.predict(va[feats])), normalize(te, b_model.predict(te[feats]))
+    del b_model
+    ds.release_memory()
+    s_model = fit_softmax(tr, va, feats)
+    p_va_s = softmax_by_group(s_model.predict(va[feats], raw_score=True), group_starts(va["race_id"]))
+    p_te_s = softmax_by_group(s_model.predict(te[feats], raw_score=True), group_starts(te["race_id"]))
+    rounds = int(s_model.best_iteration or s_model.current_iteration())
+    del s_model
+    ds.release_memory()
+    rows = []
+    for name, pv, pt in (("今のやり方（別々に当てて合計1に）", p_va_b, p_te_b), ("レース内softmax", p_va_s, p_te_s)):
+        ev_v, ev_t = evaluate(va, pv), evaluate(te, pt)
+        rows.append((name, ev_v["logloss"], ev_t["logloss"], ev_t["tri_ll"], ev_t["tri_top10"], ev_t["fav_win"]))
+    diffs = block_wins(te, p_te_b, p_te_s)
+    lines = ["やり方                             調整期間   検証期間  3連単損失  10点的中  本命1着"]
+    for name, v, t, tl, t10, fw in rows:
+        lines.append(f"{name:<30s} {v:.4f}    {t:.4f}    {tl:.4f}    {t10 * 100:5.1f}%   {fw * 100:5.1f}%")
+    lines.append(f"softmax − 今（検証期間の対数損失）: {rows[1][2] - rows[0][2]:+.4f}　3期間の差: " + " / ".join(f"{d:+.4f}" for d in diffs)
+                 + f"　（softmax の木の数 {rounds}）")
+    better = rows[1][1] < rows[0][1] and rows[1][2] < rows[0][2] and sum(d < 0 for d in diffs) >= ADOPT_BLOCKS_MIN
+    lines.append("判定: " + ("◎ softmax の方が良い（調整・検証の両方で下がり、3期間のうち2つ以上で下がった）" if better else "今のやり方のまま（良くならない、または一部の期間だけ）"))
+    return "\n".join(lines)
+
+
 # 調整してみる設定の候補（先頭は今の設定そのまま。ここを基準に、ほかを比べる）
 TUNE_GRID = [
     {},
@@ -618,26 +718,9 @@ def tune_params(raw_dir: Path, out_dir: Path, grid: Optional[list] = None, test_
     特徴量は今のモデル（meta.json の pre_features）のまま。調整期間（valid）の対数損失で並べ、学習に使っていない検証期間（test）の
     対数損失と、今の設定との差を3期間に分けて見る。2期間以上で下がり、調整期間でも下がったものだけ「候補」と印を付ける。
     """
-    raw_dir, out_dir = Path(raw_dir), Path(out_dir)
+    out_dir = Path(out_dir)
     grid = grid or TUNE_GRID
-    rows, *_ = ds.build(raw_dir)
-    rows["course"] = rows["course"].astype(int)
-    last = rows["date"].max()
-    test_start = last - pd.Timedelta(days=test_days)
-    valid_start = test_start - pd.Timedelta(days=valid_days)
-    tr = rows[rows["date"] < valid_start]
-    window = ds.train_window(raw_dir).get("since")
-    if window:
-        tr = tr[tr["date"] >= pd.Timestamp(window)]
-    va = rows[(rows["date"] >= valid_start) & (rows["date"] < test_start)]
-    te = rows[rows["date"] >= test_start]
-    try:
-        feats = json.loads((out_dir / "meta.json").read_text(encoding="utf-8")).get("pre_features") or ds.BASE_FEATURES
-    except (OSError, ValueError):
-        feats = ds.BASE_FEATURES
-    feats = [f for f in feats if f in rows.columns]
-    del rows
-    ds.release_memory()
+    tr, va, te, feats = load_splits(raw_dir, out_dir, test_days, valid_days)
     log.info("tune: train=%d valid=%d test=%d features=%d %s", len(tr), len(va), len(te), len(feats), rss_mb())
     results, base_te = [], None
     for params in grid:

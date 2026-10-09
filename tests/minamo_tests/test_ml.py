@@ -1565,3 +1565,34 @@ def test_history_and_notify_text(trained, tmp_path):
     assert train.notify_text([]) == ""
     assert "失敗" in train.notify_text(rows, failed="daily status=1")
     assert "基準を下回った" in train.notify_text([{**cur, "adopt": False}])
+
+
+def test_softmax_by_group_and_gradient():
+    from minamo.ml import train
+
+    race = pd.Series(["a", "a", "a", "b", "b", "b", "b", "c", "c"])
+    starts = train.group_starts(race)
+    assert list(starts) == [0, 3, 7]
+    score = np.array([0.5, -1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 30.0, 29.0])  # 大きな値でも溢れない
+    p = train.softmax_by_group(score, starts)
+    assert np.allclose([p[:3].sum(), p[3:7].sum(), p[7:].sum()], 1.0) and np.allclose(p[3:7], 0.25)
+    # 勝った艇の -log p の勾配が (p - y) になっている（数値微分で確かめる）
+    y = np.array([0, 0, 1, 1, 0, 0, 0, 0, 1], float)
+
+    def loss(sc):
+        q = train.softmax_by_group(sc, starts)
+        return -np.log(q[y == 1]).sum()
+
+    grad = train.softmax_by_group(score, starts) - y
+    num = np.array([(loss(score + e) - loss(score - e)) / 2e-6 for e in np.eye(len(score)) * 1e-6])
+    assert np.allclose(grad, num, atol=1e-4)
+
+
+def test_softmax_experiment_runs_without_saving_models(trained):
+    from minamo.ml import train
+
+    out, _ = trained
+    before = (out / "model_pre.txt").read_bytes()
+    text = train.softmax_experiment(out.parent / "raw", out, test_days=20, valid_days=12)
+    assert "レース内softmax" in text and "判定:" in text and "3期間の差" in text
+    assert (out / "model_pre.txt").read_bytes() == before
