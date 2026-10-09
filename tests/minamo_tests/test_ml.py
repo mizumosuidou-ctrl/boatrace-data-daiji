@@ -1662,3 +1662,42 @@ def test_calib_report_race_level_conditions_use_course_one_only():
     bad = t.loc["戸田"]  # venue_i=2 は戸田
     assert bad["差"] < -0.1 and bad["z"] < -5
     assert abs(t.loc["桐生"]["z"]) < 3.5
+
+
+def test_cv_verdict_separates_clear_effects_from_noise():
+    from minamo.ml import cv_ablation
+
+    rng = np.random.default_rng(3)
+    mk = lambda mu: pd.Series(rng.normal(mu, 0.3, 4000), index=[f"r{i}" for i in range(4000)])
+    clear = cv_ablation.verdict([mk(0.03) for _ in range(4)])  # 外すと毎回悪くなる＝効いている
+    assert clear["label"] == "効いている" and clear["helped"] == 4 and clear["z"] > 2
+    harm = cv_ablation.verdict([mk(-0.03) for _ in range(4)])  # 外すと毎回良くなる＝邪魔している
+    assert harm["label"] == "外した方が良い" and harm["mean"] < 0
+    noise = cv_ablation.verdict([mk(0.0) for _ in range(4)])
+    assert noise["label"] == "はっきりしない"
+    assert cv_ablation.verdict([])["label"] == "比べられない"
+
+
+def test_cv_fold_windows_walk_back_without_overlap():
+    from minamo.ml import cv_ablation
+
+    last = pd.Timestamp("2026-10-08")
+    w = cv_ablation.fold_windows(last, 3, 60, 45)
+    assert w[0][2] == pd.Timestamp("2026-10-09") and w[0][1] == pd.Timestamp("2026-08-10")
+    assert w[1][2] == w[0][1] and w[2][2] == w[1][1]  # 検証期間は重ならずに、つながって古い方へ
+    assert all(v + pd.Timedelta(days=45) == t for v, t, _ in w)
+
+
+def test_cv_ablation_runs_without_touching_models(trained):
+    from minamo.ml import cv_ablation
+
+    out, meta = trained
+    before = (out / "model_pre.txt").read_bytes()
+    text = cv_ablation.build(out.parent / "raw", out, folds=2, fold_days=12, valid_days=10)
+    assert "全部入り" in text and "1回目" in text and "2回目" in text
+    res = json.loads((out / "cv_ablation.json").read_text(encoding="utf-8"))
+    assert len(res["folds"]) == 2 and res["groups"]
+    feats = set(meta["pre_features"])
+    for r in res["groups"].values():  # 外したのは、今のモデルに入っている特徴量だけ
+        assert set(r["features"]) <= feats and len(r["per_fold"]) == 2
+    assert (out / "model_pre.txt").read_bytes() == before
