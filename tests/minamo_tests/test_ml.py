@@ -1638,3 +1638,27 @@ def test_calib_report_runs_on_trained_model(trained):
     text = calib_report.build(out.parent / "raw", out, test_days=20)
     assert "外れ方の分析" in text and "予想の確率の帯" in text and "進入コース" in text
     assert (out / "calib_report.txt").exists()
+
+
+def test_calib_report_race_level_conditions_use_course_one_only():
+    """場のようにレース全体で同じ条件は、艇ぜんぶで比べると必ず1/6になるので、①の艇だけで比べる。ある場の①だけを過大評価していれば見つかる。"""
+    from minamo.ml import calib_report
+
+    rng = np.random.default_rng(2)
+    races, rows = 4000, []
+    for r in range(races):
+        venue = 1 + r % 4
+        p = rng.dirichlet(np.ones(6) * 2.0)
+        p1 = 0.6 if venue == 2 else 0.45  # 場2では、予想が①を 0.6 と見ているが、実際は 0.45（過大評価）
+        p = np.r_[p1, p[1:] / p[1:].sum() * (1 - p1)]
+        winner = rng.choice(6, p=np.r_[0.45, p[1:] / p[1:].sum() * 0.55])
+        for c in range(6):
+            rows.append({"race_id": r, "course": c + 1, "p": p[c], "win": float(c == winner), "venue_i": venue, "race_no": 1 + r % 12,
+                         "date": pd.Timestamp("2026-09-01")})
+    df = pd.DataFrame(rows)
+    c = calib_report.cells(df, n_races=races)
+    assert not c[c["条件"] == "場"].size  # 艇ぜんぶの「場」の表は作らない
+    t = c[c["条件"] == "場（①の艇だけ）"].set_index("区分")
+    bad = t.loc["戸田"]  # venue_i=2 は戸田
+    assert bad["差"] < -0.1 and bad["z"] < -5
+    assert abs(t.loc["桐生"]["z"]) < 3.5

@@ -22,6 +22,9 @@ from ..venues import venue
 
 log = logging.getLogger(__name__)
 
+# レース全体で同じ条件（6艇がみな同じ区分に入る）。確率はレースごとに合計1にそろえているので、艇ぜんぶで比べると必ず 1/6＝16.67% になり、
+# 偏りが見えない。この条件は「1コースの艇だけ」で比べる（①の1着率を、場・時間帯・風などで見すぎ／見なさすぎていないか）
+RACE_LEVEL = {"場", "レース番号", "節の日", "風（追い風＋）", "波", "月"}
 P_BINS = [0, 0.03, 0.06, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.65, 1.0001]
 GRADE = {4: "A1", 3: "A2", 2: "B1", 1: "B2"}
 
@@ -60,7 +63,12 @@ def cells(df: pd.DataFrame, n_races: int) -> pd.DataFrame:
     """条件×区分ごとの 艇数・予想の平均・実際の1着率・差・z・直せたときの対数損失の改善の見込み。"""
     rows = []
     for name, key in conditions(df).items():
-        g = pd.DataFrame({"key": key.to_numpy(), "p": df["p"].to_numpy(), "win": df["win"].to_numpy(float)}).groupby("key")
+        sub = df
+        if name in RACE_LEVEL:
+            sub = df[df["course"] == 1]
+            key = key.loc[sub.index]
+            name = f"{name}（①の艇だけ）"
+        g = pd.DataFrame({"key": key.to_numpy(), "p": sub["p"].to_numpy(), "win": sub["win"].to_numpy(float)}).groupby("key")
         for k, d in g:
             n = len(d)
             exp, wins = float(d["p"].sum()), float(d["win"].sum())
@@ -104,7 +112,8 @@ def build(raw_dir: Path, out_dir: Path, test_days: int = 90) -> str:
     ll = float(-np.log(np.clip(te.loc[te["win"] == 1, "p"], 1e-9, 1)).mean())
     c = cells(te, n_races)
     lines = [f"外れ方の分析：検証期間 {te['date'].min().date()}〜{te['date'].max().date()}（{n_races:,}レース・{len(te):,}艇）。確率＝{used}。1着の対数損失 {ll:.4f}",
-             "予想＝MINAMOの平均の1着確率、実際＝実際の1着率。z は偶然を考えたずれ（±3を超えると、偶然とは考えにくい）。見込み＝そのずれを直せたときの対数損失の改善の目安"]
+             "予想＝MINAMOの平均の1着確率、実際＝実際の1着率。z は偶然を考えたずれ（±3を超えると、偶然とは考えにくい）。見込み＝そのずれを直せたときの対数損失の改善の目安。",
+             "（場・レース番号・節の日・風・波・月は、レースごとに確率の合計を1にそろえているので、①の艇だけで比べる）"]
     if c.empty:
         return "\n".join(lines + ["（条件ごとの表を作れませんでした）"])
     flag = c[c["z"].abs() >= 3].sort_values("見込み", ascending=False)
