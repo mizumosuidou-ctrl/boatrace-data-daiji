@@ -28,6 +28,21 @@ def _sum(rs: list[dict]) -> tuple[int, int, float, float]:
     return len(rs), sum(r["hit"] for r in rs), st, rt
 
 
+MIN_RACES_CI = 30  # これより少ないレースでは区間を出さない（広すぎて意味が無い）
+
+
+def roi_interval(rs: list[dict], n: int = 2000, seed: int = 0) -> Optional[tuple[float, float]]:
+    """回収率（%）の95%区間。買ったレースを引き直して（ブートストラップ）求める。レースが少なければ None。
+    区間が100%をまたぐうちは、プラスでもマイナスでも偶然の範囲（三連単は当たりが少なく、数十〜数百レースでは大きくぶれる）。"""
+    if len(rs) < MIN_RACES_CI:
+        return None
+    stake = np.array([r["stake"] for r in rs], dtype=float)
+    ret = np.array([r["ret"] for r in rs], dtype=float)
+    idx = np.random.default_rng(seed).integers(0, len(rs), size=(n, len(rs)))
+    roi = ret[idx].sum(axis=1) / stake[idx].sum(axis=1)
+    return float(100 * np.percentile(roi, 2.5)), float(100 * np.percentile(roi, 97.5))
+
+
 def _line(name: str, rs: list[dict], unit: int = 10) -> str:
     n, hits, st, rt = _sum(rs)
     if not n:
@@ -53,7 +68,9 @@ def build(data_dir: Path = store.DATA_DIR, ml_dir: Optional[Path] = None, today:
             continue
         n, _, st, rt = _sum(now_rule)
         base = live_check.RULES[k][-1][2][0]
-        tail = f"\n　└今のルールで通算 {n}R 回収率 {100 * rt / st:.1f}%" + (f"（過去の検証 {base:.1f}%）" if base else "") if st else ""
+        ci = roi_interval(now_rule)
+        tail = (f"\n　└今のルールで通算 {n}R 回収率 {100 * rt / st:.1f}%" + (f"（95%区間 {ci[0]:.0f}〜{ci[1]:.0f}%）" if ci else "")
+                + (f"（過去の検証 {base:.1f}%）" if base else "")) if st else ""
         _, _, wst, wrt = _sum(week)
         (good if wst and wrt >= wst else bad).append(_line(name, week) + tail)
     lines.append("\n✅ 今週プラス")
@@ -65,6 +82,7 @@ def build(data_dir: Path = store.DATA_DIR, ml_dir: Optional[Path] = None, today:
     lines += _timing(data_dir, start, last)
     lines += _training(ml_dir)
     lines.append("\n判断の目安：実戦300〜500レースで、前半・後半とも100%超えなら金額を上げる。それまでは記録か最小額。")
+    lines.append("通算の「95%区間」が100%をまたいでいるうちは、プラスでもマイナスでも偶然の範囲（当たりの少ない買い方ほど広い）。区間が100%の上に出るまで、金額は変えない。")
     lines.append(f"{notify.SITE_URL}#/record")
     return "\n".join(lines)
 

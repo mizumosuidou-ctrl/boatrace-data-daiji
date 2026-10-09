@@ -1146,6 +1146,23 @@ def test_weekly_report_sums_last_week_and_splits_for_discord(tmp_path):
     assert len(parts) == 3 and all(len(p) <= 1800 for p in parts)
 
 
+def test_weekly_roi_interval_is_wide_for_few_races_and_skipped_for_tiny_samples():
+    """回収率の95%区間：当たりの少ない買い方は広く、レースが少なすぎれば出さない。"""
+    import random
+
+    from minamo import weekly
+
+    rng = random.Random(5)
+    # 1点100円・当たりは1割で配当は平均10倍（回収率はおよそ100%）。レースが多いほど区間はせまくなる
+    mk = lambda n: [{"stake": 100.0, "ret": 1000.0 if rng.random() < 0.1 else 0.0} for _ in range(n)]
+    few, many = weekly.roi_interval(mk(100)), weekly.roi_interval(mk(3000))
+    assert few and many and (few[1] - few[0]) > 2 * (many[1] - many[0])
+    assert few[0] < 100 < few[1] and many[0] < 100 < many[1]  # 実際は100%なので、どちらも100%をまたぐ
+    sure = weekly.roi_interval([{"stake": 100.0, "ret": 150.0}] * 50)  # 毎回150%なら区間も150%
+    assert sure == (150.0, 150.0)
+    assert weekly.roi_interval(mk(weekly.MIN_RACES_CI - 1)) is None
+
+
 def test_late_message_for_two_minute_exacta():
     """参考：2分前に決め直した2連単の Discord の文（空なら送らない）。"""
     from minamo import notify
