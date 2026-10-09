@@ -449,6 +449,20 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
             if adopted["wind"]:
                 post, post_feats = post_w, wind_feats
                 metrics["post"] = metrics["post_wind"]
+        # 展示タイム・チルトの「普段との差」（モーター・選手の前日までの普段。本番は stats_exdev_* から同じ式で作る）。
+        # 風と同じ検証期間で良くなり、かつ期間を3つに分けて2つ以上で下がったときだけ使う
+        dev_feats = post_feats + ds.EXDEV_FEATURES
+        post_d = _fit(tr_x, va_x, dev_feats)
+        metrics["post_exdev"] = evaluate(te_x, normalize(te_x, post_d.predict(te_x[dev_feats])), decay)
+        adopted["exdev"] = metrics["post_exdev"]["logloss"] < metrics["post"]["logloss"]
+        if adopted["exdev"] and ADOPT_BLOCKS_MIN:
+            diffs = block_wins(te_x, normalize(te_x, post.predict(te_x[post_feats])), normalize(te_x, post_d.predict(te_x[dev_feats])))
+            metrics["post_exdev"]["blocks"] = [round(d, 5) for d in diffs]
+            if sum(d < 0 for d in diffs) < ADOPT_BLOCKS_MIN:
+                adopted["exdev"] = False
+        if adopted["exdev"]:
+            post, post_feats = post_d, dev_feats
+            metrics["post"] = metrics["post_exdev"]
         post_adopt = metrics["post"]["logloss"] < metrics["pre_ex_races"]["logloss"]
 
         # オリジナル展示（一周・まわり足・直線）：データがある期間で前60%学習・次15%調整・最後25%検証。
@@ -830,9 +844,9 @@ def summary_ja(meta: dict) -> str:
     ]
     names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre_fhold": "＋F持ち", "pre_wall": "＋壁", "pre_race": "＋レース番号", "pre_day": "＋初日・最終日", "pre_shape": "＋展開の形", "pre_kimarite": "＋決まり手", "pre_series": "＋今節成績", "pre_fan": "＋ファン手帳",
              "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
-             "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後", "post_wind": "└展示後＋風",
+             "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後", "post_wind": "└展示後＋風", "post_exdev": "└展示後＋普段との差",
              "orig_pre": "└直近 展示前", "orig_post": "└直近 展示後", "orig_post_orig": "└直近 +ｵﾘｼﾞﾅﾙ"}
-    for key in ("baseline", "pre_v1", "pre_fhold", "pre_wall", "pre_race", "pre_day", "pre_shape", "pre_kimarite", "pre_series", "pre_fan", "pre", "baseline_ex_races", "pre_ex_races", "post", "post_wind",
+    for key in ("baseline", "pre_v1", "pre_fhold", "pre_wall", "pre_race", "pre_day", "pre_shape", "pre_kimarite", "pre_series", "pre_fan", "pre", "baseline_ex_races", "pre_ex_races", "post", "post_wind", "post_exdev",
                 "orig_pre", "orig_post", "orig_post_orig"):
         if key in m:
             r = m[key]
@@ -860,7 +874,8 @@ def summary_ja(meta: dict) -> str:
               "shape": "展開の形（スタート隊形・一番大きなスタート順位の差の場所と大きさ）",
               "kimarite": "決まり手（逃げ・差され・まくられ・逃し・差し・まくり・まくり差しの率）",
               "series": "今節成績（同じ節の前日までの走った数・平均の得点・1着の数）",
-              "fan": "ファン手帳（能力指数・年齢・体重・進入コース別の半年成績）"}
+              "fan": "ファン手帳（能力指数・年齢・体重・進入コース別の半年成績）",
+              "exdev": "展示タイム・チルトの普段との差（モーター・選手の前日までの普段、展示後）"}
     for k, v in (meta.get("new_adopt") or {}).items():
         blocks = (m.get(f"pre_{k}") or {}).get("blocks")
         tail = "　期間を3つに分けた対数損失の差（新−旧、マイナスが良い）: " + " / ".join(f"{d:+.4f}" for d in blocks) if blocks else ""

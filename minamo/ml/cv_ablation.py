@@ -123,6 +123,10 @@ def build(raw_dir: Path, out_dir: Path, folds: int = 4, fold_days: int = 60, val
     groups = []
     if post:
         for key, name, g, add in POST_GROUPS:
+            used = [f for f in g if f in feats]
+            if add and used:  # すでにモデルが使っている材料は、足すのではなく、外したときの差で見る
+                groups.append((key, name + "【いま使っている】", used, False))
+                continue
             inside = [f for f in g if f in (cand if add else feats)]
             if inside:
                 groups.append((key, name, inside, add))

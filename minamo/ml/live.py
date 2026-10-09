@@ -55,6 +55,12 @@ class MLPredictor:
         # ファン手帳（選手ごとの最新の期。無ければ使わない）
         path = self.dir / "stats_fan.csv.gz"
         self.fan = pd.read_csv(path, dtype={"toban": str}, parse_dates=["eff"]) if path.exists() else None
+        # 展示タイム・チルトの普段（モーター・選手。展示後モデルが「普段との差」を使うときだけ要る。無ければ空）
+        self.exdev = {}
+        for name, keys in (("exdev_motor", ["venue", "motor_no"]), ("exdev_racer", ["toban"])):
+            path = self.dir / f"stats_{name}.csv.gz"
+            if path.exists():
+                self.exdev[name] = pd.read_csv(path, dtype={k: str for k in keys})
         # 画面のデータ欄：選手×コースの期間別（半年・1年・全期間）と F持ちのときの成績
         self.profile = {}
         path = self.dir / "stats_profile.csv.gz"
@@ -176,6 +182,8 @@ class MLPredictor:
             df = self.frame(card, before)
             use_post = bool(self.post is not None and before is not None and before.complete)
             df = ds.add_race_features(df, with_ex=use_post)
+            if use_post:
+                df = ds.apply_exdev(df, self.exdev)
             feats = self.meta["post_features"] if use_post else self.meta["pre_features"]
             booster = self.post if use_post else self.pre
             X = df.reindex(columns=feats).astype(float)
