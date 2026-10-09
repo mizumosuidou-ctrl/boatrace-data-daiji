@@ -8,8 +8,8 @@
   ・差は「外したとき − 全部入り」のレースごとの対数損失。プラスなら、そのまとまりが効いている。
   ・全部の回をまとめた差と、その誤差から z を出す。何回の検証で効いていたかも数える。
 
-post=True（ml-cv --post）なら展示後モデル：展示のあるレースだけで、展示・風・オリジナル展示を外したときと、
-まだ使っていない材料（体重・部品交換）を足したときの差を比べる（「足す」は 足したとき − 足さないとき が良くなる向きでプラス）。
+post=True（ml-cv --post）なら展示後モデル：展示のあるレース全部で、展示・風を外したときと、
+オリジナル展示・体重・部品交換（まだ使っていない／一部のレースにしか無い材料。空欄を許す）を足したときの差を比べる（「足す」は 足したとき − 足さないとき が良くなる向きでプラス）。
 """
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ def verdict(fold_diffs: list[pd.Series], add: bool = False) -> dict:
 POST_GROUPS = (
     ("ex", "展示（展示タイム・チルト）", ds.EX_FEATURES, False),
     ("wind", "風・波", ds.WIND_FEATURES, False),
-    ("orig", "オリジナル展示（一周・まわり足・直線）", ds.ORIG_FEATURES, False),
+    ("orig", "オリジナル展示（一周・まわり足・直線。ここ3か月ほどのレースにしか無い）", ds.ORIG_FEATURES, True),
     ("weight", "体重（本番の直前情報で取れる）", ds.WEIGHT_FEATURES, True),
     ("parts", "部品交換（本番ではまだ読めない）", ds.PARTS_FEATURES, True),
 )
@@ -108,9 +108,9 @@ def build(raw_dir: Path, out_dir: Path, folds: int = 4, fold_days: int = 60, val
     feats = [f for f in saved or ds.BASE_FEATURES if f in rows.columns]
     cand = [f for _, _, g, add in POST_GROUPS if post and add for f in g if f in rows.columns]
     if post:
+        # 展示のあるレース全部で比べる。オリジナル展示はここ3か月ほどのレースにしか無い（空欄を許して、足したときの差を見る）ので、土台から外す
         rows = rows[rows["has_ex"]]
-        if any(f in feats for f in ds.ORIG_FEATURES):
-            rows = rows[rows["has_orig"]]  # オリジナル展示を使うモデルは、オリジナル展示のあるレースだけで学習している
+        feats = [f for f in feats if f not in ds.ORIG_FEATURES]
     keep = ["race_id", "lane", "finish", "win", "date"] + [f for f in feats + cand if f not in ("race_id", "lane", "finish", "win", "date")]
     last = rows["date"].max()
     since = ds.train_window(raw_dir).get("since")
@@ -138,6 +138,7 @@ def build(raw_dir: Path, out_dir: Path, folds: int = 4, fold_days: int = 60, val
     full_loss: list[Optional[float]] = []
     base_loss: list[Optional[float]] = []
     diffs: dict[str, list[pd.Series]] = {k: [] for k, _, _, _ in groups}
+    cover: dict[str, list[float]] = {k: [] for k, _, _, _ in groups}
     spans = []
     for fi, (v_start, t_start, t_end) in enumerate(windows):
         tr = rows[rows["date"] < v_start]
@@ -158,6 +159,7 @@ def build(raw_dir: Path, out_dir: Path, folds: int = 4, fold_days: int = 60, val
                  time.monotonic() - t0, rss_mb())
         for key, name, g, add in groups:
             if add:  # 足すとき：足した方が良くなる向きをプラスにする（足さない − 足した）
+                cover[key].append(float(te[g[0]].notna().mean()))  # 検証期間の艇のうち、その材料が入っている割合
                 sub = feats + g
                 m = _fit(tr, va, sub)
                 diffs[key].append(l_full - race_losses(te, m.predict(te[sub])))
@@ -185,9 +187,10 @@ def build(raw_dir: Path, out_dir: Path, folds: int = 4, fold_days: int = 60, val
     results = {}
     for key, name, g, add in groups:
         v = verdict(diffs[key], add)
-        results[key] = {"name": name, "features": g, "add": add, **v}
+        results[key] = {"name": name, "features": g, "add": add, "coverage": cover[key], **v}
         cells = " ".join(f"{x:+.4f}" for x in v["per_fold"])
-        lines.append(f"  {name}（{len(g)}個を{'足す' if add else '外す'}）\n      回ごとの差 {cells} ／ 全体 {v['mean']:+.4f}  z {v['z']:+.1f}  → {v['label']}（{v['helped']}/{v['folds']}回で効いた）")
+        cov = ("\n      その材料が入っている艇の割合（回ごと） " + " ".join(f"{100 * x:.0f}%" for x in cover[key])) if add else ""
+        lines.append(f"  {name}（{len(g)}個を{'足す' if add else '外す'}）\n      回ごとの差 {cells} ／ 全体 {v['mean']:+.4f}  z {v['z']:+.1f}  → {v['label']}（{v['helped']}/{v['folds']}回で効いた）{cov}")
     ok = [k for k, r in results.items() if r["label"] in ("効いている", "足すと効く")]
     bad = [k for k, r in results.items() if r["label"] in ("外した方が良い", "足さない方が良い")]
     lines.append("")
