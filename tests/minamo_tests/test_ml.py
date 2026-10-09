@@ -1866,3 +1866,60 @@ def test_live_post_model_with_exdev_features_predicts_from_saved_tables(trained,
     df = seen["df"]
     assert df.loc[0, ["ex_motor_base", "ex_motor_dev", "ex_racer_base", "ex_racer_dev"]].notna().all()
     assert df["ex_racer_dev_rel"].notna().sum() >= 2 and abs(df["ex_racer_dev_rel"].mean()) < 1e-9  # 表から作った列が入り、同じレース内で足すと0
+
+
+def _full_post_inputs(trained, monkeypatch):
+    """_full_post に渡すものを、模擬データから用意する（学習・調整・検証の区切りは train.run と同じ）。"""
+    from minamo.ml import train
+
+    monkeypatch.setattr(train, "FULL_MIN_ROWS", 1000)
+    monkeypatch.setattr(train, "FULL_MIN_TEST", 500)
+    out, meta = trained
+    rows = ds.build(out.parent / "raw")[0]
+    rows["course"] = rows["course"].astype(int)
+    ex_rows = rows[rows["has_ex"]]
+    test_start = rows["date"].max() - pd.Timedelta(days=20)
+    valid_start = test_start - pd.Timedelta(days=12)
+    pre = train.lgb_booster(out / "model_pre.txt")
+    return train, ex_rows, valid_start, test_start, pre, meta["pre_features"]
+
+
+def test_full_post_is_used_when_the_current_post_model_is_much_worse(trained, monkeypatch):
+    train, ex_rows, valid_start, test_start, pre, pre_feats = _full_post_inputs(trained, monkeypatch)
+    feats = pre_feats + ds.EX_FEATURES
+    tr = ex_rows[ex_rows["date"] < valid_start]
+    weak = train._fit(tr.head(400), ex_rows[(ex_rows["date"] >= valid_start) & (ex_rows["date"] < test_start)].head(400), feats)  # 少ないデータで作った弱いモデル
+    split = (tr, tr, ex_rows[ex_rows["date"] >= test_start])
+    metrics = {}
+    got = train._full_post(ex_rows, valid_start, test_start, None, weak, feats, pre, pre_feats, split, 0.82, metrics)
+    assert got is not None
+    model, full_feats, new_split, beats_pre = got
+    assert set(ds.ORIG_FEATURES) <= set(full_feats) and set(ds.EX_FEATURES) <= set(full_feats)
+    assert metrics["post_full"]["logloss"] < metrics["post_full_cur"]["logloss"] and len(metrics["post_full"]["blocks"]) == 3
+    assert new_split[2]["date"].min() >= test_start and isinstance(beats_pre, bool)
+    assert metrics["post"]["logloss"] > 0  # 本番に使うモデルの検証期間での成績
+
+
+def test_full_post_is_not_used_when_the_current_post_model_is_better(trained, monkeypatch):
+    train, ex_rows, valid_start, test_start, pre, pre_feats = _full_post_inputs(trained, monkeypatch)
+    out, meta = trained
+    cur = train.lgb_booster(out / "model_post.txt")  # 学習で採用されたモデル（模擬データではこちらの方が良い）
+    cur_feats = meta["post_features"]
+    te = ex_rows[ex_rows["date"] >= test_start]
+    split = (te, te, te[te["date"] >= te["date"].quantile(0.5)])
+    metrics = {}
+    got = train._full_post(ex_rows, valid_start, test_start, None, cur, cur_feats, pre, pre_feats, split, 0.82, metrics)
+    assert got is None  # 良くならなければ、今のまま
+    assert metrics["post_full"]["logloss"] >= metrics["post_full_cur"]["logloss"] or sum(d < 0 for d in metrics["post_full"]["blocks"]) < train.ADOPT_BLOCKS_MIN
+
+
+def test_full_post_is_skipped_when_data_is_too_small(trained):
+    from minamo.ml import train
+
+    out, meta = trained
+    rows = ds.build(out.parent / "raw")[0]
+    ex_rows = rows[rows["has_ex"]]  # 既定の最低限（学習2万艇）には足りない小さな模擬データ
+    test_start = rows["date"].max() - pd.Timedelta(days=20)
+    got = train._full_post(ex_rows, test_start - pd.Timedelta(days=12), test_start, None, None, None, train.lgb_booster(out / "model_pre.txt"),
+                           meta["pre_features"], (None, None, ex_rows.iloc[0:0]), 0.82, {})
+    assert got is None

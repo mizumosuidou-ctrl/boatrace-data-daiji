@@ -419,7 +419,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     metrics["pre_fixed_decay"] = best
 
     # 展示後モデル：展示データがある期間だけで、前60%学習・次15%調整・最後25%検証
-    post, post_adopt, orig_adopt = None, False, False
+    post, post_adopt, orig_adopt, post_full_adopt = None, False, False, False
     ex_rows = rows[rows["has_ex"]]
     # 以降は rows を使わない（展示のあるレースの表 ex_rows と、学習・検証の表を使う）。大きな表を1つ手放してメモリを空ける
     data_range = [rows["race_date"].min(), rows["race_date"].max()]
@@ -484,6 +484,14 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
                 post, post_feats, post_adopt, orig_adopt = post_o, orig_feats, True, True
                 post_split = (tr_o, va_o, te_o)
 
+        # 展示のあるレース全部を、展示前と同じ時点まで学習した展示後モデル（オリジナル展示は空欄を許す）。
+        # 上のモデルは、検証用に分けた古い学習（またはオリジナル展示のある直近の少ないレースだけ）で作ったもの。
+        # どちらの学習にも入っていない同じ期間（今の展示後モデルの検証期間と、展示前の検証期間の遅い方から）で比べて、良ければこちらを使う
+        full = _full_post(ex_rows, valid_start, test_start, window, post, post_feats, pre, pre_feats, post_split, decay, metrics)
+        if full is not None:
+            post, post_feats, post_split, post_adopt = full
+            orig_adopt, post_full_adopt = any(f in post_feats for f in ds.ORIG_FEATURES), True
+
     # 2着・3着の専用モデル（2着以内・3着以内を当てる）。混ぜた方が3連単が当たるときだけ使う
     place = {"pre": _place_experiment((tr, va, te), pre, pre_feats, decay, "pre", out_dir, metrics)}
     place["pre"] = _mult_experiment((tr, va, te), pre, pre_feats, decay, place["pre"], "pre", out_dir, metrics)
@@ -531,6 +539,7 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
         "post_features": post_feats if post is not None and post_adopt else None,
         "post_adopt": bool(post_adopt),
         "orig_adopt": bool(orig_adopt),
+        "post_full_adopt": bool(post_full_adopt),
         "extra_adopt": bool(extra_adopt),
         "new_adopt": {k: bool(v) for k, v in adopted.items()},
         "place": place,
@@ -544,6 +553,50 @@ def run(raw_dir: Path, out_dir: Path, test_days: int = 90, valid_days: int = 45)
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     history_append(out_dir, meta)
     return meta
+
+
+FULL_MIN_ROWS = 20000  # 全データ版を作る最低限の学習の艇数
+FULL_MIN_TEST = 3000   # 比べる期間の最低限の艇数
+
+
+def _full_post(ex_rows, valid_start, test_start, window, post, post_feats, pre, pre_feats, post_split, decay, metrics):
+    """展示のあるレース全部（展示前モデルと同じ学習・調整・検証の区切り）で展示後モデルを作り直し、今の展示後モデルより
+    同じ検証期間で良ければ (モデル, 特徴量, 分け方, 展示前より良いか) を返す。良くなければ None（今のまま）。
+    比べる期間は、どちらのモデルの学習にも入っていない期間（今の展示後モデルの検証期間と、展示前の検証期間の遅い方から）。"""
+    tr_f = ex_rows[ex_rows["date"] < valid_start]
+    if window:
+        tr_f = tr_f[tr_f["date"] >= pd.Timestamp(window)]
+    va_f = ex_rows[(ex_rows["date"] >= valid_start) & (ex_rows["date"] < test_start)]
+    te_f = ex_rows[ex_rows["date"] >= test_start]
+    cur_start = post_split[2]["date"].min() if post is not None and len(post_split[2]) else test_start
+    te_c = ex_rows[ex_rows["date"] >= max(test_start, cur_start)]
+    if len(tr_f) < FULL_MIN_ROWS or len(va_f) < 600 or len(te_c) < FULL_MIN_TEST:
+        return None
+    # 土台は今の展示後モデルの特徴量からオリジナル展示を外したもの（風・普段との差の採用結果はそのまま）。オリジナル展示は足す
+    base = [f for f in (post_feats or pre_feats + ds.EX_FEATURES) if f not in ds.ORIG_FEATURES]
+    full_feats = base + [f for f in ds.ORIG_FEATURES if f in ex_rows.columns]
+    model = _fit(tr_f, va_f, full_feats)
+    p_full = normalize(te_c, model.predict(te_c[full_feats]))
+    m_full = evaluate(te_c, p_full, decay)
+    m_pre = evaluate(te_c, normalize(te_c, pre.predict(te_c[pre_feats])), decay)
+    metrics["post_full"], metrics["post_full_pre"] = m_full, m_pre
+    if post is None:
+        better, diffs = True, []
+    else:
+        p_cur = normalize(te_c, post.predict(te_c[post_feats]))
+        m_cur = evaluate(te_c, p_cur, decay)
+        metrics["post_full_cur"] = m_cur
+        better = m_full["logloss"] < m_cur["logloss"]
+        diffs = block_wins(te_c, p_cur, p_full) if ADOPT_BLOCKS_MIN else []
+        metrics["post_full"]["blocks"] = [round(d, 5) for d in diffs]
+        if better and diffs and sum(d < 0 for d in diffs) < ADOPT_BLOCKS_MIN:
+            better = False
+    log.info("full post: train=%d valid=%d compare=%d full=%.4f pre=%.4f better=%s", len(tr_f), len(va_f), len(te_c), m_full["logloss"],
+             m_pre["logloss"], better)
+    if not better:
+        return None
+    metrics["post"] = evaluate(te_f, normalize(te_f, model.predict(te_f[full_feats])), decay)  # 本番に使うモデルの、検証期間（展示のあるレース）での成績
+    return model, full_feats, (tr_f, va_f, te_f), bool(m_full["logloss"] < m_pre["logloss"])
 
 
 def history_row(meta: dict) -> dict:
@@ -845,9 +898,10 @@ def summary_ja(meta: dict) -> str:
     names = {"baseline": "基準(コース)", "pre_v1": "修正3まで", "pre_fhold": "＋F持ち", "pre_wall": "＋壁", "pre_race": "＋レース番号", "pre_day": "＋初日・最終日", "pre_shape": "＋展開の形", "pre_kimarite": "＋決まり手", "pre_series": "＋今節成績", "pre_fan": "＋ファン手帳",
              "pre": "LightGBM展示前", "baseline_ex_races": "└展示有R 基準",
              "pre_ex_races": "└展示有R 展示前", "post": "└展示有R 展示後", "post_wind": "└展示後＋風", "post_exdev": "└展示後＋普段との差",
-             "orig_pre": "└直近 展示前", "orig_post": "└直近 展示後", "orig_post_orig": "└直近 +ｵﾘｼﾞﾅﾙ"}
+             "orig_pre": "└直近 展示前", "orig_post": "└直近 展示後", "orig_post_orig": "└直近 +ｵﾘｼﾞﾅﾙ",
+             "post_full_pre": "└比べる期間 展示前", "post_full_cur": "└比べる期間 今の展示後", "post_full": "└比べる期間 全データ版"}
     for key in ("baseline", "pre_v1", "pre_fhold", "pre_wall", "pre_race", "pre_day", "pre_shape", "pre_kimarite", "pre_series", "pre_fan", "pre", "baseline_ex_races", "pre_ex_races", "post", "post_wind", "post_exdev",
-                "orig_pre", "orig_post", "orig_post_orig"):
+                "orig_pre", "orig_post", "orig_post_orig", "post_full_pre", "post_full_cur", "post_full"):
         if key in m:
             r = m[key]
             lines.append(f"{names[key]:<14}{r['fav_win']*100:7.1f}%{r['tri_top1']*100:8.1f}%{r['tri_top5']*100:6.1f}%{r['tri_top10']*100:6.1f}%{r['logloss']:9.3f}")
@@ -891,6 +945,10 @@ def summary_ja(meta: dict) -> str:
     lines.append("採用: " + ("する（基準より良い）" if meta["adopt"] else "しない（基準を下回った）"))
     if "post" in m:
         lines.append("展示後モデル: " + ("使う（同じレースで展示前より良い）" if meta.get("post_adopt") else "使わない（展示前の方が良い）"))
+    if "post_full" in m:
+        f = m["post_full"]
+        lines.append("展示後モデルを、展示のあるレース全部で学習し直したもの: " + ("使う" if meta.get("post_full_adopt") else "使わない（今のモデルの方が良い）")
+                     + (f"（今のモデルと同じ期間で 対数損失 {m['post_full_cur']['logloss']:.4f}→{f['logloss']:.4f}）" if "post_full_cur" in m else ""))
     if "orig_post_orig" in m:
         lines.append("オリジナル展示（一周・まわり足・直線）: " + ("使う（入れた方が良い）" if meta.get("orig_adopt") else "使わない（入れても良くならない）"))
     return "\n".join(lines)
