@@ -1738,7 +1738,46 @@ def test_cv_ablation_post_mode_compares_exhibition_and_candidates(trained, monke
     text = cv_ablation.build(out.parent / "raw", out, folds=2, fold_days=8, valid_days=6, post=True)
     assert "展示後モデル" in text and "体重" in text and "部品交換" in text and "足す" in text
     res = json.loads((out / "cv_ablation_post.json").read_text(encoding="utf-8"))
-    assert {"ex", "weight", "parts", "orig"} <= set(res["groups"]) and res["groups"]["weight"]["add"] is True
+    assert {"ex", "weight", "parts", "orig", "exdev"} <= set(res["groups"]) and res["groups"]["weight"]["add"] is True
     assert res["groups"]["orig"]["add"] is True and len(res["groups"]["orig"]["coverage"]) == 2
     assert res["groups"]["ex"]["add"] is False and len(res["groups"]["ex"]["per_fold"]) == 2
     assert (out / "model_pre.txt").read_bytes() == before
+
+
+def _exdev_frame():
+    d = pd.to_datetime(["2026-01-01"] * 4 + ["2026-01-02"] * 4 + ["2026-01-03"] * 4)
+    return pd.DataFrame({
+        "race_id": ["a"] * 2 + ["b"] * 2 + ["c"] * 2 + ["d"] * 2 + ["e"] * 2 + ["f"] * 2, "date": d, "venue": ["01"] * 12,
+        "motor_no": ["5@x", "6@x"] * 6, "toban": ["1", "2"] * 6,
+        "ex_time_rel": [-0.05, 0.05, -0.05, 0.05, -0.06, 0.06, -0.04, 0.04, -0.05, 0.05, -0.30, 0.30], "tilt": [-0.5] * 12})
+
+
+def test_exdev_uses_only_prior_days_and_shrinks_to_zero():
+    from minamo.ml import dataset as ds
+
+    out = ds.add_exdev(_exdev_frame())
+    day3 = out[out["date"] == "2026-01-03"]
+    # 1/3 の時点で、モーター5 の前日まで：1/1 と 1/2 の4件の合計 −0.20 を (4 + 平滑化5) で割る。同じ日の分は入らない
+    assert np.allclose(day3["ex_motor_base"].iloc[[0, 2]], -0.20 / (4 + ds.EXDEV_SMOOTH))
+    assert np.allclose(day3["ex_motor_dev"].iloc[2], -0.30 + 0.20 / (4 + ds.EXDEV_SMOOTH))
+    assert out[out["date"] == "2026-01-01"]["ex_motor_base"].isna().all()  # 初日は普段が無い
+    assert out[out["date"] == "2026-01-02"]["ex_motor_base"].isna().all()  # 前日までの件数が EXDEV_MIN_N 未満
+    assert np.allclose(day3.groupby("race_id")["ex_motor_dev_rel"].sum(), 0)  # 同じレースの中で足すと0
+
+
+def test_exdev_does_not_change_when_future_days_are_removed():
+    """未来の日を消しても、その日までの値は変わらない（データ漏れの見張り）。"""
+    from minamo.ml import dataset as ds
+
+    full = ds.add_exdev(_exdev_frame())
+    cut = ds.add_exdev(_exdev_frame()[lambda f: f["date"] <= "2026-01-02"].copy())
+    early = full[full["date"] <= "2026-01-02"]
+    for c in ds.EXDEV_FEATURES:
+        assert np.allclose(early[c].to_numpy(dtype=float), cut[c].to_numpy(dtype=float), equal_nan=True), c
+
+
+def test_exdev_without_exhibition_columns_is_all_missing():
+    from minamo.ml import dataset as ds
+
+    out = ds.add_exdev(pd.DataFrame({"race_id": ["a"], "date": pd.to_datetime(["2026-01-01"])}))
+    assert all(out[c].isna().all() for c in ds.EXDEV_FEATURES)
