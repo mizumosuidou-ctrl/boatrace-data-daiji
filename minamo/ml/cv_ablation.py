@@ -90,6 +90,7 @@ POST_GROUPS = (
     ("orig", "オリジナル展示（一周・まわり足・直線。ここ3か月ほどのレースにしか無い）", ds.ORIG_FEATURES, True),
     ("weight", "体重（本番の直前情報で取れる）", ds.WEIGHT_FEATURES, True),
     ("parts", "部品交換（本番ではまだ読めない）", ds.PARTS_FEATURES, True),
+    ("exdev", "展示タイムの普段との差（モーター・選手）", ds.EXDEV_FEATURES, True),
 )
 
 

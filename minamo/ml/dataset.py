@@ -74,6 +74,13 @@ WEIGHT_FEATURES = ["ex_weight", "ex_weight_rel", "ex_weight_fan"]
 # 本番ではまだ読んでいない（これも ml-cv --post で、読む価値があるかを確かめる用）
 PARTS_FEATURES = ["ex_parts_any", "ex_parts_major", "ex_parts_ring", "ex_parts_carb", "ex_parts_gear", "ex_parts_elec"]
 _PARTS_MAJOR = ("ピストン", "シリンダ", "シャフト", "クランク")
+# 展示タイム（と、チルト）の「その艇の普段との差」（展示後モデル用。前日までの普段）：
+#   ex_motor_base モーター（場×交換後）の展示タイム（同じレースの平均との差）の、これまでの平均／ex_motor_dev 今日の差 − その普段／
+#   ex_motor_dev_rel それを同じレースの平均との差にしたもの。ex_racer_* は選手の普段。tilt_racer_dev は今日のチルト − 選手の普段のチルト。
+#   同じタイム差でも「普段から速いモーターか、今日だけ調整が当たったか」で意味が違う。ml-cv --post で効くかを確かめる用（まだ予想には使っていない）
+EXDEV_FEATURES = ["ex_motor_base", "ex_motor_dev", "ex_motor_dev_rel", "ex_racer_base", "ex_racer_dev", "ex_racer_dev_rel", "tilt_racer_dev"]
+EXDEV_SMOOTH = 5.0   # 普段の平均を0（平均）へ寄せる強さ（件数が少ないうちは、ほぼ0）
+EXDEV_MIN_N = 3      # 普段として使うには、これ以上の件数が要る
 # 修正7で試す特徴量（それぞれ、入れた方が良いときだけ採用）
 # F持ち：F持ちのときに、ふだんよりどれだけスタート順位が遅くなる選手か（選手ごと、前日まで）
 FHOLD_FEATURES = ["f_hold", "sr_fgap", "sr_c_f", "pred_start_order_f"]
@@ -980,6 +987,35 @@ def add_relations(df: pd.DataFrame, score: str, prefix: str) -> pd.DataFrame:
     return df
 
 
+def _prior_mean(df: pd.DataFrame, keys: list[str], col: str, smooth: float = 0.0, min_n: int = 1) -> pd.Series:
+    """keys ごとの col の「前日まで」の平均（同じ日の分は入れない）。df と同じ並びで返す。件数が min_n 未満なら空。
+    smooth > 0 なら、平均を 0 へ寄せる（合計 ÷ (件数 + smooth)）。"""
+    use = df[keys + ["date", col]].dropna(subset=keys + [col])
+    daily = use.groupby(keys + ["date"], as_index=False).agg(s=(col, "sum"), n=(col, "count"))
+    prior = _prior_cumulative(daily, keys, ["s", "n"])
+    left = df[keys + ["date"]].reset_index(drop=True)
+    m = left.merge(prior, on=keys + ["date"], how="left")
+    assert len(m) == len(df)
+    mean = m["p_s"] / (m["p_n"] + smooth)
+    return pd.Series(mean.where(m["p_n"] >= min_n).to_numpy(), index=df.index)
+
+
+def add_exdev(rows: pd.DataFrame) -> pd.DataFrame:
+    """展示タイム・チルトの「普段との差」の列（EXDEV_FEATURES）を足す。ex_time_rel・tilt・motor_no・toban・venue・date が要る。
+    普段は、同じモーター（場×交換後）／同じ選手の、前日までの平均。"""
+    if "ex_time_rel" not in rows or "motor_no" not in rows:
+        for c in EXDEV_FEATURES:
+            rows[c] = np.nan
+        return rows
+    for who, keys in (("motor", ["venue", "motor_no"]), ("racer", ["toban"])):
+        base = _prior_mean(rows, keys, "ex_time_rel", EXDEV_SMOOTH, EXDEV_MIN_N)
+        rows[f"ex_{who}_base"] = base
+        rows[f"ex_{who}_dev"] = rows["ex_time_rel"] - base
+        rows[f"ex_{who}_dev_rel"] = rows[f"ex_{who}_dev"] - rows.groupby("race_id")[f"ex_{who}_dev"].transform("mean")
+    rows["tilt_racer_dev"] = rows["tilt"] - _prior_mean(rows, ["toban"], "tilt", 0.0, 5)
+    return rows
+
+
 def add_race_features(df: pd.DataFrame, with_ex: bool, copy: bool = True) -> pd.DataFrame:
     """レース内の比較の列を足す。copy=False なら渡した表をそのまま書き換える（学習用の大きな表でメモリを倍にしない）。"""
     if copy:
@@ -1243,13 +1279,14 @@ def build(raw_dir: Path) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame
     del pc, pa
     release_memory()
     rows = add_race_features(rows, with_ex=True, copy=False)
+    rows = add_exdev(rows)
     release_memory()
     rows["win"] = (rows["finish"] == 1).astype("int8")
     rows["top2"] = (rows["finish"] <= 2).astype("int8")  # 2着・3着を別に学習するとき用
     rows["top3"] = (rows["finish"] <= 3).astype("int8")
     rows["has_ex"] = rows.groupby("race_id")["ex_time"].transform(lambda s: s.notna().sum() >= 4)
     rows["has_orig"] = rows[["lap_rel", "turn_rel", "straight_rel"]].notna().any(axis=1).groupby(rows["race_id"]).transform("sum") >= 4
-    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + KIMARITE_FEATURES + SERIES_FEATURES + FAN_FEATURES + WEIGHT_FEATURES + PARTS_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
+    keep = set(BASE_FEATURES + EX_FEATURES + ORIG_FEATURES + FHOLD_FEATURES + WALL_FEATURES + WIND_FEATURES + RACE_FEATURES + DAY_FEATURES + SHAPE_FEATURES + KIMARITE_FEATURES + SERIES_FEATURES + FAN_FEATURES + WEIGHT_FEATURES + PARTS_FEATURES + EXDEV_FEATURES + ["race_id", "race_date", "date", "lane", "finish", "win", "top2", "top3", "has_ex", "has_orig", "course"])
     rows = rows[[c for c in rows.columns if c in keep]]
     for c in rows.columns:
         if rows[c].dtype == "float64":
