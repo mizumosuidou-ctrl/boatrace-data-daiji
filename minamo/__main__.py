@@ -9,6 +9,7 @@
   python -m minamo ml-train         LightGBMを学習（var/ml/raw のCSVから）
   python -m minamo ml-notify        学習の結果のひとこと（前回との比べ）を Discord に送る
   python -m minamo ml-softmax       レース内 softmax と今のやり方を同じ検証期間で比べる（モデルは保存しない）
+  python -m minamo ml-softmax-roi   レース内 softmax と今のやり方を、買い目の回収率まで比べる（展示前・展示後）
   python -m minamo ml-tune          LightGBM の設定を何通りか試して比べる（モデルは保存しない）
   python -m minamo ml-backfill      過去の展示データを公式サイトから取り寄せる
   python -m minamo ml-facts         データベースの実績が止まった日の次の日から、実績・展示・風を公式サイトで足す
@@ -51,6 +52,9 @@ def main() -> None:
     mlq = sub.add_parser("ml-softmax", help="レース内 softmax で学習するやり方と今のやり方を同じ検証期間で比べる（モデルは保存しない）")
     mlq.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
     mlq.add_argument("--test-days", type=int, default=90)
+    mlr = sub.add_parser("ml-softmax-roi", help="レース内 softmax と今のやり方を、展示前・展示後とも作って、買い目の回収率（ev-check）まで比べる")
+    mlr.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
+    mlr.add_argument("--test-days", type=int, default=90)
     sub.add_parser("ml-synthetic", help="動作確認用の架空CSVを var/ml/raw に作る")
     mlb = sub.add_parser("ml-backfill", help="過去の展示データを公式サイトから取り寄せる（1秒1件）")
     mlb.add_argument("--from", dest="date_from", default="20250101")
@@ -155,6 +159,11 @@ def main() -> None:
 
         raw = Path(args.raw or live.ML_DIR / "raw")
         print(train.softmax_experiment(raw, live.ML_DIR, test_days=args.test_days))
+    elif args.cmd == "ml-softmax-roi":
+        from .ml import live, softmax_roi
+
+        raw = Path(args.raw or live.ML_DIR / "raw")
+        print(softmax_roi.compare(raw, live.ML_DIR, test_days=args.test_days))
     elif args.cmd == "ml-series":
         from .ml import live, series
 

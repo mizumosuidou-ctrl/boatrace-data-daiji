@@ -1596,3 +1596,19 @@ def test_softmax_experiment_runs_without_saving_models(trained):
     text = train.softmax_experiment(out.parent / "raw", out, test_days=20, valid_days=12)
     assert "レース内softmax" in text and "判定:" in text and "3期間の差" in text
     assert (out / "model_pre.txt").read_bytes() == before
+
+
+def test_softmax_roi_compare_writes_two_test_preds(trained, tmp_path):
+    import shutil
+    from minamo.ml import softmax_roi
+
+    out, _ = trained
+    work = tmp_path / "ml"
+    shutil.copytree(out, work)
+    text = softmax_roi.compare(out.parent / "raw", work, test_days=20, valid_days=12)
+    assert "確率の当たり具合" in text and "展示前" in text and "【レース内softmax】" in text
+    for name in ("binary", "softmax"):
+        tp = pd.read_csv(work / "cmp" / name / "test_preds.csv.gz", dtype={"race_id": str})
+        assert {"race_id", "lane", "finish", "p_pre"} <= set(tp.columns)
+        assert np.allclose(tp.groupby("race_id")["p_pre"].sum(), 1.0)  # どちらもレースごとに合計1
+        assert (work / f"ev_{name}.txt").exists()
