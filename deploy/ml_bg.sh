@@ -6,8 +6,8 @@ set -uo pipefail
 cd "$(dirname "$0")"
 cmd="${1:-}"
 case "$cmd" in
-  ml-train|ml-tune|ml-years|ml-softmax|ml-softmax-roi) ;;
-  *) echo "使い方: ml_bg.sh ml-train|ml-tune|ml-years|ml-softmax|ml-softmax-roi"; exit 2 ;;
+  ml-train|ml-tune|ml-years|ml-softmax|ml-softmax-roi|ml-calib) ;;
+  *) echo "使い方: ml_bg.sh ml-train|ml-tune|ml-years|ml-softmax|ml-softmax-roi|ml-calib"; exit 2 ;;
 esac
 if pgrep -f "minamo ml-" >/dev/null; then echo "すでに学習系の処理が動いています。何もしません"; pgrep -af "minamo ml-" | cut -c1-90; exit 1; fi
 log="$HOME/ml_bg_${cmd}.log"

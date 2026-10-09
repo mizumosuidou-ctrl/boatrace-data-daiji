@@ -1612,3 +1612,29 @@ def test_softmax_roi_compare_writes_two_test_preds(trained, tmp_path):
         assert {"race_id", "lane", "finish", "p_pre"} <= set(tp.columns)
         assert np.allclose(tp.groupby("race_id")["p_pre"].sum(), 1.0)  # どちらもレースごとに合計1
         assert (work / f"ev_{name}.txt").exists()
+
+
+def test_calib_report_flags_a_planted_bias(trained):
+    """予想の確率をわざとずらした条件が「目立つ偏り」に出る。条件の表は合計が合う。"""
+    from minamo.ml import calib_report
+
+    n = 6000
+    rng = np.random.default_rng(1)
+    p = rng.uniform(0.05, 0.4, n)
+    course = rng.integers(1, 7, n)
+    win = (rng.uniform(size=n) < np.where(course == 3, p * 1.5, p)).astype(float)  # 3コースだけ実際は1.5倍勝つ
+    df = pd.DataFrame({"p": p, "win": win, "course": course, "date": pd.Timestamp("2026-09-01"), "venue_i": 1, "race_no": 1})
+    c = calib_report.cells(df, n_races=n // 6)
+    row = c[(c["条件"] == "進入コース") & (c["区分"] == "3コース")].iloc[0]
+    assert row["z"] > 5 and row["差"] > 0.03
+    assert abs(c[(c["条件"] == "進入コース") & (c["区分"] == "1コース")].iloc[0]["z"]) < 3.5
+    assert c[c["条件"] == "進入コース"]["艇数"].sum() == n
+
+
+def test_calib_report_runs_on_trained_model(trained):
+    from minamo.ml import calib_report
+
+    out, _ = trained
+    text = calib_report.build(out.parent / "raw", out, test_days=20)
+    assert "外れ方の分析" in text and "予想の確率の帯" in text and "進入コース" in text
+    assert (out / "calib_report.txt").exists()
