@@ -1738,6 +1738,7 @@ def test_cv_ablation_post_mode_compares_exhibition_and_candidates(trained, monke
     text = cv_ablation.build(out.parent / "raw", out, folds=2, fold_days=8, valid_days=6, post=True)
     assert "展示後モデル" in text and "体重" in text and "部品交換" in text and "足す" in text
     res = json.loads((out / "cv_ablation_post.json").read_text(encoding="utf-8"))
-    assert {"ex", "weight", "parts"} <= set(res["groups"]) and res["groups"]["weight"]["add"] is True
+    assert {"ex", "weight", "parts", "orig"} <= set(res["groups"]) and res["groups"]["weight"]["add"] is True
+    assert res["groups"]["orig"]["add"] is True and len(res["groups"]["orig"]["coverage"]) == 2
     assert res["groups"]["ex"]["add"] is False and len(res["groups"]["ex"]["per_fold"]) == 2
     assert (out / "model_pre.txt").read_bytes() == before
