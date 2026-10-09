@@ -65,6 +65,7 @@ def main() -> None:
     mlv.add_argument("--folds", type=int, default=4, help="検証の回数（新しい方から数える）")
     mlv.add_argument("--fold-days", type=int, default=60, help="検証1回の日数")
     mlv.add_argument("--valid-days", type=int, default=45, help="調整（止める位置を決める）の日数")
+    mlv.add_argument("--post", action="store_true", help="展示後モデルを比べる（展示・風・オリジナル展示を外す。体重・部品交換を足す）")
     sub.add_parser("ml-synthetic", help="動作確認用の架空CSVを var/ml/raw に作る")
     mlb = sub.add_parser("ml-backfill", help="過去の展示データを公式サイトから取り寄せる（1秒1件）")
     mlb.add_argument("--from", dest="date_from", default="20250101")
@@ -183,7 +184,7 @@ def main() -> None:
         from .ml import cv_ablation, live
 
         raw = Path(args.raw or live.ML_DIR / "raw")
-        print(cv_ablation.build(raw, live.ML_DIR, folds=args.folds, fold_days=args.fold_days, valid_days=args.valid_days))
+        print(cv_ablation.build(raw, live.ML_DIR, folds=args.folds, fold_days=args.fold_days, valid_days=args.valid_days, post=args.post))
     elif args.cmd == "ml-series":
         from .ml import live, series
 
