@@ -271,7 +271,7 @@ class Pipeline:
                 tri = pr.trifecta
                 skip = store.trial_skip(pr.boats)  # ②が①より速いレースは、試し買い（3連単・合成・2連単）を見送る
                 band = date >= store.BAND_FROM  # オッズの帯で絞る（10/7 から）
-                combos = [] if skip else store.ev_picks(tri, odds, cal, band=band)
+                combos = [] if skip else store.ev_picks(tri, odds, cal, band=band, single=date >= store.SINGLE_FROM)
                 prob = dict(store.calibrate(tri, odds, *cal) if cal else tri)
                 st["trial_skip"] = skip
                 st["ev_pick"] = {"combos": combos, "at": now.isoformat(), "cal": list(cal) if cal else None, "skip": skip,
@@ -324,13 +324,13 @@ class Pipeline:
 
     @staticmethod
     def _late_pick(st: dict, tag: str, date: str, card, before, odds: dict, odds2: Optional[dict], now: datetime) -> None:
-        """記録だけ：5分前に固定した試し買いと同じルール（補正B・期待値1.2以上・帯・②が速い見送り）で、いまのオッズで決め直す。"""
+        """記録だけ：5分前に固定した試し買いと同じルール（補正B・期待値1.2以上・帯・②が速い見送り・1点だけ見送り）で、いまのオッズで決め直す。"""
         cal = store.ev_calib()
         pr = predict(card, before, odds)
         tri = pr.trifecta
         skip = store.trial_skip(pr.boats)
         band = date >= store.BAND_FROM
-        combos = [] if skip else store.ev_picks(tri, odds, cal, band=band)
+        combos = [] if skip else store.ev_picks(tri, odds, cal, band=band, single=date >= store.SINGLE_FROM)
         prob = dict(store.calibrate(tri, odds, *cal) if cal else tri)
         st[f"ev{tag}_pick"] = {"combos": combos, "at": now.isoformat(), "skip": skip,
                                "items": [{"combo": c, "p": round(prob[c], 4), "odds": odds[c], "ev": round(prob[c] * odds[c], 2)} for c in combos]}
