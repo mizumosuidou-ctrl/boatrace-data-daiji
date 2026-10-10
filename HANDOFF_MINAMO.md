@@ -84,6 +84,8 @@
   手で `docker stop` すると再起動後に戻らない。OS から止める（shutdown）。
 - docker の外：/opt/boatrace-rt-monitor（collector：root の cron で5分おき、archive_api.py：systemd の boatrace-archive-api.service）、nginx、
   /opt/timelab-drafts と timelab-*.timer（WordPress への投稿。別の仕組み）。すべて enabled で、再起動後に自動で戻る。
+- **Mac への取り寄せ（バックアップ）**：サーバーのバックアップはすべて同じサーバーの中なので、Mac に `~/bin/minamo-backup.sh` を作って、毎週月曜の朝3:30すぎに手で実行する（RTモニターのDBダンプ＋ミナモの記録。sha256 で照合、直近4つ。中身に .env の鍵を含む＝Mac の外に出さない）。スクリプトは IP・鍵のファイル名を含むのでリポジトリには置いていない（作り方は [[学び/成績の自動点検で見つかったこと]] ではなく作業ログ 2026-10-10 夜）。
+- **成績の自動点検**：`python -m minamo audit [--url]`。毎週月曜の週報にも出る。見つかった課題（不成立レースの精算、10/3 の一覧の払戻）は [[学び/成績の自動点検で見つかったこと]]。
 - nginx：`/etc/nginx/snippets/minamo.conf` の `/minamo/` で JSON・JS・CSS を gzip 圧縮（2026-10-10〜。戻し方は [[学び/サイトのJSON・JS・CSSが圧縮されていなかった]]）。サイトの次の改善候補（的中一覧用の要約ファイル・`app.js` の版番号）も同じメモに。
 - SSH：2026-10-09 から **パスワードログイン無効（鍵だけ）**。`/etc/ssh/sshd_config.d/00-no-password.conf`。戻し方・理由は [[学び/SSHのパスワードログインを無効にした]]。鍵が使えないときは KAGOYA のコンソールから入る。
 - バックアップ：RTモニター側 /opt/boatrace-rt-monitor/backup.sh（ubuntu の cron、毎日 3:15、pg_dump | gzip、30日分、backups/）。

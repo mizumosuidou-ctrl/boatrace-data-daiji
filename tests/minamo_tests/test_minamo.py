@@ -1190,3 +1190,81 @@ def test_live_breakdown_by_combo(tmp_path):
     out = live_check.breakdown(tmp_path)
     assert "■ 3連単（試し）5分前：2組" in out
     assert "20〜30倍" in out and "当たり  1 回収率 2500.0%" in out and "1点目" in out and "①頭" in out
+
+
+def _audit_race(rno=1, **kw):
+    """点検用の1レース：3連単1-2-3（配当1,400）・2連単1-2（配当490）。買い目は6点、当たり。"""
+    r = {"rno": rno, "deadline": "10:00", "result": "1-2-3", "payout": 1400, "result_ex": "1-2", "payout_ex": 490, "cancelled": False,
+         "honmei": 1, "honmei_win": True, "picks": ["1-2-3", "1-3-2", "2-1-3", "2-3-1", "3-1-2", "3-2-1"], "stake": 600, "return": 1400, "hit": True}
+    r.update(kw)
+    return r
+
+
+def _audit_day(races, totals=None):
+    st = sum(r.get("stake") or 0 for r in races)
+    rt = sum(r.get("return") or 0 for r in races)
+    return {"date": "20261009", "venues": [{"jcd": "01", "name": "桐生", "races": races}], "totals": totals or {"stake": st, "return": rt}}
+
+
+def test_audit_finds_no_problem_in_consistent_day():
+    from datetime import datetime
+
+    from minamo import audit
+
+    r = audit.audit_day(_audit_day([_audit_race(1), _audit_race(2, hit=False, **{"return": 0}, result="3-2-1", payout=900, result_ex="3-2", payout_ex=300)]),
+                        now=datetime(2026, 10, 9, 23, 0))
+    # 2レース目は 3-2-1 が買い目に入っているので当たり。外れの例は別のテストで
+    assert r["counts"].get("3連単（推奨）：当たりのしるしが結果と合わない") == 1
+    clean = audit.audit_day(_audit_day([_audit_race(1), _audit_race(2)]), now=datetime(2026, 10, 9, 23, 0))
+    assert clean["counts"] == {} and clean["settled"] == 2
+
+
+def test_audit_flags_planted_errors():
+    from datetime import datetime
+
+    from minamo import audit
+
+    races = [
+        _audit_race(1, **{"return": 1000}),                       # 払戻が配当と合わない
+        _audit_race(2, stake=500),                                # 投資が 100円×買い目の数 と合わない
+        _audit_race(3, hit=False),                                # 当たりなのに外れのしるし（払戻は配当どおり）
+        _audit_race(4, result_ex="2-1"),                          # 3連単と2連単の結果が合わない
+        _audit_race(5, payout=1405, **{"return": 1405}),          # 配当がおかしい（10円単位でない）
+        _audit_race(6, honmei=2),                                 # 本命の的中のしるしが結果と合わない
+        _audit_race(7, result=None, result_ex=None, payout=None, payout_ex=None, stake=None, **{"return": None}, hit=None, picks=[]),  # 締切を過ぎても結果が無い
+        _audit_race(8, cancelled=True),                           # 中止なのに投資が残っている
+    ]
+    got = audit.audit_day(_audit_day(races), now=datetime(2026, 10, 9, 23, 0))["counts"]
+    for kind in ("3連単（推奨）：払戻が配当と合わない", "3連単（推奨）：投資が 100円×買い目の数 と合わない", "3連単（推奨）：当たりのしるしが結果と合わない",
+                 "3連単と2連単の結果が合わない", "3連単の配当がおかしい", "本命の的中のしるしが結果と合わない",
+                 "締切を過ぎても結果が入っていない", "中止なのに投資が残っている"):
+        assert got.get(kind) == 1, (kind, got)
+    # 夕方の時点では、まだ締切から90分たっていない
+    assert "締切を過ぎても結果が入っていない" not in audit.audit_day(_audit_day([races[6]]), now=datetime(2026, 10, 9, 10, 30))["counts"]
+
+
+def test_audit_day_total_and_record_mismatch_and_missing_picks():
+    from datetime import datetime
+
+    from minamo import audit
+
+    day = _audit_day([_audit_race(1), _audit_race(2)], totals={"stake": 1200, "return": 2000})
+    r = audit.audit_day(day, now=datetime(2026, 10, 9, 23, 0))
+    assert r["counts"].get("3連単（推奨）：レースごとの合計と、その日の合計が一致しない") == 1
+    rec = {"days": [{"date": "20261009", "stake": 1200, "return": 2000}]}  # その日の一覧の合計（2,800）と違う
+    assert "3連単（推奨）：成績ページと日の一覧の合計が一致しない" in audit.audit_record(rec, {"20261009": _audit_day([_audit_race(1), _audit_race(2)])})
+    # 買い目が一覧に入っていない日：買い目に基づく点検はとばすが、当たりなのに払戻が空は拾う
+    race = _audit_race(1, ev_bought=True, ev_pick=None, ev_stake=600, ev_return=None, ev_hit=True)
+    c = audit.audit_day(_audit_day([race]), now=datetime(2026, 10, 9, 23, 0))["counts"]
+    assert c.get("3連単（試し）：当たりなのに払戻が空") == 1 and "3連単（試し）：当たりのしるしが結果と合わない" not in c
+
+
+def test_weekly_report_includes_audit_and_backup_reminder(tmp_path):
+    from minamo import weekly
+
+    store.write_json(tmp_path / "20261005" / "day.json", _audit_day([_audit_race(1)]) | {"date": "20261005"})
+    text = weekly.build(tmp_path, ml_dir=tmp_path, today="20261007")
+    assert "🔎 成績の点検（直近7日）" in text and "おかしい所は見つかりませんでした" in text
+    assert "minamo-backup.sh" in text
+    store.write_json(tmp_path / "20261006" / "day.json", _audit_day([_audit_race(1, **{"return": 5})]) | {"date": "20261006"})
+    assert "払戻が配当と合わない" in weekly.build(tmp_path, ml_dir=tmp_path, today="20261007")

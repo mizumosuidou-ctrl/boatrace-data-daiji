@@ -80,9 +80,11 @@ def build(data_dir: Path = store.DATA_DIR, ml_dir: Optional[Path] = None, today:
     if quiet:
         lines.append("\n（今週は買ったレースなし：" + "・".join(quiet) + "）")
     lines += _timing(data_dir, start, last)
+    lines += _audit(data_dir)
     lines += _training(ml_dir)
     lines.append("\n判断の目安：実戦300〜500レースで、前半・後半とも100%超えなら金額を上げる。それまでは記録か最小額。")
     lines.append("通算の「95%区間」が100%をまたいでいるうちは、プラスでもマイナスでも偶然の範囲（当たりの少ない買い方ほど広い）。区間が100%の上に出るまで、金額は変えない。")
+    lines.append("\n💾 バックアップ：月曜の朝3:30すぎに、Mac のターミナルで  bash ~/bin/minamo-backup.sh  （サーバーの最新を Mac に取り寄せる）")
     lines.append(f"{notify.SITE_URL}#/record")
     return "\n".join(lines)
 
@@ -100,6 +102,22 @@ def _timing(data_dir: Path, start: str, last: str) -> list[str]:
             cells.append(f"{when} {100 * rt / st:.1f}%（{n}R）" if st else f"{when} --")
         out.append(f"・{tag}：" + " / ".join(cells))
     return ["\n⏱ 決める時刻の比べ（同じルール・今週）"] + out if out else []
+
+
+def _audit(data_dir: Path) -> list[str]:
+    """成績の自動点検（直近7日。投資・当たり・払戻・合計のつじつま。minamo/audit.py）。日の一覧が無ければ何も出さない。"""
+    from . import audit
+
+    try:
+        days, record = audit.load_dir(data_dir, 7)
+        if not days:
+            return []
+        text = audit.build(days, record)
+    except Exception:  # noqa: BLE001 — 点検が失敗しても週報は送る
+        return []
+    summary = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("・")]
+    head = "→ おかしい所は見つかりませんでした" if "おかしい所は見つかりませんでした" in text else "→ " + next((ln for ln in text.splitlines() if ln.startswith("→")), "")[2:]
+    return ["\n🔎 成績の点検（直近7日）", f"・{head.lstrip('→ ')}"] + [f"　{x}" for x in summary[:5]]
 
 
 def _training(ml_dir: Optional[Path]) -> list[str]:
