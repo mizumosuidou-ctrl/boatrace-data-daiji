@@ -1925,6 +1925,34 @@ def test_full_post_is_skipped_when_data_is_too_small(trained):
     assert got is None
 
 
+def test_refit_check_compares_current_and_refit_models_without_touching_models(trained, monkeypatch):
+    """検証用に分けた期間も学習に入れ直す実験：今のやり方と入れ直しを同じ検証期間で比べ、モデルは書き換えない。"""
+    from minamo.ml import refit_check
+
+    monkeypatch.setattr(refit_check, "MIN_TRAIN_ROWS", 500)
+    out, meta = trained
+    before = (out / "model_pre.txt").read_bytes()
+    text = refit_check.build(out.parent / "raw", out, folds=2, fold_days=8, valid_days=6)
+    assert "展示前モデル" in text and "入れ直し" in text
+    res = json.loads((out / "refit_check.json").read_text(encoding="utf-8"))
+    assert "pre" in res and len(res["pre"]["details"]) == 2
+    assert all(f["train_b"] > f["train_a"] and f["rounds_a"] > 0 for f in res["pre"]["details"])  # 入れ直しの方が学習のデータが多い
+    assert (out / "model_pre.txt").read_bytes() == before
+    if meta.get("post_features"):
+        assert "post" in res and "展示後モデル" in text
+
+
+def test_refit_fixed_rounds_fit_trains_the_given_number_of_trees(trained):
+    from minamo.ml import refit_check
+
+    out, meta = trained
+    rows = ds.build(out.parent / "raw")[0]
+    rows["course"] = rows["course"].astype(int)
+    feats = [f for f in meta["pre_features"] if f in rows.columns]
+    booster = refit_check._fit_rounds(rows.head(3000), feats, 37)
+    assert booster.current_iteration() == 37
+
+
 def test_ev_check_split_report():
     """22.：試し買いの組を、実戦の live-check --breakdown と同じ分け方で、前・後に分けて出す。"""
     from itertools import permutations
