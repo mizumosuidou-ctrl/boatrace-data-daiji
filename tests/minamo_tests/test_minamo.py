@@ -1173,3 +1173,17 @@ def test_late_message_for_two_minute_exacta():
     assert notify.late_message("20261009", "01", 5, "12:00", 1.8, {"combos": []}) is None
     text = notify.late_message("20261009", "01", 5, "12:00", 1.8, {"combos": ["1-3"], "items": [{"combo": "1-3", "odds": 12.5}]})
     assert "参考・2分前" in text and "2連単 1点：1-3（12.5倍）" in text and "#/race/20261009/01/5" in text
+
+
+def test_live_breakdown_by_combo(tmp_path):
+    """試し買いを買った組ひとつずつで分けた成績（オッズの帯・何点目など）。"""
+    from minamo import live_check
+
+    (tmp_path / "20261008").mkdir()
+    store.write_json(tmp_path / "20261008" / "01-01.json", {
+        "date": "20261008", "result": {"trifecta": "1-2-3", "payout": 2500, "exacta": "1-2", "exacta_payout": 400},
+        "prediction": {"escape": {"index": 80}},
+        "ev_items": [{"combo": "1-2-3", "p": 0.05, "odds": 25.0, "ev": 1.25}, {"combo": "1-3-2", "p": 0.03, "odds": 60.0, "ev": 1.8}]})
+    out = live_check.breakdown(tmp_path)
+    assert "■ 3連単（試し）5分前：2組" in out
+    assert "20〜30倍" in out and "当たり  1 回収率 2500.0%" in out and "1点目" in out and "①頭" in out

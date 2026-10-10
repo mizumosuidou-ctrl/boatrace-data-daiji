@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import re
 from itertools import permutations
 from pathlib import Path
 
@@ -1748,6 +1749,113 @@ def escape_skip_report(races: list[dict]) -> list[str]:
     return lines
 
 
+def _trial_combo_rows(cal: list[dict]) -> tuple[list[dict], list[dict]]:
+    """今の試し買い（補正B・期待値1.2以上・3連単最大9点で15〜120倍・2連単最大3点で10〜80倍・②が速いレースは見送り）を、
+    買った組ひとつずつに（実戦の live-check --breakdown と同じ分け方のため）。払戻は確定オッズ。"""
+    from ..model import ESCAPE_FULL
+    from ..store import EV_ODDS, EX_ODDS, SKIP_C2_GAP
+
+    tri, ex = [], []
+    for r in cal:
+        sr = r.get("sr") or {}
+        if sr.get(1) is not None and sr.get(2) is not None and sr[1] - sr[2] >= SKIP_C2_GAP:
+            continue
+        co = r.get("course_of") or {}
+        one = next((l for l, c in co.items() if c == 1), 1)
+        p1 = (r.get("p_lane") or {}).get(one, r.get("p1"))
+        esc = max(0, min(100, round(100 * p1 / ESCAPE_FULL))) if p1 is not None else None
+        cs = [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True)[:40]
+              if r["probs"][c] >= MIN_P and r["t5"].get(c) and _ev(r, c) >= 1.2][:9]
+        cs = [c for c in cs if EV_ODDS[0] <= r["t5"][c] < EV_ODDS[1]]
+        for i, c in enumerate(cs):
+            hit = c == r["hit"]
+            tri.append({"race": r["race"], "odds": r["t5"][c], "ev": _ev(r, c), "p": r["probs"][c], "rank": i + 1, "n": len(cs),
+                        "head": c.split("-")[0], "esc": esc, "hit": hit, "pay": 100 * r["final"].get(c, 0) if hit else 0})
+        if r.get("x5") and r.get("xfinal"):
+            xp = exacta_probs(r["probs"])
+            xhit = r["hit"].rsplit("-", 1)[0]
+            xs = [c for c in sorted(xp, key=xp.get, reverse=True)
+                  if xp[c] >= EX_MIN_P and r["x5"].get(c) and xp[c] * r["x5"][c] >= 1.2][:3]
+            xs = [c for c in xs if EX_ODDS[0] <= r["x5"][c] < EX_ODDS[1]]
+            for i, c in enumerate(xs):
+                hit = c == xhit
+                ex.append({"race": r["race"], "odds": r["x5"][c], "ev": xp[c] * r["x5"][c], "p": xp[c], "rank": i + 1, "n": len(xs),
+                           "head": c.split("-")[0], "esc": esc, "hit": hit, "pay": 100 * r["xfinal"].get(c, 0) if hit else 0})
+    return tri, ex
+
+
+def _band_tag(v: float, edges: list[float], fmt) -> str:
+    for a, b in zip(edges, edges[1:] + [None]):
+        if b is None or v < b:
+            return fmt(a, b)
+    return fmt(edges[-1], None)
+
+
+SPLIT_GROUPS = [
+    ("決めたときのオッズ（5分前）", lambda x: _band_tag(x["odds"], [0, 10, 15, 20, 30, 50, 80, 120], lambda a, b: f"{a:g}〜{b:g}倍" if b else f"{a:g}倍〜")),
+    ("期待値", lambda x: _band_tag(x["ev"], [0, 1.2, 1.3, 1.5, 2.0, 3.0], lambda a, b: f"{a:g}〜{b:g}" if b else f"{a:g}〜")),
+    ("確率", lambda x: _band_tag(x["p"], [0, 0.01, 0.02, 0.03, 0.05, 0.08], lambda a, b: f"{100 * a:g}〜{100 * b:g}%" if b else f"{100 * a:g}%〜")),
+    ("そのレースの何点目（確率順）", lambda x: f"{x['rank']}点目" if x["rank"] <= 4 else "5点目以降"),
+    ("そのレースの点数", lambda x: "1点" if x["n"] == 1 else "2〜3点" if x["n"] <= 3 else "4〜6点" if x["n"] <= 6 else "7点以上"),
+    ("頭（1着）の艇", lambda x: "①頭" if x["head"] == "1" else "①以外の頭"),
+    ("イン逃げ指数", lambda x: "--" if x["esc"] is None else _band_tag(x["esc"], [0, 40, 55, 70, 85], lambda a, b: f"{a}〜{b}" if b else f"{a}〜")),
+]
+
+# 実戦（10/4〜10/10）の live-check --breakdown で弱く見えたところ。ここで前・後の両方で確かめる
+SPLIT_RULES = {
+    "3連単": [("1点目（確率1位の組）を買わない", lambda x: x["rank"] != 1),
+             ("1点だけのレースは見送り", lambda x: x["n"] != 1),
+             ("イン逃げ指数40〜55を見送り", lambda x: x["esc"] is None or not 40 <= x["esc"] < 55),
+             ("イン逃げ指数70〜85を見送り", lambda x: x["esc"] is None or not 70 <= x["esc"] < 85),
+             ("期待値1.3以上だけ", lambda x: x["ev"] >= 1.3)],
+    "2連単": [("15〜80倍に（10〜15倍を買わない）", lambda x: x["odds"] >= 15),
+             ("イン逃げ指数40〜55を見送り", lambda x: x["esc"] is None or not 40 <= x["esc"] < 55),
+             ("1点目（確率1位の組）を買わない", lambda x: x["rank"] != 1),
+             ("期待値1.3以上だけ", lambda x: x["ev"] >= 1.3)],
+}
+
+
+def _split_cell(g: list[dict]) -> str:
+    if not g:
+        return _pad("（なし）", 40)
+    pays = [x["pay"] for x in g if x["hit"]]
+    tot = sum(pays)
+    cut = (tot - max(pays)) / len(g) if pays else 0.0
+    return _pad(f"{len(g):>5}組 当たり{len(pays):>4} 回収率{tot / len(g):6.1f}%（最大除く{cut:6.1f}%）", 52)
+
+
+def split_report(races: list[dict]) -> list[str]:
+    """22. 今の試し買いの組を、実戦の live-check --breakdown と同じ分け方で（補正B・後半を、さらに前・後に分ける）。
+    実戦で弱く見えた区分が、過去の検証でも前・後の両方で弱いときだけ、買い方を変える候補にする。"""
+    cal = sorted(_test_cal(races), key=lambda r: r["race"])
+    if len(cal) < 400:
+        return []
+    mid = cal[len(cal) // 2]["race"]
+    tri, ex = _trial_combo_rows(cal)
+    lines = [f"\n22. 今の試し買いの組を、実戦の live-check --breakdown と同じ分け方で（補正B・後半 {len(cal):,}R を前・後に分ける。"
+             "1点100円、払戻は確定オッズ。前・後の両方で弱い区分だけが本物の弱点）"]
+    for tag, rows in (("3連単（期待値1.2以上・最大9点・15〜120倍）", tri), ("2連単（期待値1.2以上・最大3点・10〜80倍）", ex)):
+        if not rows:
+            continue
+        a = [x for x in rows if x["race"] < mid]
+        b = [x for x in rows if x["race"] >= mid]
+        lines.append(f"  ■ {tag}")
+        lines.append(f"    {_pad('', 24)}{_pad('前', 52)}後")
+        lines.append(f"    {_pad('全部', 24)}{_split_cell(a)}{_split_cell(b)}")
+        for gname, key in SPLIT_GROUPS:
+            lines.append(f"   {gname}")
+            tags = []
+            for x in rows:
+                if key(x) not in tags:
+                    tags.append(key(x))
+            for t in sorted(tags, key=lambda t: (float(re.match(r"[\d.]+", t).group()) if re.match(r"[\d.]+", t) else 999, t)):
+                lines.append(f"    {_pad(t, 24)}{_split_cell([x for x in a if key(x) == t])}{_split_cell([x for x in b if key(x) == t])}")
+        lines.append("   買い方を変えたら（残った組の成績）")
+        for name, keep in SPLIT_RULES["3連単" if tag.startswith("3") else "2連単"]:
+            lines.append(f"    {_pad(name, 32)}{_split_cell([x for x in a if keep(x)])}{_split_cell([x for x in b if keep(x)])}")
+    return lines
+
+
 BAND_LOWS = (1.0, 5.0, 10.0, 15.0, 20.0)
 BAND_HIGHS = (30.0, 50.0, 80.0, 120.0, 200.0, float("inf"))
 
@@ -1885,6 +1993,14 @@ def _summary(name: str, races: list[dict], pick) -> str:
             f" 平均配当{(sum(pays) / len(pays) if pays else 0):>7,.0f}円 3千円以上{big:>3} 万舟{huge:>3} イン逃し的中{upset_hits:>3}")
 
 
+def build_split(ml_dir: Path, raw: Path) -> str:
+    """22. だけ（ev-check --split。全部の表より速い）。"""
+    races = load(ml_dir, raw)
+    if not races:
+        return "検証期間の確率（test_preds.csv.gz）か、オッズ履歴（odds_hist.csv）がありません。ml-train のあとに実行してください"
+    return "\n".join(split_report(races) or ["検証のレースが少なすぎます（補正B・後半で400R未満）"])
+
+
 def build(ml_dir: Path, raw: Path) -> str:
     races = load(ml_dir, raw)
     if not races:
@@ -1931,4 +2047,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += outer_report(races)
     lines += place_mult_report(races)
     lines += escape_skip_report(races)
+    lines += split_report(races)
     return "\n".join(lines)

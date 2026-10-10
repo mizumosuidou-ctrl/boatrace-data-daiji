@@ -1951,3 +1951,33 @@ def test_refit_fixed_rounds_fit_trains_the_given_number_of_trees(trained):
     feats = [f for f in meta["pre_features"] if f in rows.columns]
     booster = refit_check._fit_rounds(rows.head(3000), feats, 37)
     assert booster.current_iteration() == 37
+
+
+def test_ev_check_split_report():
+    """22.：試し買いの組を、実戦の live-check --breakdown と同じ分け方で、前・後に分けて出す。"""
+    from itertools import permutations
+
+    from minamo.ml import ev_check
+
+    rng = np.random.default_rng(0)
+    races = []
+    for i in range(900):
+        lanes = {l: w for l, w in zip(range(1, 7), rng.dirichlet([6, 2, 2, 1.5, 1, 1]))}
+        probs = {ev_check._key(c): v for c, v in ev_check.trifecta_probs(lanes, ev_check.PL_DECAY)}
+        t5 = {c: max(1.5, round(0.75 / v * rng.uniform(0.6, 1.6), 1)) for c, v in probs.items()}
+        hit = ev_check._key(rng.permutation(range(1, 7))[:3]) if i % 3 else max(probs, key=probs.get)
+        xp = ev_check.exacta_probs(probs)
+        x5 = {c: max(1.2, round(0.75 / v * rng.uniform(0.6, 1.6), 1)) for c, v in xp.items()}
+        races.append({"race": f"2026{i // 28 % 12 + 1:02d}{i % 28 + 1:02d}-24-{i % 12 + 1:02d}-{i:04d}", "probs": probs, "t5": t5,
+                      "final": t5, "hit": hit, "x5": x5, "xfinal": x5, "p1": lanes[1], "post": False,
+                      "course_of": {l: l for l in range(1, 7)}, "p_lane": lanes, "sr": {c: 3.0 for c in range(1, 7)}})
+    tri, ex = ev_check._trial_combo_rows(races)
+    assert tri and ex
+    assert all(15 <= x["odds"] < 120 for x in tri) and all(10 <= x["odds"] < 80 for x in ex)
+    assert all(x["ev"] >= 1.2 and 1 <= x["rank"] <= x["n"] <= 9 for x in tri) and all(x["n"] <= 3 for x in ex)
+    # ②が①より速いレースは見送り
+    fast = [{**races[0], "sr": {1: 4.0, 2: 3.0}}]
+    assert ev_check._trial_combo_rows(fast) == ([], [])
+    text = "\n".join(ev_check.split_report(races))
+    assert "22. 今の試し買いの組を" in text and "そのレースの何点目" in text and "1点目（確率1位の組）を買わない" in text
+    assert "15〜80倍に" in text and "イン逃げ指数" in text

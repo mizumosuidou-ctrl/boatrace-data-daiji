@@ -117,6 +117,7 @@ def main() -> None:
     mlq.add_argument("--raw", default=None)
     mle = sub.add_parser("ev-check", help="買い目の選び方（確率上位・期待値）を、学習に使っていない期間のオッズと結果で比べる")
     mle.add_argument("--raw", default=None)
+    mle.add_argument("--split", action="store_true", help="22.（試し買いの組を live-check --breakdown と同じ分け方で）だけ出す")
     mwk = sub.add_parser("weekly", help="週報：直近7日の実戦の成績と学習の様子（--send で Discord にも送る）")
     mwk.add_argument("--send", action="store_true")
     mwk.add_argument("--data", help="web/data の場所（既定は MINAMO_DATA_DIR）")
@@ -124,6 +125,7 @@ def main() -> None:
     mll.add_argument("--data", help="web/data の場所（既定は MINAMO_DATA_DIR）")
     mll.add_argument("--odds", action="store_true", help="実戦で決めたときのオッズを、データベースの5分前・1分前・確定オッズと比べる")
     mll.add_argument("--raw", default=None)
+    mll.add_argument("--breakdown", action="store_true", help="試し買いを買った組ひとつずつで分けた成績（オッズ・期待値・確率・何点目・頭・イン逃げ指数）")
     mla = sub.add_parser("ability-check", help="自動発見のアビリティを買い目に使ったらどうだったかを、学習に使っていない期間で確かめる")
     mla.add_argument("--raw", default=None)
     mlr = sub.add_parser("rtm-compare", help="レースタイムモニターの予想（DEEP・NORMAL・裏の予想）とMINAMOを同じレースで比べる")
@@ -242,7 +244,8 @@ def main() -> None:
     elif args.cmd == "ev-check":
         from .ml import ev_check, live
 
-        print(ev_check.build(live.ML_DIR, Path(args.raw) if args.raw else live.ML_DIR / "raw"))
+        raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
+        print(ev_check.build_split(live.ML_DIR, raw) if args.split else ev_check.build(live.ML_DIR, raw))
     elif args.cmd == "ml-kimarite":
         from .ml import facts_backfill, live
 
@@ -259,7 +262,9 @@ def main() -> None:
         from . import live_check
 
         data = Path(args.data) if args.data else store.DATA_DIR
-        if args.odds:
+        if args.breakdown:
+            print(live_check.breakdown(data))
+        elif args.odds:
             from .ml import live
 
             print(live_check.odds_compare(data, Path(args.raw) if args.raw else live.ML_DIR / "raw"))
