@@ -1102,6 +1102,9 @@ def test_ev_and_ex_picks_odds_band():
     odds = {"1-2-3": 8.0, "1-3-2": 20.0, "2-1-3": 150.0}
     assert store.ev_picks(tri, odds) == ["1-2-3", "1-3-2", "2-1-3"]
     assert store.ev_picks(tri, odds, band=True) == ["1-3-2"]
+    # 10/11 から：帯で絞ったあと1点しか残らないレースは見送り（2点以上なら今までどおり）
+    assert store.ev_picks(tri, odds, band=True, single=True) == []
+    assert store.ev_picks(tri, odds, single=True) == ["1-2-3", "1-3-2", "2-1-3"]
     odds2 = {"1-2": 7.0, "1-3": 12.0, "2-1": 90.0}
     combos, items = store.ex_picks(tri, odds, odds2, band=True)
     assert combos == ["1-3"] and items[0]["odds"] == 12.0
