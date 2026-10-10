@@ -12,6 +12,7 @@
   python -m minamo ml-softmax-roi   レース内 softmax と今のやり方を、買い目の回収率まで比べる（展示前・展示後）
   python -m minamo ml-calib         外れ方の分析（予想の確率と実際の1着率を、条件ごとに比べる）
   python -m minamo ml-cv            期間をずらして何回か、特徴量を1つずつ外して効き方を比べる（予想は変えない）
+  python -m minamo ml-refit         検証用に分けた直近の期間も学習に入れ直すと良くなるかを比べる（予想は変えない）
   python -m minamo ml-tune          LightGBM の設定を何通りか試して比べる（モデルは保存しない）
   python -m minamo ml-backfill      過去の展示データを公式サイトから取り寄せる
   python -m minamo ml-facts         データベースの実績が止まった日の次の日から、実績・展示・風を公式サイトで足す
@@ -66,6 +67,10 @@ def main() -> None:
     mlv.add_argument("--fold-days", type=int, default=60, help="検証1回の日数")
     mlv.add_argument("--valid-days", type=int, default=45, help="調整（止める位置を決める）の日数")
     mlv.add_argument("--post", action="store_true", help="展示後モデルを比べる（展示・風・オリジナル展示を外す。体重・部品交換を足す）")
+    mlf = sub.add_parser("ml-refit", help="今の学習が入れていない直近の期間（調整45日＋検証）も入れ直すと、同じ検証期間で良くなるかを比べる（モデルは書き換えない）")
+    mlf.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
+    mlf.add_argument("--folds", type=int, default=3, help="検証の回数（新しい方から数える）")
+    mlf.add_argument("--fold-days", type=int, default=60, help="検証1回の日数")
     sub.add_parser("ml-synthetic", help="動作確認用の架空CSVを var/ml/raw に作る")
     mlb = sub.add_parser("ml-backfill", help="過去の展示データを公式サイトから取り寄せる（1秒1件）")
     mlb.add_argument("--from", dest="date_from", default="20250101")
@@ -185,6 +190,11 @@ def main() -> None:
 
         raw = Path(args.raw or live.ML_DIR / "raw")
         print(cv_ablation.build(raw, live.ML_DIR, folds=args.folds, fold_days=args.fold_days, valid_days=args.valid_days, post=args.post))
+    elif args.cmd == "ml-refit":
+        from .ml import live, refit_check
+
+        raw = Path(args.raw or live.ML_DIR / "raw")
+        print(refit_check.build(raw, live.ML_DIR, folds=args.folds, fold_days=args.fold_days))
     elif args.cmd == "ml-series":
         from .ml import live, series
 
