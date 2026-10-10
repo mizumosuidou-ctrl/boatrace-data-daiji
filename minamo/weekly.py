@@ -81,6 +81,7 @@ def build(data_dir: Path = store.DATA_DIR, ml_dir: Optional[Path] = None, today:
         lines.append("\n（今週は買ったレースなし：" + "・".join(quiet) + "）")
     lines += _timing(data_dir, start, last)
     lines += _audit(data_dir)
+    lines += _multi(data_dir)
     lines += _training(ml_dir)
     lines.append("\n判断の目安：実戦300〜500レースで、前半・後半とも100%超えなら金額を上げる。それまでは記録か最小額。")
     lines.append("通算の「95%区間」が100%をまたいでいるうちは、プラスでもマイナスでも偶然の範囲（当たりの少ない買い方ほど広い）。区間が100%の上に出るまで、金額は変えない。")
@@ -118,6 +119,24 @@ def _audit(data_dir: Path) -> list[str]:
     summary = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("・")]
     head = "→ おかしい所は見つかりませんでした" if "おかしい所は見つかりませんでした" in text else "→ " + next((ln for ln in text.splitlines() if ln.startswith("→")), "")[2:]
     return ["\n🔎 成績の点検（直近7日）", f"・{head.lstrip('→ ')}"] + [f"　{x}" for x in summary[:5]]
+
+
+def _multi(data_dir: Path) -> list[str]:
+    """買い方の多重比較（直近60日。minamo/multi.py）：複数の買い方をまとめて見ても、補正して「100%を超えた」と言えるものがあるか。"""
+    from . import audit, multi
+
+    try:
+        days, _ = audit.load_dir(data_dir, 60)
+        rows = multi.analyse(multi.collect(days), n_boot=2000)
+    except Exception:  # noqa: BLE001 — 点検が失敗しても週報は送る
+        return []
+    if not rows:
+        return []
+    prof = [multi.label(x["key"]) for x in rows if x["p_profit_adj"] < 0.05 and x["lo"] > 1.0]
+    skill = [multi.label(x["key"]) for x in rows if x["p_random_adj"] < 0.05]
+    return ["\n🔬 多重比較（直近60日・" + f"{len(rows)}通りをまとめて判定）",
+            f"・補正しても100%超と言える買い方：{'・'.join(prof) or 'なし'}",
+            f"・補正しても「でたらめ（約75%）より良い」と言える買い方：{'・'.join(skill) or 'なし'}"]
 
 
 def _training(ml_dir: Optional[Path]) -> list[str]:

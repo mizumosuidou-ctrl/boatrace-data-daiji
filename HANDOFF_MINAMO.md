@@ -85,6 +85,7 @@
 - docker の外：/opt/boatrace-rt-monitor（collector：root の cron で5分おき、archive_api.py：systemd の boatrace-archive-api.service）、nginx、
   /opt/timelab-drafts と timelab-*.timer（WordPress への投稿。別の仕組み）。すべて enabled で、再起動後に自動で戻る。
 - **Mac への取り寄せ（バックアップ）**：サーバーのバックアップはすべて同じサーバーの中なので、Mac に `~/bin/minamo-backup.sh` を作って、毎週月曜の朝3:30すぎに手で実行する（RTモニターのDBダンプ＋ミナモの記録。sha256 で照合、直近4つ。中身に .env の鍵を含む＝Mac の外に出さない）。スクリプトは IP・鍵のファイル名を含むのでリポジトリには置いていない（作り方は [[学び/成績の自動点検で見つかったこと]] ではなく作業ログ 2026-10-10 夜）。
+- **買い方の多重比較**：`python -m minamo multi-check [--url]`（毎週月曜の週報にも出る）。10/10 の結果は「補正して100%超と言える買い方は無し」。金額を上げる条件・候補を絞る進め方は [[学び/買い方は多重比較で見ると100%超と言えるものはまだ無い]]。
 - **異常の見張り**：`minamo/watchdog.py`（10分おきの cron。異常だけ Discord へ）。使い方・見るもの・鳴りすぎない工夫は [[学び/異常の見張りを入れた]]。止めるときは `/etc/cron.d/minamo` の watchdog の行を消す。
 - **成績の自動点検**：`python -m minamo audit [--url]`。毎週月曜の週報にも出る。見つかった課題（不成立レースの精算、10/3 の一覧の払戻）は [[学び/成績の自動点検で見つかったこと]]。
 - nginx：`/etc/nginx/snippets/minamo.conf` の `/minamo/` で JSON・JS・CSS を gzip 圧縮（2026-10-10〜。戻し方は [[学び/サイトのJSON・JS・CSSが圧縮されていなかった]]）。サイトの次の改善候補（的中一覧用の要約ファイル・`app.js` の版番号）も同じメモに。
