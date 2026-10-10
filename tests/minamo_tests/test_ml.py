@@ -2121,3 +2121,61 @@ def test_live_compare_too_few_common_races_says_so():
     races, days, cal = _live_world(n=40, skip_every=0)
     assert "少なすぎ" in lc.build(races, days, cal=cal)
     assert lc.live_races({}) == {}
+
+
+def _upset_world(n=700, edge=True, seed=11):
+    """イン逃しの検証用の模擬レース：日付・場・風・3連単の確定オッズ・①の予想勝率・艇ごとの予想を付ける。"""
+    rng = np.random.default_rng(seed)
+    races = _ex_races(n, edge=edge, seed=seed)
+    wind = {}
+    for i, r in enumerate(races):
+        r["race"] = f"2026{9 + i // 400:02d}{1 + (i // 14) % 28:02d}-{1 + (i // 7) % 24:02d}-{i % 7 + 1:02d}"
+        r["final"] = {c: round(o * float(np.exp(rng.normal(0, 0.08))), 1) for c, o in r["t5"].items()}
+        r["p1"] = sum(v for c, v in r["probs"].items() if c[0] == "1")
+        r["p_lane"] = {l: sum(v for c, v in r["probs"].items() if c[0] == str(l)) for l in range(1, 7)}
+        wind[r["race"]] = (float(rng.integers(0, 9)), float(rng.integers(0, 8)))
+    return races, wind
+
+
+def test_upset_reports_every_section_and_splits_by_first_place():
+    from minamo.ml import upset
+
+    races, wind = _upset_world()
+    text = upset.build(races, wind)
+    for head in ("■ A.", "■ B.", "■ C.", "■ D.", "■ E.", "■ F."):
+        assert head in text
+    assert "①が勝った　：" in text and "①が負けた　：" in text
+    assert "試しのうち①頭の組だけ" in text and "試しのうち①頭でない組だけ" in text
+    assert "風 0〜1m" in text and "AUC" in text and "24通り" in text.replace("先に決めた 24 通り", "24通り")
+
+
+def test_upset_head1_tickets_make_up_most_of_the_top6_picks_and_auc_is_above_chance():
+    from minamo.ml import upset
+
+    races, wind = _upset_world()
+    text = upset.build(races, wind)
+    share = float(text.split("買い目の①頭の割合：推奨 ")[1].split("%")[0])
+    assert share > 30                                              # ①は他の艇より強い世界なので、①頭の組が一番多い
+    auc_m = float(text.split("MINAMO（1−①の予想勝率）：AUC ")[1].split()[0])
+    assert 0.5 < auc_m <= 1.0                                      # 本当の確率を知っているので、見分けられる
+
+
+def test_upset_helpers():
+    from minamo.ml import upset
+
+    y = np.array([1, 1, 0, 0, 0])
+    assert upset._auc(np.array([0.9, 0.8, 0.3, 0.2, 0.1]), y) == 1.0
+    assert abs(upset._auc(np.ones(5), y) - 0.5) < 1e-9
+    r = {"probs": {"1-2-3": 0.3, "2-1-3": 0.2, "3-1-2": 0.1}, "t5": {"1-2-3": 5.0, "2-1-3": 20.0, "3-1-2": 30.0}, "final": {"2-1-3": 25.0}, "hit": "2-1-3"}
+    assert upset.ev3_pick(1.0, 6, None)(r) == ["1-2-3", "2-1-3", "3-1-2"]
+    assert upset.ev3_pick(1.0, 6, None, only_not1=True)(r) == ["2-1-3", "3-1-2"]          # ①頭を除く
+    assert upset.ev3_pick(1.0, 6, (15.0, 120.0))(r) == ["2-1-3", "3-1-2"]                  # 帯（5倍の組は外れる）
+    assert upset._pay3(r, ["2-1-3", "3-1-2"]) == (200.0, 2500.0)
+    assert upset.top_pick(2)(r) == ["1-2-3", "2-1-3"]
+
+
+def test_upset_too_few_races_says_so(tmp_path):
+    from minamo.ml import upset
+
+    assert "少なすぎ" in upset.build(_upset_world(n=50)[0])
+    assert upset.wind_table(tmp_path) == {}
