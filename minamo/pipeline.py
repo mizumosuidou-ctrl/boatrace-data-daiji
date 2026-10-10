@@ -113,7 +113,7 @@ class Pipeline:
         payload = store.build_race(card, before, odds, pred, ai, result, vday, ev=ev_pick.get("combos"),
                                    ex=ex_pick.get("combos") if "ex_pick" in st else None, ev_items=ev_pick.get("items"),
                                    time_pick=st.get("time_pick"), fm_pick=st.get("fm_pick"),
-                                   ag_pick=st.get("ag_pick"), ch_pick=st.get("ch_pick"), xa_pick=st.get("xa_pick"),
+                                   ag_pick=st.get("ag_pick"), ch_pick=st.get("ch_pick"), xa_pick=st.get("xa_pick"), kk_pick=st.get("kk_pick"),
                                    late={k: st[f"{k}_pick"].get("combos") or [] for k in LATE_KINDS if st.get(f"{k}_pick")})
         payload["ev_items"] = ev_pick.get("items")  # 試験中の買い目の確率・オッズ・期待値（決めたときの値）
         payload["ev_at"] = ev_pick.get("at")
@@ -135,6 +135,8 @@ class Pipeline:
             payload[f"{k}_at"] = lp.get("at") if lp else None
         payload["xa_pick"] = st.get("xa_pick")  # 2連単（全レース。見送りなし）
         payload["xa_items"] = (st.get("xa_pick") or {}).get("items")
+        payload["kk_pick"] = st.get("kk_pick")  # コツコツ当てる君（普通の予想のうち割安な組）
+        payload["kk_items"] = (st.get("kk_pick") or {}).get("items")
         payload["ch_pick"] = st.get("ch_pick")  # 🍒穴狙い🍒（記録だけ）
         ch = st.get("ch_pick") or {}
         tri_p = dict(pred.trifecta)
@@ -289,6 +291,9 @@ class Pipeline:
                     st["ag_pick"] = {**ag, "at": now.isoformat(),
                                      "odds": {c: odds2.get(c) for c in ag["combos"] if odds2 and odds2.get(c)}}
                 st["xa_pick"] = {**store.xa_pick(tri, odds2), "at": now.isoformat()}  # 2連単（全レース。見送りなし）
+                # コツコツ当てる君：普通の予想（いまの推奨買い目）のうち割安な組だけ（②が速い見送りとは別）
+                picks = [p.get("combo") for p in (st.get("ai") or {}).get("picks") or []] or [p.get("combo") for p in pr.picks or []]
+                st["kk_pick"] = {**store.kk_pick([c for c in picks if c], tri, odds, cal), "at": now.isoformat()}
                 ch = store.cherry_pick(pr.boats, tri, odds)  # 🍒穴狙い🍒（記録だけ。②が速い見送りとは別）
                 if ch is not None:
                     st["ch_pick"] = {**ch, "at": now.isoformat(), "odds": {c: odds.get(c) for c in ch["combos"] if odds.get(c)}}
