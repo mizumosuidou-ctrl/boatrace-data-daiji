@@ -32,9 +32,9 @@ BEFORE_REFRESH = timedelta(minutes=int(os.environ.get("MINAMO_BEFORE_REFRESH_MIN
 # 試験中の買い目を決めて固定する、締切の何分前か（人が買えるのは5〜3分前まで。10/4 の検証：5分前のオッズで決めると3連単124%・2連単120%）
 SYNC_HOUR = int(os.environ.get("MINAMO_SYNC_HOUR", "5"))  # この時刻から、その日の出走表を取り込む（夜中の学習のあと。前は7時）
 PICK_FIX_MIN = float(os.environ.get("MINAMO_PICK_FIX_MIN", "5.5"))
-# 記録だけ：同じルールの試し買い（3連単・2連単）を、締切の2分前・1分前に決め直した組（5分前に固定した組と同じレースで比べる）
-LATE_FIX = (("2", 2.0, 1.0), ("1", 1.0, 0.0))  # (名前, この分数以下で, この分数より前)
-LATE_KINDS = ("ev2", "ex2", "ev1", "ex1")
+# 記録だけ：同じルールの試し買い（3連単・2連単）を、締切の3分前・2分前・1分前に決め直した組（5分前に固定した組と同じレースで比べる）
+LATE_FIX = (("3", 3.0, 2.0), ("2", 2.0, 1.0), ("1", 1.0, 0.0))  # (名前, この分数以下で, この分数より前)
+LATE_KINDS = ("ev3", "ex3", "ev2", "ex2", "ev1", "ex1")
 RESULT_DELAY = timedelta(minutes=int(os.environ.get("MINAMO_RESULT_DELAY_MIN", "6")))
 # 結果の取り込み：最初の20回は毎分、そのあとは5分おきに、締切から12時間まで取り直す（あきらめない）
 RESULT_FAST_TRIES = 20
@@ -128,7 +128,7 @@ class Pipeline:
         payload["ag_pick"] = st.get("ag_pick")  # 試験中：一致（RTMの1番手・MINAMOの見立て・2連単）
         ag = st.get("ag_pick") or {}
         payload["ag_items"] = [{"combo": c, "p": ag.get("p"), "odds": (ag.get("odds") or {}).get(c)} for c in ag.get("combos") or []] if ag else None
-        for k in LATE_KINDS:  # 記録だけ：2分前・1分前に決め直した試し買い
+        for k in LATE_KINDS:  # 記録だけ：3分前・2分前・1分前に決め直した試し買い
             lp = st.get(f"{k}_pick")
             payload[f"{k}_pick"] = lp.get("combos") if lp else None
             payload[f"{k}_items"] = lp.get("items") if lp else None

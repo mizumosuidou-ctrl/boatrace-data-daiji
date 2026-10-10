@@ -229,6 +229,7 @@
 - 朝の切り替え（PR #171）：pipeline.SYNC_HOUR＝5（その日の出走表を5時から取り込む。前は7時）。画面：左上の MINAMO で latest.json を読み直して最新の日へ、30秒ごとの更新で今日のデータができていれば自動で今日へ（自分で過去の日を選んだとき＝state.picked は切り替えない）。
 - Obsidian（PR #172）：obsidian/ が記録用の Vault（00_ホーム・ルール・失敗/・学び/・テンプレート/）。**失敗や学びが出たら、その PR で obsidian/失敗 か obsidian/学び にノートを足し、_一覧.md も更新する**。公開なので鍵・IP・Webhook・TIMEの数値・RTMの方法は書かない。obsidian/自分のメモ/ はユーザー専用で .gitignore。
 - 2分前の2連単の Discord 通知（PR #175、参考）：pipeline が ex2 を決めた直後に notify.maybe_notify_late（1レース1回・st.notified_late。MINAMO_NOTIFY_LATE=0 で止まる）。成績は記録だけのまま。
+- 3分前の記録（PR #193）：LATE_FIX に ("3", 3.0, 2.0)。ev3・ex3 を記録だけで、live-check・週報（決める時刻の比べに3分前の列）・レース画面の試し買いの結果に。
   pipeline は date ≥ BAND_FROM（20261007）で band。live-check は 10/7 からの期間（3連単 120.9%・2連単 117.0%・合成は検証なし）。
 - チルトは展示後モデルですでに使っている。部品交換は本番で読んでいない（直前情報のページの列は分かった）・データベースの分も少ないので、まず集めるところから（次）。
 

@@ -16,8 +16,8 @@ import numpy as np
 from . import live_check, notify, store
 
 # 週報に出す買い方（live-check と同じ名前）。お金をかける候補を上に、記録だけを下に
-KINDS = [("ev", "3連単（試し）5分前"), ("ev2", "3連単（試し）2分前・記録"), ("ev1", "3連単（試し）1分前・記録"),
-         ("co", "3連単 合成"), ("ex", "2連単（試し）5分前"), ("ex2", "2連単（試し）2分前・記録"), ("ex1", "2連単（試し）1分前・記録"),
+KINDS = [("ev", "3連単（試し）5分前"), ("ev3", "3連単（試し）3分前・記録"), ("ev2", "3連単（試し）2分前・記録"), ("ev1", "3連単（試し）1分前・記録"),
+         ("co", "3連単 合成"), ("ex", "2連単（試し）5分前"), ("ex3", "2連単（試し）3分前・記録"), ("ex2", "2連単（試し）2分前・記録"), ("ex1", "2連単（試し）1分前・記録"),
          ("ag", "一致"), ("fm", "隊形①-②"), ("xa", "2連単 全R"), ("time", "TIME予想"), ("ch", "🍒 A・記録"), ("chb", "🍒 B・記録")]
 CHUNK = 1800  # Discord の1通の上限（2,000字）より少し短く
 
@@ -88,14 +88,14 @@ def build(data_dir: Path = store.DATA_DIR, ml_dir: Optional[Path] = None, today:
 
 
 def _timing(data_dir: Path, start: str, last: str) -> list[str]:
-    """同じルールで、決める時刻（5分前・2分前・1分前）だけが違う買い目の比べ（今週）。"""
+    """同じルールで、決める時刻（5分前・3分前・2分前・1分前）だけが違う買い目の比べ（今週）。"""
     out = []
-    for tag, kinds in (("3連単", ("ev", "ev2", "ev1")), ("2連単", ("ex", "ex2", "ex1"))):
+    for tag, kinds in (("3連単", ("ev", "ev3", "ev2", "ev1")), ("2連単", ("ex", "ex3", "ex2", "ex1"))):
         rows = {k: [r for r in live_check.rows(data_dir, k) if start <= r["date"] <= last] for k in kinds}
-        if not rows[kinds[1]] and not rows[kinds[2]]:
+        if not any(rows[k] for k in kinds[1:]):
             continue
         cells = []
-        for k, when in zip(kinds, ("5分前", "2分前", "1分前")):
+        for k, when in zip(kinds, ("5分前", "3分前", "2分前", "1分前")):
             n, _, st, rt = _sum(rows[k])
             cells.append(f"{when} {100 * rt / st:.1f}%（{n}R）" if st else f"{when} --")
         out.append(f"・{tag}：" + " / ".join(cells))
