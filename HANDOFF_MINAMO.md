@@ -84,6 +84,7 @@
   手で `docker stop` すると再起動後に戻らない。OS から止める（shutdown）。
 - docker の外：/opt/boatrace-rt-monitor（collector：root の cron で5分おき、archive_api.py：systemd の boatrace-archive-api.service）、nginx、
   /opt/timelab-drafts と timelab-*.timer（WordPress への投稿。別の仕組み）。すべて enabled で、再起動後に自動で戻る。
+- nginx：`/etc/nginx/snippets/minamo.conf` の `/minamo/` で JSON・JS・CSS を gzip 圧縮（2026-10-10〜。戻し方は [[学び/サイトのJSON・JS・CSSが圧縮されていなかった]]）。サイトの次の改善候補（的中一覧用の要約ファイル・`app.js` の版番号）も同じメモに。
 - SSH：2026-10-09 から **パスワードログイン無効（鍵だけ）**。`/etc/ssh/sshd_config.d/00-no-password.conf`。戻し方・理由は [[学び/SSHのパスワードログインを無効にした]]。鍵が使えないときは KAGOYA のコンソールから入る。
 - バックアップ：RTモニター側 /opt/boatrace-rt-monitor/backup.sh（ubuntu の cron、毎日 3:15、pg_dump | gzip、30日分、backups/）。
   ミナモ側 deploy/backup.sh（毎週月曜 2:40、データベースは含まない・鍵 .env を含む）。KAGOYA の定期スナップショットは 2026-09-01 から停止中。
