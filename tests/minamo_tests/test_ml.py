@@ -2179,3 +2179,36 @@ def test_upset_too_few_races_says_so(tmp_path):
 
     assert "少なすぎ" in upset.build(_upset_world(n=50)[0])
     assert upset.wind_table(tmp_path) == {}
+
+
+def test_ev_check_day_trend():
+    """23.：同じ日・同じ場で、あるコースが見込みより勝ち続ける日を作ると、当日の傾向を入れた方が後半でも1着を当てやすい。"""
+    from minamo.ml import ev_check
+
+    rng = np.random.default_rng(1)
+    races = []
+    for day in range(70):
+        for v in ("07", "12"):
+            hot = int(rng.integers(1, 7))  # その日その場で強いコース（MINAMOは知らない）
+            for rno in range(1, 13):
+                lanes = {l: w for l, w in zip(range(1, 7), rng.dirichlet([6, 2, 2, 1.5, 1, 1]))}
+                true = {l: w * (3.0 if l == hot else 1.0) for l, w in lanes.items()}
+                tot = sum(true.values())
+                win = int(rng.choice(range(1, 7), p=[true[l] / tot for l in range(1, 7)]))
+                rest = [l for l in rng.permutation(range(1, 7)) if l != win][:2]
+                probs = {ev_check._key(c): x for c, x in ev_check.trifecta_probs(lanes, ev_check.PL_DECAY)}
+                t5 = {c: max(1.5, round(0.75 / x * rng.uniform(0.7, 1.4), 1)) for c, x in probs.items()}
+                races.append({"race": f"2026{day // 28 + 7:02d}{day % 28 + 1:02d}-{v}-{rno:02d}", "probs": probs, "t5": t5, "final": t5,
+                              "hit": ev_check._key([win, *rest]), "p1": lanes[1], "post": False, "decay": ev_check.PL_DECAY,
+                              "course_of": {l: l for l in range(1, 7)}, "p_lane": lanes, "sr": {}})
+    rs = ev_check.day_trend(races)
+    first = [r for r in rs if r["race"].endswith("-01")]
+    assert all(r["tr_n"] == 0 and not r["tr_s"].any() for r in first)
+    later = next(r for r in rs if r["race"].endswith("-12"))
+    assert later["tr_n"] == 11 and abs(later["tr_s"][1:].sum()) < 1e-9  # 1着は毎レース1つ、見込みも合計1
+    p = ev_check.trend_lane_p(later, 2.0)
+    assert abs(sum(p.values()) - 1) < 1e-9 and ev_check.trend_lane_p(later, 0.0) == pytest.approx({l: v / sum(later["p_lane"].values()) for l, v in later["p_lane"].items()})
+    assert ev_check._trend_logloss(rs, 2.0) < ev_check._trend_logloss(rs, 0.0)
+    text = "\n".join(ev_check.day_trend_report(races))
+    assert "23. 当日の場の傾向" in text and "← 前半で一番良い" in text and "良くなる" in text
+    assert "大きく勝ち" in text and "今の試し買い" in text and "①が負けている場は見送り" in text
