@@ -34,7 +34,7 @@ SYNC_HOUR = int(os.environ.get("MINAMO_SYNC_HOUR", "5"))  # この時刻から�
 PICK_FIX_MIN = float(os.environ.get("MINAMO_PICK_FIX_MIN", "5.5"))
 # 記録だけ：同じルールの試し買い（3連単・2連単）を、締切の3分前・2分前・1分前に決め直した組（5分前に固定した組と同じレースで比べる）
 LATE_FIX = (("3", 3.0, 2.0), ("2", 2.0, 1.0), ("1", 1.0, 0.0))  # (名前, この分数以下で, この分数より前)
-LATE_KINDS = ("ev3", "ex3", "ev2", "ex2", "ev1", "ex1")
+LATE_KINDS = store.LATE_KINDS
 RESULT_DELAY = timedelta(minutes=int(os.environ.get("MINAMO_RESULT_DELAY_MIN", "6")))
 # 結果の取り込み：最初の20回は毎分、そのあとは5分おきに、締切から12時間まで取り直す（あきらめない）
 RESULT_FAST_TRIES = 20
