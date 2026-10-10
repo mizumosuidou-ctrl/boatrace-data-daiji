@@ -280,7 +280,7 @@ class Pipeline:
                                  "items": [{"combo": c, "p": round(prob[c], 4), "odds": odds[c], "ev": round(prob[c] * odds[c], 2)}
                                            for c in combos]}
                 if odds2:  # 試験中：2連単（補正した3連単の確率を足して2連単に。2連単のオッズで期待値1.2以上・最大3点）
-                    xc, xi = ([], []) if skip else store.ex_picks(tri, odds, odds2, cal, band=band)
+                    xc, xi = ([], []) if skip else store.ex_picks(tri, odds, odds2, cal, band=band, head1=date >= store.EX_HEAD1_FROM)
                     st["ex_pick"] = {"combos": xc, "items": xi, "at": now.isoformat(), "skip": skip}
                 fm = store.fm_pick(pr.boats)  # 試験中：隊形①-②（②が速い見送りとは別。A の隊形で2連単①-②）
                 if fm is not None:
@@ -329,7 +329,7 @@ class Pipeline:
 
     @staticmethod
     def _late_pick(st: dict, tag: str, date: str, card, before, odds: dict, odds2: Optional[dict], now: datetime) -> None:
-        """記録だけ：5分前に固定した試し買いと同じルール（補正B・期待値1.2以上・帯・②が速い見送り・1点だけ見送り）で、いまのオッズで決め直す。"""
+        """記録だけ：5分前に固定した試し買いと同じルール（補正B・期待値1.2以上・帯・②が速い見送り・1点だけ見送り・2連単は①頭だけ最大2点）で、いまのオッズで決め直す。"""
         cal = store.ev_calib()
         pr = predict(card, before, odds)
         tri = pr.trifecta
@@ -340,7 +340,7 @@ class Pipeline:
         st[f"ev{tag}_pick"] = {"combos": combos, "at": now.isoformat(), "skip": skip,
                                "items": [{"combo": c, "p": round(prob[c], 4), "odds": odds[c], "ev": round(prob[c] * odds[c], 2)} for c in combos]}
         if odds2:
-            xc, xi = ([], []) if skip else store.ex_picks(tri, odds, odds2, cal, band=band)
+            xc, xi = ([], []) if skip else store.ex_picks(tri, odds, odds2, cal, band=band, head1=date >= store.EX_HEAD1_FROM)
             st[f"ex{tag}_pick"] = {"combos": xc, "items": xi, "at": now.isoformat(), "skip": skip}
 
     def _formation(self, card: RaceCard, pred, vday: Optional[VenueDay]) -> Optional[dict]:

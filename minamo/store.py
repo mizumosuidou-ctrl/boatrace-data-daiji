@@ -68,6 +68,11 @@ BAND_FROM = "20261007"
 # （10/10 実戦 live-check --breakdown：1点だけのレース 5分前 66.6%・2分前 0%・1分前 0%。
 #  ev-check「22.」補正B・後半の前・後：1点だけのレース 76.6%・80.4%、見送ると 107.9→111.7%・138.4→146.3%、最大除くも前後とも良くなる）
 SINGLE_FROM = "20261011"
+# 2連単（試し）：帯で絞ったあとの上位 EX_TOP 点のうち、①頭の組だけ（10/12 から）
+# （10/11 ev-check「26.」補正B・後半の前・後：今のまま 112.9%・105.9% → ①頭だけ・最大2点 122.4%・118.4%、最大除く 117.4%・112.4%。
+#  ①頭だけ・最大2点のどちらか片方でも前・後とも良くなる）
+EX_HEAD1_FROM = "20261012"
+EX_TOP = 2
 # 記録だけ：締切3分前・2分前・1分前に同じルールで決め直した試し買い（pipeline.LATE_KINDS と同じ）
 LATE_KINDS = ("ev3", "ex3", "ev2", "ex2", "ev1", "ex1")
 
@@ -262,7 +267,7 @@ EX_MAX = 3
 
 
 def ex_picks(trifecta: list, odds3: Optional[dict[str, float]], odds2: Optional[dict[str, float]],
-             calib: Optional[tuple[float, float]] = None, band: bool = False) -> tuple[list[str], list[dict]]:
+             calib: Optional[tuple[float, float]] = None, band: bool = False, head1: bool = False) -> tuple[list[str], list[dict]]:
     """3連単の確率（補正があれば3連単のオッズで補正）を足して2連単の確率にし、2連単のオッズで期待値 EX_MIN 以上の組を
     確率の高い順に最大 EX_MAX 点。返り値は（組, 組ごとの確率・オッズ・期待値）。2連単のオッズが無ければ空。"""
     if not odds2:
@@ -280,6 +285,8 @@ def ex_picks(trifecta: list, odds3: Optional[dict[str, float]], odds2: Optional[
     out = out[:EX_MAX]
     if band:  # 選んだ組（最大 EX_MAX 点）のうち、オッズが EX_ODDS の帯の組だけ
         out = [x for x in out if EX_ODDS[0] <= x["odds"] < EX_ODDS[1]]
+    if head1:  # 10/12 から：残った組の上位 EX_TOP 点のうち、①頭の組だけ
+        out = [x for x in out[:EX_TOP] if x["combo"].split("-")[0] == "1"]
     return [x["combo"] for x in out], out
 
 
