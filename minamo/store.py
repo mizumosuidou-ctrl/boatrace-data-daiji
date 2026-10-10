@@ -64,6 +64,10 @@ EV_MAX = 9  # 最大の点数（10/4：最大6点 118% → 最大9点 124%、補
 EV_ODDS = (15.0, 120.0)
 EX_ODDS = (10.0, 80.0)
 BAND_FROM = "20261007"
+# 3連単（試し）：帯で絞ったあと1点しか残らないレースは見送り（10/11 から）
+# （10/10 実戦 live-check --breakdown：1点だけのレース 5分前 66.6%・2分前 0%・1分前 0%。
+#  ev-check「22.」補正B・後半の前・後：1点だけのレース 76.6%・80.4%、見送ると 107.9→111.7%・138.4→146.3%、最大除くも前後とも良くなる）
+SINGLE_FROM = "20261011"
 
 
 # 確率の補正（ev-check が検証期間で決めて、良くなったときだけ書く）：p^a × 市場の確率^b をレースごとに合計1へ
@@ -91,9 +95,10 @@ def calibrate(trifecta: list, odds: dict[str, float], a: float, b: float) -> lis
 
 
 def ev_picks(trifecta: list, odds: Optional[dict[str, float]], calib: Optional[tuple[float, float]] = None,
-             band: bool = False) -> list[str]:
+             band: bool = False, single: bool = False) -> list[str]:
     """確率上位40組のうち、期待値 EV_MIN 以上の組を確率の高い順に最大 EV_MAX 点。無ければ空（見送り）。
-    calib=(a, b) があれば、補正した確率で選ぶ。band なら、選んだ組のうちオッズが EV_ODDS の帯の組だけ。"""
+    calib=(a, b) があれば、補正した確率で選ぶ。band なら、選んだ組のうちオッズが EV_ODDS の帯の組だけ。
+    single なら、最後に1点しか残らないときは見送り（空）。"""
     if not odds:
         return []
     if calib:
@@ -104,7 +109,9 @@ def ev_picks(trifecta: list, odds: Optional[dict[str, float]], calib: Optional[t
         if o and p >= EV_MIN_P and p * o >= EV_MIN:
             out.append(c)
     out = out[:EV_MAX]
-    return [c for c in out if EV_ODDS[0] <= odds[c] < EV_ODDS[1]] if band else out
+    if band:
+        out = [c for c in out if EV_ODDS[0] <= odds[c] < EV_ODDS[1]]
+    return [] if single and len(out) == 1 else out
 
 
 # 試験中の買い目の見送り：②（2コースの艇）の平均スタート順位が①より SKIP_C2_GAP 以上速いレース
