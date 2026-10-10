@@ -1981,3 +1981,81 @@ def test_ev_check_split_report():
     text = "\n".join(ev_check.split_report(races))
     assert "22. 今の試し買いの組を" in text and "そのレースの何点目" in text and "1点目（確率1位の組）を買わない" in text
     assert "15〜80倍に" in text and "イン逃げ指数" in text
+
+
+def _ex_races(n, edge, seed=0):
+    """2連単の選び方の検証用の模擬レース。edge=True なら、MINAMOは本当の確率を知っていて、市場はそれを間違えている（儲かる所がある）。
+    edge=False なら、結果は市場のオッズどおりに出て、MINAMOの確率は市場の見立てのぶれ（情報なし）。"""
+    from itertools import permutations
+
+    rng = np.random.default_rng(seed)
+    out = []
+    for i in range(n):
+        w = np.exp(rng.normal(0, 0.8, 6))
+        w[0] *= 2.5
+
+        def exacta(v):
+            return {(a, b): v[a] / v.sum() * v[b] / (v.sum() - v[a]) for a, b in permutations(range(6), 2)}
+
+        def trifecta(v):
+            return {(a, b, c): v[a] / v.sum() * v[b] / (v.sum() - v[a]) * v[c] / (v.sum() - v[a] - v[b]) for a, b, c in permutations(range(6), 3)}
+
+        w_mkt = w * np.exp(rng.normal(0, 0.35, 6))                           # 市場の見立て（本当のw とずれる）
+        truth, mkt = (w, w_mkt) if edge else (w_mkt, w_mkt)                  # 結果が従う確率
+        w_minamo = w if edge else w * np.exp(rng.normal(0, 0.35, 6))         # MINAMO の見立て
+        t3 = trifecta(truth)
+        keys = list(t3)
+        k = rng.choice(len(keys), p=np.array(list(t3.values())) / sum(t3.values()))
+        a, b, c = keys[k]
+        key3 = lambda t: "-".join(str(x + 1) for x in t)
+        m3, m2 = trifecta(mkt), exacta(mkt)
+        probs = {key3(t): v for t, v in trifecta(w_minamo).items()}
+        s = sum(probs.values())
+        probs = {t: v / s for t, v in probs.items()}
+        x5 = {key3(t): round(0.75 / v, 1) for t, v in m2.items()}
+        xf = {t: round(o * float(np.exp(rng.normal(0, 0.05))), 1) for t, o in x5.items()}
+        out.append({"race": f"20261001-{i:05d}", "probs": probs, "t5": {key3(t): round(0.75 / v, 1) for t, v in m3.items()}, "final": {},
+                    "hit": key3((a, b, c)), "x5": x5, "xfinal": xf})
+    return out
+
+
+def test_ex_select_finds_a_real_edge_and_does_not_invent_one(monkeypatch):
+    from minamo.ml import ex_select
+
+    monkeypatch.setattr(ex_select, "MIN_BETS", 100)
+    real = ex_select.build(_ex_races(1500, edge=True, seed=1), sims=60, min_bets=100)
+    nothing = ex_select.build(_ex_races(1500, edge=False, seed=2), sims=60, min_bets=100)
+    assert "偶然と区別できる" in real and "100%を超えたと言える" in real
+    assert "偶然と区別できない" in nothing and "100%を超えたと言える" not in nothing
+    # 本当の優位が無い世界では、前半の最良が高く見えても、後半は市場の回収率（約75%）に戻る
+    back = float(nothing.split("後半の回収率 ")[1].split("%")[0])
+    assert back < 95
+
+
+def test_ex_select_pick_mask_respects_threshold_points_and_band():
+    from minamo.ml import ex_select
+
+    P = np.zeros((2, 30))
+    X5 = np.zeros((2, 30))
+    P[0, :4] = [0.30, 0.20, 0.10, 0.05]
+    X5[0, :4] = [4.0, 12.0, 30.0, 90.0]          # 期待値 1.2, 2.4, 3.0, 4.5
+    M = ex_select.pick_mask(P, X5, th=1.2, m=3, band=(0.0, 1e9), minp=0.02)
+    assert list(np.flatnonzero(M[0])) == [0, 1, 2] and not M[1].any()                 # 確率の高い順に3点
+    assert list(np.flatnonzero(ex_select.pick_mask(P, X5, 1.2, 3, (10.0, 80.0), 0.02)[0])) == [1, 2]   # 帯は選んだあとに絞る
+    assert list(np.flatnonzero(ex_select.pick_mask(P, X5, 2.0, 2, (0.0, 1e9), 0.02)[0])) == [1, 2]     # 期待値2.0以上（1.2は外れ）を確率の高い順に最大2点
+    assert list(np.flatnonzero(ex_select.pick_mask(P, X5, 2.0, 3, (0.0, 1e9), 0.02)[0])) == [1, 2, 3]
+    assert not ex_select.pick_mask(P, X5, 1.2, 3, (0.0, 1e9), 0.5)[0].any()                           # 確率の下限
+
+
+def test_ex_select_candidates_include_the_production_rule_and_are_unique():
+    from minamo.ml import ex_select
+
+    cands = ex_select.candidates()
+    assert len(cands) == len(set(cands)) and ex_select.PROD in cands
+    assert "補正B" in ex_select.describe(ex_select.PROD) and "オッズ10〜80倍" in ex_select.describe(ex_select.PROD)
+
+
+def test_ex_select_too_few_races_says_so():
+    from minamo.ml import ex_select
+
+    assert "少なすぎ" in ex_select.build(_ex_races(50, edge=False), sims=10)
