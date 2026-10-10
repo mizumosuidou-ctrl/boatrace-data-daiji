@@ -1256,6 +1256,37 @@ def test_live_more_check(tmp_path, monkeypatch):
     assert "記録していない" not in live_check.more_check(data, tmp_path / "none")[:0]
 
 
+
+def test_live_ev_filter_check(tmp_path, monkeypatch):
+    """決まった形の買い方を、MINAMOの期待値（確率×5分前のオッズ）で絞った成績。2連単は3着を足し合わせた確率で。"""
+    import json as _json
+
+    from minamo import live_check
+
+    monkeypatch.setattr(store, "ev_calib", lambda: None)
+    data, state = tmp_path / "data", tmp_path / "state"
+    (state / "odds").mkdir(parents=True)
+    lines = []
+    for day in ("20261005", "20261006"):
+        (data / day).mkdir(parents=True)
+        store.write_json(data / day / "01-01.json", {
+            "date": day, "tri_all": {"1-2-3": 0.30, "1-2-4": 0.10, "1-3-2": 0.10, "2-1-3": 0.05},
+            "result": {"trifecta": "1-2-3", "payout": 900, "exacta": "1-2", "exacta_payout": 300},
+            "fm_items": [{"combo": "1-2"}], "ai": {"picks": [{"combo": "1-2-3"}, {"combo": "2-1-3"}]}})
+        # 5分前より前の最後の行を使う（2分前の行は使わない）
+        lines += [_json.dumps({"race": f"{day}-01-01", "at": f"{day}T10:00:00", "min": 5.5, "t3": {"1-2-3": 5.0, "2-1-3": 10.0}, "t2": {"1-2": 3.0}}),
+                  _json.dumps({"race": f"{day}-01-01", "at": f"{day}T10:03:00", "min": 2.0, "t3": {"1-2-3": 1.0}, "t2": {"1-2": 1.0}})]
+    (state / "odds" / "x.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    out = live_check.ev_filter_check(data, state)
+    assert "■ 隊形①-②" in out and "■ 普通の予想" in out and "TIME" not in out.split("■")[1]
+    # 隊形 1-2：確率 0.4×3.0倍＝1.2 → 期待値1.2以上に入り、当たり（300円÷100円）
+    sec = out.split("■ 隊形①-②")[1].split("■")[0]
+    assert "期待値1.2以上だけ" in sec and "1組 当たり   1 回収率 300.0%" in sec
+    # 普通の予想：1-2-3（0.3×5.0＝1.5）は残り、2-1-3（0.05×10＝0.5）は外す組
+    sec = out.split("■ 普通の予想")[1]
+    assert "外す組（期待値1.0未満）" in sec and "1組 当たり   0 回収率   0.0%" in sec
+
+
 def _audit_race(rno=1, **kw):
     """点検用の1レース：3連単1-2-3（配当1,400）・2連単1-2（配当490）。買い目は6点、当たり。"""
     r = {"rno": rno, "deadline": "10:00", "result": "1-2-3", "payout": 1400, "result_ex": "1-2", "payout_ex": 490, "cancelled": False,

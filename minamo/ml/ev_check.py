@@ -2010,6 +2010,79 @@ def entry_report(races: list[dict]) -> list[str]:
     return lines
 
 
+SHRINK_BANDS = (1.0, 10.0, 20.0, 50.0, 100.0, float("inf"))
+
+
+def _band_of(o: float) -> int:
+    return next(i for i, hi in enumerate(SHRINK_BANDS[1:]) if o < hi)
+
+
+def fit_shrink(races: list[dict]) -> tuple[list[float], list[float]]:
+    """当たった組の「確定オッズ ÷ 5分前オッズ」の平均を、5分前オッズの帯ごとに（3連単・2連単）。数が少ない帯は全体の平均。"""
+    tri, ex = [[] for _ in SHRINK_BANDS[1:]], [[] for _ in SHRINK_BANDS[1:]]
+    for r in races:
+        h = r["hit"]
+        if r["t5"].get(h) and r["final"].get(h):
+            tri[_band_of(r["t5"][h])].append(r["final"][h] / r["t5"][h])
+        xh = h.rsplit("-", 1)[0]
+        if r.get("x5") and r.get("xfinal") and r["x5"].get(xh) and r["xfinal"].get(xh):
+            ex[_band_of(r["x5"][xh])].append(r["xfinal"][xh] / r["x5"][xh])
+
+    def means(groups):
+        allv = [v for g in groups for v in g]
+        base = float(np.mean(allv)) if allv else 1.0
+        return [float(np.mean(g)) if len(g) >= 30 else base for g in groups]
+    return means(tri), means(ex)
+
+
+def _shrink_rows(cal: list[dict], tri_k: list[float] | None, ex_k: list[float] | None, th: float) -> tuple[list[dict], list[dict]]:
+    """今の試し買い（帯・②が速い見送り）を、期待値＝確率×5分前オッズ×（確定までの下がり方）で選び直す。k が None なら今のまま。"""
+    from ..store import EV_ODDS, EX_ODDS, SKIP_C2_GAP
+
+    tri, ex = [], []
+    for r in cal:
+        sr = r.get("sr") or {}
+        if sr.get(1) is not None and sr.get(2) is not None and sr[1] - sr[2] >= SKIP_C2_GAP:
+            continue
+        ev = lambda c: r["probs"][c] * r["t5"][c] * (tri_k[_band_of(r["t5"][c])] if tri_k else 1.0)
+        cs = [c for c in sorted(r["probs"], key=r["probs"].get, reverse=True)[:40] if r["probs"][c] >= MIN_P and r["t5"].get(c) and ev(c) >= th][:9]
+        for c in cs:
+            if EV_ODDS[0] <= r["t5"][c] < EV_ODDS[1]:
+                tri.append({"race": r["race"], "hit": c == r["hit"], "pay": 100 * r["final"].get(c, 0) if c == r["hit"] else 0})
+        if r.get("x5") and r.get("xfinal"):
+            xp = exacta_probs(r["probs"])
+            xh = r["hit"].rsplit("-", 1)[0]
+            xev = lambda c: xp[c] * r["x5"][c] * (ex_k[_band_of(r["x5"][c])] if ex_k else 1.0)
+            xs = [c for c in sorted(xp, key=xp.get, reverse=True) if xp[c] >= EX_MIN_P and r["x5"].get(c) and xev(c) >= th][:3]
+            for c in xs:
+                if EX_ODDS[0] <= r["x5"][c] < EX_ODDS[1]:
+                    ex.append({"race": r["race"], "hit": c == xh, "pay": 100 * r["xfinal"].get(c, 0) if c == xh else 0})
+    return tri, ex
+
+
+def shrink_report(races: list[dict]) -> list[str]:
+    """25. 当たる組は締切までにオッズが下がる。5分前オッズの帯ごとの下がり方（前半で決める）を見込んだ期待値で選び直すと良くなるか。
+    補正B・後半を前・後に分けて確かめる。"""
+    races = sorted(races, key=lambda r: r["race"])
+    half = len(races) // 2
+    cal = sorted(_test_cal(races), key=lambda r: r["race"])
+    if len(cal) < 400:
+        return []
+    tri_k, ex_k = fit_shrink(races[:half])
+    fmt = lambda ks: "・".join(f"{SHRINK_BANDS[i]:g}〜{'' if SHRINK_BANDS[i + 1] == float('inf') else f'{SHRINK_BANDS[i + 1]:g}'}倍 {k:.2f}" for i, k in enumerate(ks))
+    cmid = cal[len(cal) // 2]["race"]
+    lines = ["\n25. 当たる組は締切までにオッズが下がる：下がり方を見込んだ期待値で選び直すと（下がり方は前半の期間で決め、補正B・後半を前・後に分けて確かめる）",
+             f"  当たった組の確定÷5分前（3連単）：{fmt(tri_k)}", f"  当たった組の確定÷5分前（2連単）：{fmt(ex_k)}",
+             f"  {_pad('', 40)}{_pad('前', 52)}後"]
+    for tag, k3, k2, th in (("今のまま（期待値1.2以上）", None, None, 1.2), ("下がり方を見込んで 1.2以上", tri_k, ex_k, 1.2),
+                            ("下がり方を見込んで 1.0以上", tri_k, ex_k, 1.0), ("下がり方を見込んで 0.9以上", tri_k, ex_k, 0.9)):
+        tri, ex = _shrink_rows(cal, k3, k2, th)
+        for kind, rows in (("3連単", tri), ("2連単", ex)):
+            lines.append(f"  {_pad(f'{kind} {tag}', 40)}{_split_cell([x for x in rows if x['race'] < cmid])}{_split_cell([x for x in rows if x['race'] >= cmid])}")
+    lines.append("  前・後の両方で「今のまま」より良い行があれば、その期待値の出し方を相談する")
+    return lines
+
+
 BAND_LOWS = (1.0, 5.0, 10.0, 15.0, 20.0)
 BAND_HIGHS = (30.0, 50.0, 80.0, 120.0, 200.0, float("inf"))
 
@@ -2171,6 +2244,14 @@ def build_entry(ml_dir: Path, raw: Path) -> str:
     return "\n".join(entry_report(races) or ["進入コースの分かる検証のレースが少なすぎます（400R未満）"])
 
 
+def build_shrink(ml_dir: Path, raw: Path) -> str:
+    """25. だけ（ev-check --shrink）。"""
+    races = load(ml_dir, raw)
+    if not races:
+        return "検証期間の確率（test_preds.csv.gz）か、オッズ履歴（odds_hist.csv）がありません。ml-train のあとに実行してください"
+    return "\n".join(shrink_report(races) or ["検証のレースが少なすぎます"])
+
+
 def build(ml_dir: Path, raw: Path) -> str:
     races = load(ml_dir, raw)
     if not races:
@@ -2220,4 +2301,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += split_report(races)
     lines += day_trend_report(races)
     lines += entry_report(races)
+    lines += shrink_report(races)
     return "\n".join(lines)

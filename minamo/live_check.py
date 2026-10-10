@@ -635,3 +635,99 @@ def more_check(data_dir: Path, state_dir: Path) -> str:
     out.append(f"  {_pad('', 34)}{ev_cell(a)}{ev_cell(b)}")
     out.append("\n前半・後半とも100%を超え、一番大きい払戻を除いても100%前後なら、記録だけの試し買いに足す候補")
     return "\n".join(out)
+
+
+def _odds_snaps(state_dir: Path) -> dict[str, list[dict]]:
+    """var/state/odds/*.jsonl（取り直すたびのオッズ）をレースごとに。"""
+    import json
+
+    out: dict[str, list[dict]] = {}
+    for f in sorted((Path(state_dir) / "odds").glob("*.jsonl")):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("race") and (row.get("t3") or row.get("t2")):
+                out.setdefault(row["race"], []).append(row)
+    return out
+
+
+def _snap_at(rows: list[dict], fix_min: float = 5.0) -> dict | None:
+    """締切 fix_min 分前より前で、最後に取ったオッズ。"""
+    got = [r for r in rows if r.get("min") is not None and r["min"] >= fix_min and r.get("t3")]
+    return max(got, key=lambda r: r["at"]) if got else None
+
+
+# オッズを見ずに決まった形で選ぶ買い方（と、くらべの試し買い）。（名前, 2連単か, 組の取り出し方）
+FILTER_KINDS = [
+    ("fm", "隊形①-②", True, lambda race: [x.get("combo") for x in race.get("fm_items") or []]),
+    ("ag", "一致", True, lambda race: [x.get("combo") for x in race.get("ag_items") or []]),
+    ("xa", "2連単 全R", True, lambda race: [x.get("combo") for x in race.get("xa_items") or []]),
+    ("time", "TIME予想", False, lambda race: list((race.get("time_pick") or {}).get("combos") or [])),
+    ("ch", "🍒 A", False, lambda race: [x.get("combo") for x in race.get("ch_items") or []]),
+    ("chb", "🍒 B", False, lambda race: list((race.get("ch_pick") or {}).get("combos_b") or [])),
+    ("main", "普通の予想", False, lambda race: [p.get("combo") for p in (race.get("ai") or {}).get("picks") or []]),
+    ("ev", "くらべ：3連単（試し）", False, lambda race: [x.get("combo") for x in race.get("ev_items") or []]),
+    ("ex", "くらべ：2連単（試し）", True, lambda race: [x.get("combo") for x in race.get("ex_items") or []]),
+]
+
+
+def ev_filter_check(data_dir: Path, state_dir: Path) -> str:
+    """決まった形の買い方（隊形・一致・全R・TIME・🍒・普通の予想）の組を、MINAMOの期待値で絞ったら回収率は上がるか（見るだけ）。
+    期待値＝補正Bの確率（3連単の試し買いと同じ。2連単は3着を足し合わせる）×締切5分前より前の最後のオッズ。1点100円、払戻は結果の配当。
+    前半・後半の日に分ける。外す組（期待値1.0未満）の成績も出す。"""
+    calib = store.ev_calib()
+    snaps = _odds_snaps(state_dir)
+    rows = {k: [] for k, *_ in FILTER_KINDS}
+    for f in sorted(Path(data_dir).glob("*/[0-9][0-9]-[0-9][0-9].json")):
+        race = store.read_json(f) or {}
+        res = race.get("result") or {}
+        if race.get("demo") or res.get("cancelled") or not res.get("trifecta") or not race.get("tri_all"):
+            continue
+        date = race.get("date") or f.parent.name
+        snap = _snap_at(snaps.get(f"{date}-{f.stem[:2]}-{f.stem[3:]}") or [])
+        if not snap:
+            continue
+        tri = sorted(race["tri_all"].items(), key=lambda kv: -kv[1])
+        tri = dict(store.calibrate(tri, snap["t3"], *calib) if calib else tri)
+        exa: dict[str, float] = {}
+        for c, p in tri.items():
+            k2 = c.rsplit("-", 1)[0]
+            exa[k2] = exa.get(k2, 0.0) + p
+        for k, _, is_ex, get in FILTER_KINDS:
+            combos = [c for c in get(race) if c]
+            if not combos:
+                continue
+            probs, odds = (exa, snap.get("t2") or {}) if is_ex else (tri, snap["t3"])
+            won, pay = (res.get("exacta"), res.get("exacta_payout")) if is_ex else (res["trifecta"], res.get("payout"))
+            for c in combos:
+                o = odds.get(c)
+                rows[k].append({"date": date, "ev": probs.get(c, 0.0) * o if o else None, "hit": c == won, "pay": (pay or 0) if c == won else 0})
+    days = sorted({x["date"] for v in rows.values() for x in v})
+    if not days:
+        return "オッズの記録と結果のそろったレースがありません"
+    mid = days[len(days) // 2]
+    out = [f"決まった形の買い方を、MINAMOの期待値で絞ったら（{days[0]}〜{days[-1]}。期待値＝補正Bの確率×締切5分前のオッズ。"
+           f"1点100円・組ごとに数える。前半＝{mid}より前・後半＝{mid}から）"]
+
+    def cell(g):
+        if not g:
+            return _pad("（なし）", 46)
+        pays = [x["pay"] for x in g if x["hit"]]
+        tot = sum(pays)
+        cut = (tot - max(pays)) / len(g) if pays else 0.0
+        return _pad(f"{len(g):>5}組 当たり{len(pays):>4} 回収率{tot / len(g):6.1f}%（最大除く{cut:6.1f}%）", 46)
+    rules = [("全部（今のまま）", lambda x: True), ("期待値1.0以上だけ", lambda x: x["ev"] is not None and x["ev"] >= 1.0),
+             ("期待値1.2以上だけ", lambda x: x["ev"] is not None and x["ev"] >= 1.2),
+             ("外す組（期待値1.0未満）", lambda x: x["ev"] is not None and x["ev"] < 1.0)]
+    for k, name, *_ in FILTER_KINDS:
+        g = rows[k]
+        if not g:
+            continue
+        out.append(f"\n■ {name}")
+        out.append(f"  {_pad('', 26)}{_pad('前半', 46)}後半")
+        for tag, keep in rules:
+            out.append(f"  {_pad(tag, 26)}{cell([x for x in g if x['date'] < mid and keep(x)])}{cell([x for x in g if x['date'] >= mid and keep(x)])}")
+    out.append("\n「期待値1.0以上だけ」が前半・後半とも「全部」より良く、100%に近づくなら、その買い方にオッズの絞りを足す候補")
+    return "\n".join(out)

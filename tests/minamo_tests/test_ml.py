@@ -2285,3 +2285,26 @@ def test_history_table():
     assert "2026-10-11 04:09" in text and "＋b" in text and "＋a" in text
     assert "最初 0.1600 → いま 0.1760（伸びている）" in text and "48.0% → 50.0%" in text
     assert "まだありません" in train.history_table([])
+
+
+def test_ev_check_shrink_report():
+    """25.：当たった組の確定÷5分前を帯ごとに求め、それを見込んだ期待値で選び直した成績を出す。"""
+    from minamo.ml import ev_check
+
+    rng = np.random.default_rng(3)
+    races = []
+    for i in range(900):
+        lanes = {l: w for l, w in zip(range(1, 7), rng.dirichlet([6, 2, 2, 1.5, 1, 1]))}
+        probs = {ev_check._key(c): x for c, x in ev_check.trifecta_probs(lanes, ev_check.PL_DECAY)}
+        t5 = {c: max(1.5, round(0.75 / x * rng.uniform(0.6, 1.6), 1)) for c, x in probs.items()}
+        hit = ev_check._key(rng.permutation(range(1, 7))[:3])
+        final = {c: round(o * (0.7 if c == hit else 1.0), 1) for c, o in t5.items()}  # 当たる組は締切までに3割下がる
+        xp = ev_check.exacta_probs(probs)
+        x5 = {c: max(1.2, round(0.75 / v * rng.uniform(0.6, 1.6), 1)) for c, v in xp.items()}
+        xfinal = {c: round(o * (0.6 if c == hit[:3] else 1.0), 1) for c, o in x5.items()}
+        races.append({"race": f"2026{i // 28 % 12 + 1:02d}{i % 28 + 1:02d}-24-{i % 12 + 1:02d}-{i:04d}", "probs": probs, "t5": t5, "final": final,
+                      "hit": hit, "x5": x5, "xfinal": xfinal, "p1": lanes[1], "post": False, "sr": {}})
+    tri_k, ex_k = ev_check.fit_shrink(races)
+    assert all(abs(k - 0.7) < 0.05 for k in tri_k) and all(abs(k - 0.6) < 0.05 for k in ex_k)
+    text = "\n".join(ev_check.shrink_report(races))
+    assert "25. 当たる組は締切までにオッズが下がる" in text and "下がり方を見込んで 1.0以上" in text and "今のまま（期待値1.2以上）" in text
