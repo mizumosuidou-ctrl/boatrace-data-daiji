@@ -549,6 +549,9 @@ main { position: relative; z-index: 2; min-height: 70vh; outline: none; }
 .seg { display: inline-flex; gap: 0; margin: 0 0 10px; border: 1px solid var(--line-2); border-radius: 999px; overflow: hidden; }
 .seg button { font: inherit; font-size: 12px; padding: 7px 14px; background: transparent; color: var(--muted); border: 0; cursor: pointer; }
 .seg button.on { background: var(--accent); color: var(--bg, #fff); font-weight: 700; }
+.seg-time { display: flex; flex-wrap: wrap; align-items: center; width: 100%; max-width: 640px; margin: -8px 0 18px; border-radius: 14px; }
+.seg-time .seg-lab { font-size: 12px; color: var(--muted); padding: 0 10px; white-space: nowrap; }
+.seg-time button { flex: 1 0 auto; white-space: nowrap; }
 .ftag { font-family: var(--f-mono); font-size: 10px; color: var(--miss); border: 1px solid currentColor; border-radius: 4px; padding: 1px 4px; margin-left: 4px; font-weight: 500; }
 .sheet table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 860px; }
 .sheet th, .sheet td { padding: 12px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }

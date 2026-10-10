@@ -297,7 +297,7 @@ function monitorHtml(day, now, filter) {
 // トップの成績：予想の種類を選んで、その種類だけで数える（main＝推奨買い目、ほかは試験中の買い方）
 const getHomeKind = () => { try { const k = localStorage.getItem("minamo-home-kind"); return REC_KINDS[k] ? k : "main"; } catch { return "main"; } };
 function homeKpisHtml(day, kind = getHomeKind()) {
-  const seg = `<div class="seg home-kind" role="group" aria-label="成績の予想">${Object.entries(REC_KINDS).map(([k, x]) => `<button type="button" data-kind="${k}" class="${k === kind ? "on" : ""}">${x.label}</button>`).join("")}</div>`;
+  const seg = kindSegHtml(REC_KINDS, kind, "home-kind", "成績の予想");
   return `<div class="home-kpis">${seg}${kind === "main" && !getSkipIn() ? kpisHtml(day.totals) : kindKpisHtml(kind)}</div>`;
 }
 // トップ：選んだ予想で的中したレースを締切の順に（今日＝選んでいる日、または直近30日）
@@ -1180,6 +1180,22 @@ const PICK_KIND = {
   fm: { label: "隊形①-②", rule: "①〜④の平均スタート順位の並び（スタート隊形）が ①〈③②④（③が一番速く、②、④の順で、①より速い艇がいる）のとき、2連単 ①-② を1点", check: "過去の検証（609レース）で回収率115%（前半・後半とも115%前後、一番大きな払戻を除いて108%）" },
   time: { label: "TIME", rule: "TIME予想（あなたの予想方法）：通常予想（MINAMO）を土台に、レースタイムの良い選手（キーマン）を必ず入れる3連単。キーマンが居なければ見送り。DEEP予想はMINAMOの統計モデル、全国RT順位は節内の順位で代用", check: "500レースまでは検証運用（成績の良い日だけで判断しない）" },
 };
+// 決める時刻：5分前に固定した本番と、同じルールで3分前・2分前・1分前に決め直した記録（お金はかけない）
+const LATE_OF = { ev: ["ev3", "ev2", "ev1"], ex: ["ex3", "ex2", "ex1"] };
+const baseOf = (k) => (/^(ev|ex)[123]$/.test(k) ? k.slice(0, 2) : k);
+for (const [b, ks] of Object.entries(LATE_OF)) for (const k of ks) {
+  PICK_KIND[k] = { label: `${PICK_KIND[b].label} ${k.slice(-1)}分前`, late: true,
+    rule: `${PICK_KIND[b].rule}。これを締切${k.slice(-1)}分前のオッズで決め直す（記録だけ。締切${k.slice(-1)}分前になると出ます）`,
+    check: `お金はかけない記録です（5分前に決めた本番と比べるため）。本番は${PICK_KIND[b].check}` };
+}
+// 選び方のボタン（3分前・2分前・1分前は、3連単・2連単を選んだときの「決める時刻」の段に出す）
+function kindSegHtml(table, kind, cls, label) {
+  const base = baseOf(kind);
+  const main = `<div class="seg ${cls}" role="group" aria-label="${label}">${Object.entries(table).filter(([k]) => baseOf(k) === k).map(([k, x]) => `<button type="button" data-kind="${k}" class="${k === base ? "on" : ""}">${x.label}</button>`).join("")}</div>`;
+  if (!LATE_OF[base] || !LATE_OF[base].every((k) => table[k])) return main;
+  const times = [[base, "5分前（本番）"], ...LATE_OF[base].map((k) => [k, `${k.slice(-1)}分前（記録）`])];
+  return `${main}<div class="seg seg-time" role="group" aria-label="決める時刻"><span class="seg-lab">決める時刻</span>${times.map(([k, n]) => `<button type="button" data-kind="${k}" class="${k === kind ? "on" : ""}">${n}</button>`).join("")}</div>`;
+}
 // 組ごとの金額で当たったときの払戻の幅（100円単位にそろえるので、組によって少しずれる）
 const payRange = (items, stakes) => {
   const v = items.map((x, i) => Math.round(stakes[i] * x.odds));
@@ -1192,10 +1208,10 @@ const compositeOf = (items) => { const inv = items.reduce((a, x) => a + (x.odds 
 const STAKE_DEFAULT = { ev: { bank: 100000, how: "kelly", flat: 100, cap: 1000 }, ex: { bank: 100000, how: "kelly", flat: 300, cap: 3000 }, co: { budget: 500 }, fm: { how: "flat", flat: 100 }, ag: { how: "flat", flat: 100 }, ch: { how: "flat", flat: 100 }, xa: { how: "flat", flat: 100 } };
 function getStake(k) {
   let v = {};
-  try { v = JSON.parse(localStorage.getItem(`minamo-stake-${k}`) || "{}") || {}; } catch { /* 読めなければ既定 */ }
-  return { ...STAKE_DEFAULT[k], ...v };
+  try { v = JSON.parse(localStorage.getItem(`minamo-stake-${baseOf(k)}`) || "{}") || {}; } catch { /* 読めなければ既定 */ }
+  return { ...STAKE_DEFAULT[baseOf(k)], ...v };
 }
-function setStake(k, v) { try { localStorage.setItem(`minamo-stake-${k}`, JSON.stringify(v)); } catch { /* 保存できなくても表示はする */ } }
+function setStake(k, v) { try { localStorage.setItem(`minamo-stake-${baseOf(k)}`, JSON.stringify(v)); } catch { /* 保存できなくても表示はする */ } }
 // 1点の金額（円）。ケリー1/4：資金×(確率×オッズ−1)/(オッズ−1)×1/4、資金の5%と上限まで、100円単位（最低100円）。期待値1以下は0円
 function stakeFor(x, s) {
   if (s.how === "flat") return s.flat;
@@ -1203,7 +1219,7 @@ function stakeFor(x, s) {
   const f = (x.p * x.odds - 1) / (x.odds - 1);
   return Math.round(Math.max(0, Math.min(s.bank * f * 0.25, s.bank * 0.05, s.cap)) / 100) * 100;
 }
-const EXACTA_KINDS = ["ex", "fm", "ag", "xa"];
+const EXACTA_KINDS = ["ex", "fm", "ag", "xa", "ex3", "ex2", "ex1"];
 const FLAT_KINDS = ["fm", "ag", "ch", "xa"];  // 決まった形の買い方（平掛けだけ）
 const pickRes = (r, k) => (EXACTA_KINDS.includes(k) ? r.result_ex : r.result);
 const pickPay = (r, k) => (EXACTA_KINDS.includes(k) ? r.payout_ex : r.payout);
@@ -1261,7 +1277,8 @@ const PICK_COMPARE = {
   time: ["あなたの予想方法の検証", "MINAMOの本線に、レースタイムの良い選手（キーマン）を必ず入れる3連単", "見ない", "キーマンがいるレースだけ", "締切5分前に決めて固定", "中くらい（2割前後）", "500レースまでは判断しない（仮想資金で数える）"],
 };
 function compareHtml(k) {
-  const col = PICK_COMPARE[k];
+  const late = PICK_COMPARE[baseOf(k)] && k !== baseOf(k);
+  const col = late ? PICK_COMPARE[baseOf(k)].map((v, i) => (i === 4 ? `締切${k.slice(-1)}分前に、同じルールで決め直す（記録だけ。お金はかけない）` : v)) : PICK_COMPARE[k];
   if (!col) return "";
   return `<div class="section-head" style="margin-top:34px"><div><h2 class="section-title">普通の予想との違い<small>「普通の予想」は当たりやすい組、「買い候補」はオッズや決まった形で選んだ組。目的が違います</small></h2></div></div>
     <div class="panel sheet"><table class="compare-t"><thead><tr><th></th><th>普通の予想（推奨買い目）</th><th>${esc(PICK_KIND[k].label)}（買い候補）</th></tr></thead>
@@ -1315,10 +1332,10 @@ async function renderPicks(refresh = false, k = getPickKind()) {
   const refB = k === "fm" ? allRaces().filter((r) => (r.fmb_pick || []).length).sort((a, b) => b.deadline.localeCompare(a.deadline)) : [];
   const y = scrollY;
   $("#main").innerHTML = `<div class="wrap"><section class="section">
-    <div class="seg seg-big" role="group" aria-label="選び方" id="pickKind">${Object.entries(PICK_KIND).map(([kk, x]) => `<button type="button" data-kind="${kk}" class="${kk === k ? "on" : ""}">${x.label}</button>`).join("")}</div>
+    <div id="pickKind">${kindSegHtml(PICK_KIND, k, "seg-big", "選び方")}</div>
     <div id="skipIn">${skipInHtml()}</div>
     <span class="eyebrow">${fmtDate(date)}（${weekday(date)}）</span>
-    <p class="pick-points"><span class="chip src-claude">${esc(PICK_KIND[k].label)}</span> 1レース <b>${esc(PICK_POINTS[k] || "")}</b>${ptsAvg ? `（今日の平均 ${ptsAvg}点・合計 ${ptsSum}点）` : ""}</p>
+    <p class="pick-points"><span class="chip src-claude">${esc(PICK_KIND[k].label)}</span> 1レース <b>${esc(PICK_POINTS[k] || PICK_POINTS[baseOf(k)] || "")}</b>${ptsAvg ? `（今日の平均 ${ptsAvg}点・合計 ${ptsSum}点）` : ""}</p>
     <h1 class="section-title" style="font-size:clamp(36px,5vw,72px)">今買う候補<small>試験中の選び方（${PICK_KIND[k].label}）：${PICK_KIND[k].rule}。無ければ見送り。${PICK_KIND[k].check}でしたが、まだ試験中です</small></h1>
     ${k === "time" ? `<p class="small muted" style="margin:0 0 6px">仮想資金で数える検証用です（実際の購入の指示ではありません）。1点の金額は設定（通常予想が6点なら6点×1点の金額、そうでなければ12点）のままです。</p>` : k === "co" ? `<form class="panel stake-form" id="stakeForm" onsubmit="return false">
       <label>1レースの金額<input type="number" inputmode="numeric" name="budget" min="100" step="100" value="${s.budget}">円</label>
@@ -1619,6 +1636,14 @@ const REC_KINDS = {
   time: { label: "TIME", note: "TIME予想を仮想資金で", bought: (r) => r.time_bought, hit: (r) => r.time_hit, stake: (r) => r.time_stake, ret: (r) => r.time_return,
     res: (r) => r.result, pay: (r) => r.payout, picks: (r) => r.time_pick, rank: (r) => r.time_rank },
 };
+for (const [b, ks] of Object.entries(LATE_OF)) for (const k of ks) {
+  const ex = b === "ex";
+  REC_KINDS[k] = { label: `${REC_KINDS[b].label} ${k.slice(-1)}分前`, late: true,
+    note: `${ex ? "2連単" : "3連単"}（試し）を締切${k.slice(-1)}分前に同じルールで決め直した組（記録だけ）を1点1,000円`,
+    bought: (r) => r[`${k}_bought`], hit: (r) => r[`${k}_hit`], stake: (r) => r[`${k}_stake`], ret: (r) => r[`${k}_return`],
+    res: (r) => (ex ? r.result_ex : r.result), pay: (r) => (ex ? r.payout_ex : r.payout), picks: (r) => r[`${k}_pick`],
+    rank: (r) => rankIn(r[`${k}_pick`], ex ? r.result_ex : r.result) };
+}
 const getRecKind = () => { try { const k = localStorage.getItem("minamo-rec-kind"); return REC_KINDS[k] ? k : "main"; } catch { return "main"; } };
 function sumRaces(races, kind = "main") {
   const K = REC_KINDS[kind];
@@ -1695,7 +1720,7 @@ function recBoardHtml(days, kind) {
   for (const d of days.slice(-30)) for (const v of d.venues) (byV[v.jcd] = byV[v.jcd] || { name: v.name, races: [] }).races.push(...v.races);
   const vrows = Object.values(byV).map((x) => ({ ...x, t: sumRaces(x.races, kind) })).filter((x) => x.t.races)
     .sort((a, b) => b.t.ret / b.t.stake - a.t.ret / a.t.stake);
-  return `<div class="seg seg-big" role="group" aria-label="成績の予想" id="recKind">${Object.entries(REC_KINDS).map(([k, x]) => `<button type="button" data-kind="${k}" class="${k === kind ? "on" : ""}">${x.label}</button>`).join("")}</div>
+  return `<div id="recKind">${kindSegHtml(REC_KINDS, kind, "seg-big", "成績の予想")}</div>
     <p class="small muted" style="margin:0 0 10px">${esc(K.note)}で買った場合。見送りのレースは数えません。${settled.length ? "" : "まだ結果のあるレースがありません。"}</p>
     <div class="rb-tiles">${periods.map(tile).join("")}</div>
     <div class="section-head" style="margin-top:22px"><div><h3 class="ledger-title">場別の総合成績（直近30日・${esc(K.label)}）</h3><p class="muted small">回収率の高い順。レースが少ない場は、たまたまの差が大きいので注意</p></div></div>
