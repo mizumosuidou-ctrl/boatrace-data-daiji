@@ -420,3 +420,87 @@ def breakdown(data_dir: Path) -> str:
             for tag in sorted(seen, key=lambda t: (float(re.match(r"[\d.]+", t).group()) if re.match(r"[\d.]+", t) else 999, t)):
                 out.append(line(tag, seen[tag]))
     return "\n".join(x for x in out if x)
+
+
+REVIEW_KINDS = (("picks", "普通の予想"), ("ev", "3連単（試し）"), ("ex", "2連単（試し）"), ("ex2", "2連単 2分前"), ("xa", "2連単 全R"),
+                ("fm", "隊形"), ("ag", "一致"), ("ch", "🍒A"))
+
+
+def day_review(data_dir: Path, date: str, jcd: str | None = None) -> str:
+    """その日のレースを1つずつ振り返る（負けが続いた日の敗因探し。見るだけ）。
+    結果の人気と払戻・MINAMOがその結果を120通りの何番目に見ていたか・1着のコース・イン逃げ指数・買い方ごとの組と当たり。
+    jcd を省くと、場ごとのまとめだけ（その場がほかの場と比べて荒れていたか）。"""
+    files = sorted((Path(data_dir) / date).glob("[0-9][0-9]-[0-9][0-9].json"))
+    races = []
+    for f in files:
+        race = store.read_json(f) or {}
+        res = race.get("result") or {}
+        if race.get("demo") or res.get("cancelled") or not res.get("trifecta"):
+            continue
+        tri_all = race.get("tri_all") or {}
+        ranked = sorted(tri_all, key=tri_all.get, reverse=True)
+        res_tri = res["trifecta"]
+        boats = {b.get("boat"): b for b in (race.get("prediction") or {}).get("boats") or []}
+        win_boat = int(res_tri.split("-")[0])
+        races.append({"jcd": f.stem[:2], "rno": int(f.stem[3:]), "venue": (race.get("venue") or {}).get("name", f.stem[:2]),
+                      "race": race, "res": res, "rank": ranked.index(res_tri) + 1 if res_tri in ranked else None,
+                      "p": tri_all.get(res_tri), "win_course": (boats.get(win_boat) or {}).get("course"),
+                      "esc": ((race.get("prediction") or {}).get("escape") or {})})
+    if not races:
+        return f"{date} の結果の出たレースがありません"
+
+    def summary(g):
+        n = len(g)
+        in1 = sum(r["win_course"] == 1 for r in g)
+        top10 = sum(r["rank"] is not None and r["rank"] <= 10 for r in g)
+        pops = [r["res"].get("popularity") for r in g if r["res"].get("popularity")]
+        big = sum((r["res"].get("payout") or 0) >= 10000 for r in g)
+        return (f"{n:>2}R ①（1コース）1着 {in1:>2}R（{100 * in1 / n:3.0f}%） 結果がMINAMOの上位10組 {top10:>2}R（{100 * top10 / n:3.0f}%）"
+                f" 結果の人気 平均{np.mean(pops) if pops else float('nan'):5.1f}番 万舟 {big}R")
+
+    out = [f"{date} の振り返り（見るだけ。予想は変えない）", "\n■ 場ごと（荒れ方の比べ）"]
+    by = {}
+    for r in races:
+        by.setdefault((r["jcd"], r["venue"]), []).append(r)
+    for (j, name), g in sorted(by.items()):
+        out.append(f"  {_pad(name, 6)}{summary(g)}")
+    out.append(f"  {_pad('全場', 6)}{summary(races)}")
+    if not jcd:
+        return "\n".join(out)
+    g = sorted([r for r in races if r["jcd"] == jcd.zfill(2)], key=lambda r: r["rno"])
+    if not g:
+        return "\n".join(out + [f"\n場 {jcd} のレースがありません"])
+    out.append(f"\n■ {g[0]['venue']} のレースごと")
+    tally = {k: [0, 0, 0, 0] for k, _ in REVIEW_KINDS}  # 買ったレース・当たり・投資・払戻
+    for r in g:
+        race, res, st = r["race"], r["res"], r["race"].get("settle") or {}
+        esc = r["esc"]
+        rank = f"{r['rank']}番目（{100 * r['p']:.1f}%）" if r["rank"] else "--"
+        out.append(f"  {r['rno']:>2}R 結果 {res['trifecta']}（{res.get('popularity') or '-'}番人気 {res.get('payout') or 0:,}円）"
+                   f" 2連単 {res.get('exacta')}（{res.get('exacta_popularity') or '-'}番人気） {res.get('kimarite') or ''}"
+                   f" 1着 {r['win_course'] or '-'}コース")
+        out.append(f"      MINAMO：イン逃げ指数 {esc.get('index', '-')}（{esc.get('label', '')}） 結果は120通りの {rank}")
+        for k, name in REVIEW_KINDS:
+            if k == "picks":
+                combos = [p["combo"] for p in (race.get("ai") or {}).get("picks") or []]
+                hit, stake, ret = st.get("trifecta_hit"), st.get("stake"), st.get("return")
+            else:
+                if not st.get(f"{k}_bought"):
+                    continue
+                combos = [x.get("combo") for x in race.get(f"{k}_items") or []]
+                hit, stake, ret = st.get(f"{k}_hit"), st.get(f"{k}_stake"), st.get(f"{k}_return")
+            if not combos:
+                continue
+            t = tally[k]
+            t[0] += 1
+            t[1] += bool(hit)
+            t[2] += stake or 0
+            t[3] += ret or 0
+            shown = " ".join(combos[:9]) + (" …" if len(combos) > 9 else "")
+            out.append(f"      {'◎' if hit else '✕'} {_pad(name, 14)}{shown}")
+    out.append(f"\n■ {g[0]['venue']} の買い方ごと（この日）")
+    for k, name in REVIEW_KINDS:
+        n, h, s, ret = tally[k]
+        if n:
+            out.append(f"  {_pad(name, 14)}{n:>2}R 当たり{h:>2} 回収率 {100 * ret / s if s else 0:6.1f}%")
+    return "\n".join(out)
