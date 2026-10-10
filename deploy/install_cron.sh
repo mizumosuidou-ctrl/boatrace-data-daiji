@@ -18,6 +18,8 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 5 8 * * 1 root cd /opt/minamo/deploy && docker compose run --rm worker python -m minamo weekly --send >> /opt/minamo/var/cron_weekly.log 2>&1
 # 8時〜23時台の毎分（ミッドナイト開催の最終Rは22時台後半まで）：レースタイムモニターの今日の予想（1番手）を書き出す（試し買い「一致」が締切前に読む。データベースは読むだけ）
 * 8-23 * * * root /opt/minamo/deploy/rtm_live.sh >> /opt/minamo/var/cron_rtm_live.log 2>&1
+# 10分おき：見張り（コンテナ・サイト・一覧の更新・RTモニターの収集・学習・ディスク・バックアップ）。異常のときだけ Discord に送る（読むだけ）
+*/10 * * * * root /usr/bin/python3 /opt/minamo/minamo/watchdog.py >> /opt/minamo/var/cron_watchdog.log 2>&1
 CRON
 chmod 644 /etc/cron.d/minamo
 echo "登録しました（サーバーの時刻 $(date '+%F %H:%M %Z')）:"
