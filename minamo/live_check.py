@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -354,3 +355,65 @@ def odds_compare(data_dir: Path, raw: Path) -> str:
         lines.append(f"  確定 ÷ データベースのT5  中央値 {med(fin_t5)}  平均 {avg(fin_t5)}（{len(fin_t5):,}組。検証はこの下がり方で数えている）")
     lines.append("\n見方：「実戦÷T5」が1に近い＝検証と同じ物差し。1よりはっきり大きい＝実戦は検証より早い（薄い）オッズで決めていて、検証の回収率が甘く出ている")
     return "\n".join(lines)
+
+
+def _band(v, edges, fmt):
+    for lo, hi in zip(edges, edges[1:]):
+        if lo <= v < hi:
+            return fmt(lo, hi)
+    return fmt(edges[-1], None)
+
+
+def breakdown(data_dir: Path) -> str:
+    """実戦の試し買い（3連単・2連単）を、買った組ひとつずつに分けて、どこで勝ち負けしているかを見る。
+    組ごとの回収率＝その組を1点100円で買い続けたときの払戻÷投資。数が少ない区分は偶然が大きい。"""
+    rows = {k: [] for k in ("ev", "ev3", "ev2", "ev1", "ex", "ex3", "ex2", "ex1")}
+    for f in sorted(Path(data_dir).glob("*/[0-9][0-9]-[0-9][0-9].json")):
+        race = store.read_json(f) or {}
+        res = race.get("result") or {}
+        if race.get("demo") or res.get("cancelled") or not res.get("trifecta"):
+            continue
+        esc = ((race.get("prediction") or {}).get("escape") or {}).get("index")
+        for k in rows:
+            items = race.get(f"{k}_items") or []
+            exa = k.startswith("ex")
+            won, pay = (res.get("exacta"), res.get("exacta_payout")) if exa else (res.get("trifecta"), res.get("payout"))
+            for i, it in enumerate(items):
+                if not it.get("odds"):
+                    continue
+                hit = it["combo"] == won
+                rows[k].append({"date": race.get("date") or f.parent.name, "odds": float(it["odds"]), "ev": float(it.get("ev") or 0),
+                                "p": float(it.get("p") or 0), "rank": i + 1, "n": len(items), "head": it["combo"].split("-")[0],
+                                "esc": esc, "hit": hit, "pay": (pay or 0) if hit else 0})
+    out = ["実戦の試し買いを、買った組ひとつずつで分けた成績（1点100円。回収率＝払戻÷投資。当たりが少ない区分は偶然が大きい）"]
+
+    def line(tag, g):
+        if not g:
+            return None
+        n, h, ret = len(g), sum(x["hit"] for x in g), sum(x["pay"] for x in g)
+        return f"    {_pad(tag, 22)}{n:>5}組 当たり{h:>3} 回収率 {ret / n:6.1f}%"
+
+    groups = [
+        ("決めたときのオッズ", lambda x: _band(x["odds"], [0, 10, 15, 20, 30, 50, 80, 120, 200], lambda a, b: f"{a:g}〜{b:g}倍" if b else f"{a:g}倍〜")),
+        ("期待値", lambda x: _band(x["ev"], [0, 1.2, 1.3, 1.5, 2.0, 3.0], lambda a, b: f"{a:g}〜{b:g}" if b else f"{a:g}〜")),
+        ("確率", lambda x: _band(x["p"], [0, 0.01, 0.02, 0.03, 0.05, 0.08], lambda a, b: f"{100 * a:g}〜{100 * b:g}%" if b else f"{100 * a:g}%〜")),
+        ("そのレースの何点目（確率順）", lambda x: f"{x['rank']}点目" if x["rank"] <= 4 else "5点目以降"),
+        ("そのレースの点数", lambda x: "1点" if x["n"] == 1 else "2〜3点" if x["n"] <= 3 else "4〜6点" if x["n"] <= 6 else "7点以上"),
+        ("頭（1着）の艇", lambda x: "①頭" if x["head"] == "1" else "①以外の頭"),
+        ("イン逃げ指数", lambda x: "--" if x["esc"] is None else _band(x["esc"], [0, 40, 55, 70, 85], lambda a, b: f"{a}〜{b}" if b else f"{a}〜")),
+    ]
+    for k, name in (("ev", "3連単（試し）5分前"), ("ev3", "3連単 3分前"), ("ev2", "3連単 2分前"), ("ev1", "3連単 1分前"),
+                    ("ex", "2連単（試し）5分前"), ("ex3", "2連単 3分前"), ("ex2", "2連単 2分前"), ("ex1", "2連単 1分前")):
+        rs = rows[k]
+        if not rs:
+            continue
+        out.append(f"\n■ {name}：{len(rs):,}組（{rs[0]['date']}〜{rs[-1]['date']}）")
+        out.append(line("全部", rs))
+        for gname, key in groups:
+            out.append(f"  {gname}")
+            seen = {}
+            for x in rs:
+                seen.setdefault(key(x), []).append(x)
+            for tag in sorted(seen, key=lambda t: (float(re.match(r"[\d.]+", t).group()) if re.match(r"[\d.]+", t) else 999, t)):
+                out.append(line(tag, seen[tag]))
+    return "\n".join(x for x in out if x)
