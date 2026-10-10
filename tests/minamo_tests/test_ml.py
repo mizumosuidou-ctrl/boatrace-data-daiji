@@ -2027,6 +2027,7 @@ def test_ex_select_finds_a_real_edge_and_does_not_invent_one(monkeypatch):
     nothing = ex_select.build(_ex_races(1500, edge=False, seed=2), sims=60, min_bets=100)
     assert "偶然と区別できる" in real and "100%を超えたと言える" in real
     assert "偶然と区別できない" in nothing and "100%を超えたと言える" not in nothing
+    assert "週ごとの回収率" in real and "選んだ候補：" in real and "今の本番：" in real
     # 本当の優位が無い世界では、前半の最良が高く見えても、後半は市場の回収率（約75%）に戻る
     back = float(nothing.split("後半の回収率 ")[1].split("%")[0])
     assert back < 95

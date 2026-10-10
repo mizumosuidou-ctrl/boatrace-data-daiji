@@ -11,6 +11,7 @@ ev-check の「8. 2連単の買い方を細かく」は、前半と後半を目�
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from itertools import permutations
 from pathlib import Path
 from typing import Optional
@@ -171,6 +172,20 @@ def build(races: list[dict], split: float = 0.6, sims: int = 300, seed: int = 0,
     prod = cands.index(PROD) if PROD in cands else None
     if prod is not None:
         lines += ["", f"■ 今の本番の買い方（{describe(PROD)}）：前半 {100 * roi_a[prod]:.1f}%（{nb_a[prod]}R）→ 後半 {100 * roi_b[prod]:.1f}%（{nb_b[prod]}R）"]
+    # 週ごとの回収率：優位が最近の週で薄れていないか（市場が変わった／実戦との食い違いの手がかり）
+    weeks: dict[str, list[int]] = {}
+    for i, r in enumerate(rs):
+        d = datetime.strptime(str(r["race"])[:8], "%Y%m%d")
+        monday = d - timedelta(days=d.weekday())
+        weeks.setdefault(monday.strftime("%m/%d"), []).append(i)
+    lines += ["", "■ 週ごとの回収率（週の始まりの月曜。買ったレース数つき。優位が最近の週で薄れていないか）"]
+    series = [("選んだ候補", best)] + ([("今の本番", prod)] if prod is not None else [])
+    for name, k in series:
+        cells = []
+        for wk, idx in weeks.items():
+            roi_w, nb_w = _roi(stake[k:k + 1], pay[k:k + 1], np.array(idx))
+            cells.append(f"{wk} {100 * roi_w[0]:.0f}%({int(nb_w[0])}R)" if nb_w[0] >= 20 else f"{wk} -")
+        lines.append(f"　{name}：" + "　".join(cells))
     lines += ["", f"■ 前半の回収率と後半の回収率の順位相関（{len(both)}候補）：{rho:+.2f}" +
               ("　→ 前半で良かった候補が後半でも良い傾向はほぼ無い（前半での選び分けは、ほぼ偶然）" if rho < 0.2 else
                "　→ 前半で良かった候補は、後半でもある程度良い傾向がある（選び分けに意味がある）")]
