@@ -2181,6 +2181,45 @@ def test_upset_too_few_races_says_so(tmp_path):
     assert upset.wind_table(tmp_path) == {}
 
 
+def _rt_world(n=700, informative=False, seed=21):
+    """レースタイム上位の検証用の模擬：艇ごとの順位。informative=True なら、順位が上の艇ほど強い（MINAMOは知らない）。"""
+    races, _ = _upset_world(n=n, edge=False, seed=seed)
+    rng = np.random.default_rng(seed)
+    ranks = {}
+    for r in races:
+        order = list(rng.permutation(6) + 1)
+        if informative:                                   # 勝った艇のレースタイムを上位にする（情報がある世界）
+            win = int(r["hit"][0])
+            order = [win] + [l for l in order if l != win]
+        ranks[r["race"]] = {int(l): i + 1 for i, l in enumerate(order)}
+    return races, ranks
+
+
+def test_rt_check_reports_sections_and_detects_informative_ranks():
+    from minamo.ml import rt_check
+
+    races, ranks = _rt_world(informative=True)
+    text = rt_check.build(races, ranks)
+    for head in ("■ A.", "■ B.", "■ C."):
+        assert head in text
+    win1 = float(text.split("レースタイム1位：")[1].split("1着 実際 ")[1].split("%")[0])
+    assert win1 > 90                                       # 勝った艇が必ず1位の世界
+    races, ranks = _rt_world(informative=False)
+    none = rt_check.build(races, ranks)
+    win1 = float(none.split("レースタイム1位：")[1].split("1着 実際 ")[1].split("%")[0])
+    assert win1 < 40                                       # 順位に情報が無い世界では、1位の艇の勝率は普通
+
+
+def test_rt_check_rank_table_and_few_races():
+    import pandas as pd
+    from minamo.ml import rt_check
+
+    rows = pd.DataFrame({"race_id": ["r1"] * 6 + ["r2"] * 3, "lane": list(range(1, 7)) + [1, 2, 3],
+                         "rt_rank_race": [3, 1, 2, 4, 5, 6, 1, 2, 3]})
+    t = rt_check.rank_table(rows, {"r1", "r2"})
+    assert t == {"r1": {1: 3, 2: 1, 3: 2, 4: 4, 5: 5, 6: 6}}         # 順位が付いた艇が4艇未満のレースは使わない
+    assert "少なすぎ" in rt_check.build(_rt_world(n=50)[0], {})
+
 def test_ev_check_day_trend():
     """23.：同じ日・同じ場で、あるコースが見込みより勝ち続ける日を作ると、当日の傾向を入れた方が後半でも1着を当てやすい。"""
     from minamo.ml import ev_check

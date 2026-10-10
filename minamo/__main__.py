@@ -14,6 +14,7 @@
   python -m minamo ml-ex-select     2連単の買い方を、偶然を差し引いて選ぶ（前半で選び、後半で確かめる。読むだけ）
   python -m minamo ml-live-compare  バックテストの買い方と実戦の記録を、同じレースで並べる（食い違いの切り分け。読むだけ）
   python -m minamo ml-upset         イン逃しの検証（①が負けるレースの見分け・勝ち艇の当て・①頭でない買い方。読むだけ）
+  python -m minamo ml-rt-check      レースタイム上位の艇を着候補にする買い方の検証（読むだけ）
   python -m minamo multi-check      買い方の多重比較の点検（補正しても100%を超えたと言えるか。読むだけ）
   python -m minamo audit            成績の自動点検（投資・当たり・払戻・合計のつじつま。読むだけ）
   python -m minamo ml-cv            期間をずらして何回か、特徴量を1つずつ外して効き方を比べる（予想は変えない）
@@ -136,6 +137,8 @@ def main() -> None:
     mlc.add_argument("--days", type=int, default=14, help="実戦の直近何日を使うか")
     mus = sub.add_parser("ml-upset", help="イン逃しの検証：①が負けるレースを見分けられるか、勝ち艇を当てられるか、①頭でない買い方は得か（読むだけ）")
     mus.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
+    mrt = sub.add_parser("ml-rt-check", help="レースタイム上位の艇を着候補にする買い方を、検証期間で確かめる（読むだけ）")
+    mrt.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
     mmc = sub.add_parser("multi-check", help="買い方の多重比較の点検：複数の買い方をまとめて判定して、補正しても100%を超えたと言えるか（読むだけ）")
     mmc.add_argument("--url", nargs="?", const="__site__", default=None, help="公開サイトを点検する（URL を省くと既定のサイト）。省くとサーバーの data フォルダ")
     mmc.add_argument("--days", type=int, default=60, help="直近何日を使うか")
@@ -293,6 +296,10 @@ def main() -> None:
         from .ml import live, upset
 
         print(upset.run(live.ML_DIR, Path(args.raw or live.ML_DIR / "raw")))
+    elif args.cmd == "ml-rt-check":
+        from .ml import live, rt_check
+
+        print(rt_check.run(live.ML_DIR, Path(args.raw or live.ML_DIR / "raw")))
     elif args.cmd == "multi-check":
         from . import audit, multi, notify
 
