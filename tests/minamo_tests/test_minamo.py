@@ -1192,6 +1192,32 @@ def test_live_breakdown_by_combo(tmp_path):
     assert "20〜30倍" in out and "当たり  1 回収率 2500.0%" in out and "1点目" in out and "①頭" in out
 
 
+
+def test_live_day_review(tmp_path):
+    """負けが続いた日の振り返り：場ごとの荒れ方と、その場のレースごとの結果・MINAMOの見立て・買い方ごとの組。"""
+    from minamo import live_check
+
+    tmp = tmp_path
+    (tmp / "20261010").mkdir()
+    boats = [{"boat": b, "course": b} for b in range(1, 7)]
+    for jcd, rno, res, pop, pay in (("07", 1, "4-1-2", 45, 12340), ("07", 2, "1-2-3", 1, 800), ("01", 1, "1-2-3", 2, 900)):
+        store.write_json(tmp / "20261010" / f"{jcd}-{rno:02d}.json", {
+            "date": "20261010", "rno": rno, "venue": {"name": "蒲郡" if jcd == "07" else "桐生"},
+            "result": {"trifecta": res, "payout": pay, "popularity": pop, "exacta": res[:3], "exacta_popularity": 3, "kimarite": "まくり"},
+            "prediction": {"boats": boats, "escape": {"index": 82, "label": "逃げ優勢"}},
+            "tri_all": {"1-2-3": 0.2, "1-3-2": 0.1, "4-1-2": 0.01},
+            "ai": {"picks": [{"combo": "1-2-3"}, {"combo": "1-3-2"}]},
+            "settle": {"trifecta_hit": res == "1-2-3", "stake": 200, "return": pay if res == "1-2-3" else 0,
+                       "ev_bought": True, "ev_hit": False, "ev_stake": 100, "ev_return": 0},
+            "ev_items": [{"combo": "1-3-2"}]})
+    out = live_check.day_review(tmp, "20261010")
+    assert "蒲郡" in out and "桐生" in out and "万舟 1R" in out and "レースごと" not in out
+    out = live_check.day_review(tmp, "20261010", "07")
+    assert "■ 蒲郡 のレースごと" in out and "4-1-2（45番人気 12,340円）" in out and "1着 4コース" in out
+    assert "120通りの 3番目（1.0%）" in out and "✕ 3連単（試し）" in out and "◎ 普通の予想" in out
+    assert "2R 当たり 1 回収率  200.0%" in out and "2R 当たり 0 回収率    0.0%" in out
+
+
 def _audit_race(rno=1, **kw):
     """点検用の1レース：3連単1-2-3（配当1,400）・2連単1-2（配当490）。買い目は6点、当たり。"""
     r = {"rno": rno, "deadline": "10:00", "result": "1-2-3", "payout": 1400, "result_ex": "1-2", "payout_ex": 490, "cancelled": False,
