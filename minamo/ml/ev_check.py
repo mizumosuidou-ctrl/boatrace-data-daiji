@@ -1856,6 +1856,118 @@ def split_report(races: list[dict]) -> list[str]:
     return lines
 
 
+# 23. 当日の場の傾向：同じ日・同じ場の、それより前のレースで「コースごとの1着の数 − MINAMOの見込み」を数え、
+# 残りのレースの1着確率に exp(β × 驚き ÷ (前のレース数 + TREND_K)) をかける（前のレースが少ないうちは小さく効く）
+TREND_K = 3.0
+TREND_BETAS = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+
+
+def _course_p(r: dict) -> dict[int, float]:
+    """コース → MINAMOの1着確率（合計1）。"""
+    co, pl = r["course_of"], r["p_lane"]
+    tot = sum(pl.values()) or 1.0
+    return {co[l]: v / tot for l, v in pl.items() if l in co}
+
+
+def _win_course(r: dict) -> int | None:
+    return (r.get("course_of") or {}).get(int(r["hit"].split("-")[0]))
+
+
+def day_trend(races: list[dict]) -> list[dict]:
+    """各レースに、同じ日・同じ場のそれより前のレースの数（tr_n）と、コースごとの「実際の1着 − MINAMOの見込み」（tr_s[コース]）をつける。
+    前のレースは結果が出ているもの（レース番号が小さいもの）だけ。進入コースが分からないレースは入れない。"""
+    groups: dict[str, list[dict]] = {}
+    for r in races:
+        if r.get("p_lane") and len(r.get("course_of") or {}) == 6 and len(r["p_lane"]) == 6:
+            groups.setdefault(r["race"][:11], []).append(r)
+    out = []
+    for g in groups.values():
+        g.sort(key=lambda r: r["race"])
+        obs, exp = np.zeros(7), np.zeros(7)
+        for n, r in enumerate(g):
+            out.append({**r, "tr_n": n, "tr_s": (obs - exp).copy()})
+            for c, v in _course_p(r).items():
+                exp[c] += v
+            wc = _win_course(r)
+            if wc:
+                obs[wc] += 1
+    return sorted(out, key=lambda r: r["race"])
+
+
+def trend_lane_p(r: dict, beta: float) -> dict[int, float]:
+    """当日の傾向で直した艇ごとの1着確率（合計1）。beta=0 なら元のまま。"""
+    co, pl = r["course_of"], r["p_lane"]
+    w = {l: v * float(np.exp(beta * r["tr_s"][co[l]] / (r["tr_n"] + TREND_K))) for l, v in pl.items()}
+    tot = sum(w.values()) or 1.0
+    return {l: v / tot for l, v in w.items()}
+
+
+def _trend_logloss(rs: list[dict], beta: float) -> float:
+    ll = [-np.log(max(trend_lane_p(r, beta)[int(r["hit"].split("-")[0])], 1e-9)) for r in rs]
+    return float(np.mean(ll)) if ll else float("nan")
+
+
+def _trend_probs(r: dict, beta: float) -> dict[str, float]:
+    p = trend_lane_p(r, beta)
+    if r.get("mult"):
+        return probs_mult(p, r["course_of"], r["decay"], r["mult"])
+    return {_key(c): v for c, v in trifecta_probs(p, r["decay"])}
+
+
+def day_trend_report(races: list[dict]) -> list[str]:
+    """23. 当日の場の傾向（前のレースでどのコースが勝っているか）を、残りのレースの予想に足すと良くなるか。
+    β（効かせる強さ）は前半の期間で選び、後半の期間で確かめる。回収率は今の試し買い（補正B・帯・②が速い見送り）で。"""
+    rs = day_trend(races)
+    if len(rs) < 400:
+        return []
+    mid = rs[len(rs) // 2]["race"]
+    a, b = [r for r in rs if r["race"] < mid], [r for r in rs if r["race"] >= mid]
+    lines = [f"\n23. 当日の場の傾向（同じ日・同じ場の前のレースで、コースごとに「実際の1着 − MINAMOの見込み」を数える。{len(rs):,}R、前半・後半に分ける）"]
+    # 23-1. 驚きの帯ごとに、MINAMOの見込みと実際の1着率（前のレースが4つ以上のレース。コース1〜6をまとめて）
+    lines.append("  ■ 前のレースで「見込みより勝っている・負けている」コースの、このレースの1着（前のレースが4つ以上。コース1〜6まとめて）")
+    lines.append(f"    {_pad('前のレースの驚き（1Rあたり）', 30)}{_pad('前半', 40)}後半")
+    edges = [(-9, -0.15, "見込みより大きく負け（−0.15未満）"), (-0.15, -0.05, "少し負け（−0.15〜−0.05）"), (-0.05, 0.05, "見込みどおり（±0.05）"),
+             (0.05, 0.15, "少し勝ち（0.05〜0.15）"), (0.15, 9, "大きく勝ち（0.15以上）")]
+
+    def cell(g, lo, hi):
+        pairs = [(_course_p(r)[c], _win_course(r) == c) for r in g if r["tr_n"] >= 4 for c in range(1, 7) if lo <= r["tr_s"][c] / r["tr_n"] < hi]
+        if not pairs:
+            return _pad("（なし）", 40)
+        mp, act = np.mean([x for x, _ in pairs]), np.mean([y for _, y in pairs])
+        return _pad(f"{len(pairs):>5}組 見込み{100 * mp:5.1f}% 実際{100 * act:5.1f}%（差{100 * (act - mp):+5.1f}）", 40)
+    for lo, hi, tag in edges:
+        lines.append(f"    {_pad(tag, 30)}{cell(a, lo, hi)}{cell(b, lo, hi)}")
+    lines.append("    差がプラス（大きく勝ち）・マイナス（大きく負け）に、前半・後半とも同じ向きに出ていれば、当日の傾向は本物")
+    # 23-2. β を前半で選び、後半で確かめる（1着の艇の対数損失。小さいほど良い）
+    lines.append("  ■ 当日の傾向をどれだけ効かせるか（β）：1着の艇の当たり具合（対数損失。小さいほど良い）")
+    scores = [(beta, _trend_logloss(a, beta), _trend_logloss(b, beta)) for beta in TREND_BETAS]
+    best = min(scores, key=lambda x: x[1])[0]
+    for beta, la, lb in scores:
+        lines.append(f"    β={beta:<4g}前半 {la:.4f}  後半 {lb:.4f}{'  ← 前半で一番良い' if beta == best else ''}{'  （今のMINAMO）' if beta == 0 else ''}")
+    base_b = next(lb for beta, _, lb in scores if beta == 0)
+    best_b = next(lb for beta, _, lb in scores if beta == best)
+    lines.append(f"    後半の対数損失：今 {base_b:.4f} → β={best:g} で {best_b:.4f}（{'良くなる' if best_b < base_b - 1e-4 else '良くならない'}）")
+    # 23-3. 今の試し買いの回収率（補正B・後半を前・後に）。β を入れた確率で選び直す
+    base_cal = sorted(_test_cal(rs), key=lambda r: r["race"])
+    if len(base_cal) < 400:
+        return lines
+    adj = [{**r, "probs": _trend_probs(r, best)} for r in rs] if best else rs
+    adj_cal = sorted(_test_cal(adj), key=lambda r: r["race"])
+    cmid = base_cal[len(base_cal) // 2]["race"]
+    one_lost = lambda r: r["tr_n"] >= 4 and r["tr_s"][1] / r["tr_n"] <= -0.15  # 前のレースで①（1コース）が見込みより大きく負けている場
+    lines.append(f"  ■ 今の試し買い（補正B・後半 {len(base_cal):,}R を前・後に。1点100円、払戻は確定オッズ）")
+    lines.append(f"    {_pad('', 34)}{_pad('前', 52)}後")
+    for tag, cal in (("今のまま", base_cal), (f"当日の傾向を入れる（β={best:g}）", adj_cal),
+                     ("今のまま＋①が負けている場は見送り", [r for r in base_cal if not one_lost(r)])):
+        tri, ex = _trial_combo_rows(cal)
+        for kind, rows in (("3連単", tri), ("2連単", ex)):
+            fa = [x for x in rows if x["race"] < cmid]
+            fb = [x for x in rows if x["race"] >= cmid]
+            lines.append(f"    {_pad(f'{kind} {tag}', 34)}{_split_cell(fa)}{_split_cell(fb)}")
+    lines.append("    前・後の両方で「今のまま」より良いときだけ、採用を相談する")
+    return lines
+
+
 BAND_LOWS = (1.0, 5.0, 10.0, 15.0, 20.0)
 BAND_HIGHS = (30.0, 50.0, 80.0, 120.0, 200.0, float("inf"))
 
@@ -2001,6 +2113,14 @@ def build_split(ml_dir: Path, raw: Path) -> str:
     return "\n".join(split_report(races) or ["検証のレースが少なすぎます（補正B・後半で400R未満）"])
 
 
+def build_day_trend(ml_dir: Path, raw: Path) -> str:
+    """23. だけ（ev-check --day-trend）。"""
+    races = load(ml_dir, raw)
+    if not races:
+        return "検証期間の確率（test_preds.csv.gz）か、オッズ履歴（odds_hist.csv）がありません。ml-train のあとに実行してください"
+    return "\n".join(day_trend_report(races) or ["進入コースの分かる検証のレースが少なすぎます（400R未満）"])
+
+
 def build(ml_dir: Path, raw: Path) -> str:
     races = load(ml_dir, raw)
     if not races:
@@ -2048,4 +2168,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += place_mult_report(races)
     lines += escape_skip_report(races)
     lines += split_report(races)
+    lines += day_trend_report(races)
     return "\n".join(lines)

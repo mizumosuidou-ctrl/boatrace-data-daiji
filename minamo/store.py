@@ -68,6 +68,8 @@ BAND_FROM = "20261007"
 # （10/10 実戦 live-check --breakdown：1点だけのレース 5分前 66.6%・2分前 0%・1分前 0%。
 #  ev-check「22.」補正B・後半の前・後：1点だけのレース 76.6%・80.4%、見送ると 107.9→111.7%・138.4→146.3%、最大除くも前後とも良くなる）
 SINGLE_FROM = "20261011"
+# 記録だけ：締切3分前・2分前・1分前に同じルールで決め直した試し買い（pipeline.LATE_KINDS と同じ）
+LATE_KINDS = ("ev3", "ex3", "ev2", "ex2", "ev1", "ex1")
 
 
 # 確率の補正（ev-check が検証期間で決めて、良くなったときだけ書く）：p^a × 市場の確率^b をレースごとに合計1へ
@@ -609,6 +611,9 @@ def race_summary(race: dict) -> dict:
         "ch_items": race.get("ch_items"),
         "ch_at": (race.get("ch_pick") or {}).get("at"),
         "ch_info": {k: (race.get("ch_pick") or {}).get(k) for k in ("where", "gap", "p1", "mkt1", "edge")} if race.get("ch_pick") else None,
+        # 記録だけ：3分前・2分前・1分前に同じルールで決め直した試し買い
+        **{f"{k}_{f}": st.get(f"{k}_{f}") for k in LATE_KINDS for f in ("bought", "hit", "stake", "return")},
+        **{f"{k}_{f}": race.get(f"{k}_{f}") for k in LATE_KINDS for f in ("pick", "items", "at")},
         "result_ex": res.get("exacta"),
         "payout_ex": res.get("exacta_payout"),
     }
