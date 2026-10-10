@@ -214,6 +214,24 @@ def test_xa_pick_buys_top_exacta_every_race():
     assert st["xa_bought"] and st["xa_hit"] and st["xa_rank"] == 2 and st["xa_stake"] == 300 and st["xa_return"] == 620
 
 
+
+def test_kk_pick_keeps_value_combos_of_normal_picks():
+    """コツコツ当てる君：普通の予想の組のうち、確率×オッズが1.2以上の組だけ（普通の予想の順）。結果の3連単で数える。"""
+    tri = [("1-2-3", 0.20), ("1-3-2", 0.10), ("2-1-3", 0.05), ("1-2-4", 0.04)]
+    odds = {"1-2-3": 5.0, "1-3-2": 15.0, "2-1-3": 20.0}
+    pick = store.kk_pick(["1-2-3", "1-3-2", "2-1-3", "1-2-4"], tri, odds)
+    # 1-2-3：0.2×5＝1.0（外す）、1-3-2：0.1×15＝1.5、2-1-3：0.05×20＝1.0（外す）、1-2-4：オッズ無し（外す）
+    assert pick["combos"] == ["1-3-2"] and pick["items"][0] == {"combo": "1-3-2", "p": 0.1, "odds": 15.0, "ev": 1.5}
+    assert store.kk_pick(["1-2-3"], tri, None) == {"combos": [], "items": []}
+    res = RaceResult(rows=[], trifecta="1-3-2", trifecta_payout=1500, exacta="1-3", exacta_payout=620)
+    st = store.settle({"picks": []}, res, kk_pick=pick)
+    assert st["kk_bought"] and st["kk_hit"] and st["kk_rank"] == 1 and st["kk_stake"] == 100 and st["kk_return"] == 1500
+    miss = store.settle({"picks": []}, res, kk_pick={"combos": []})
+    assert miss["kk_bought"] is False and miss["kk_stake"] == 0 and miss["kk_return"] == 0
+    summary = store.race_summary({"rno": 1, "settle": st, "kk_pick": {**pick, "at": "2026-10-11T10:00:00+09:00"}, "kk_items": pick["items"]})
+    assert summary["kk_pick"] == ["1-3-2"] and summary["kk_hit"] and summary["kk_at"].startswith("2026-10-11")
+
+
 def test_settle_hit_and_miss():
     res = RaceResult(rows=[ResultRow(place=i + 1, boat=b) for i, b in enumerate([1, 2, 3, 4, 5, 6])], trifecta="1-2-3", trifecta_payout=1230)
     hit = store.settle({"honmei": 1, "picks": [{"combo": "1-2-3"}, {"combo": "1-3-2"}]}, res)

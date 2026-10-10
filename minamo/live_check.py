@@ -55,6 +55,8 @@ RULES = {"ev": [("", "補正なし・最大6点", (94.9, None, None)), ("2026100
          "ex1": [("", "2連単（試し）を1分前に決め直す", (None, None, None))],
          # 2連単（全レース。見送りなし・確率の上位3点）：ユーザーの希望（10/6）。過去の検証は ev-check「6.」の確率上位3点
          "xa": [("", "全レース・MINAMOの確率の上位3点", (None, None, None))],
+         # コツコツ当てる君（10/11〜、記録だけ）：普通の予想のうち補正Bの期待値1.2以上（live-check --ev-filter：実戦 103.4%・104.7%）
+         "kk": [("", "普通の予想のうち期待値1.2以上", (None, None, None))],
          # 🍒穴狙い🍒（記録だけ。ev-check「16.」：A 74.2%・B 75.7%）
          "ch": [("", "🍒 A：MINAMOの上位12点（①頭以外）", (74.2, None, None))],
          "chb": [("", "🍒 B：攻める艇とその外の頭で12点", (75.7, None, None))]}
@@ -66,6 +68,7 @@ LABEL = {"ev": "3連単（期待値1.2以上）", "ex": "2連単（期待値1.2�
          "ev3": "3連単（試し）締切3分前に決め直す（記録だけ）", "ex3": "2連単（試し）締切3分前に決め直す（記録だけ）",
          "ev2": "3連単（試し）締切2分前に決め直す（記録だけ）", "ev1": "3連単（試し）締切1分前に決め直す（記録だけ）",
          "ex2": "2連単（試し）締切2分前に決め直す（記録だけ）", "ex1": "2連単（試し）締切1分前に決め直す（記録だけ）",
+         "kk": "コツコツ当てる君（普通の予想のうち割安な組だけ。記録だけ）",
          "xa": "2連単（全レース。見送りなし・MINAMOの確率の上位3点）",
          "ch": "🍒穴狙い🍒 A（外の方がスタートが0.4以上速い所があるレースで、イン逃しだけ12点。記録だけ）",
          "chb": "🍒穴狙い🍒 B（攻める艇とその外の頭で12点。記録だけ）"}
@@ -94,7 +97,7 @@ def rows(data_dir: Path, k: str) -> list[dict]:
                     "result": combo, "pay": (res.get("exacta_payout" if exa else "payout") or 0),
                     "items": [] if k in ("time", "fmb", "chb") else race.get(f"{src}_items") or [],
                     "mins": mins_before(date, race.get("deadline"), tp.get("at") if k == "time" else
-                                        (race.get(f"{src}_pick") or {}).get("at") if src in ("fm", "ag", "ch", "xa") else race.get(f"{src}_at")),
+                                        (race.get(f"{src}_pick") or {}).get("at") if src in ("fm", "ag", "ch", "xa", "kk") else race.get(f"{src}_at")),
                     "n": len(tp.get("combos") or []) if k == "time" else None,
                     "s12": float(st.get("time12_stake") or 0), "r12": float(st.get("time12_return") or 0),
                     "in_escape": st.get("time_in_escape"), "edge": (race.get("ch_pick") or {}).get("edge")})

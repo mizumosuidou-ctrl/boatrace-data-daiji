@@ -203,6 +203,24 @@ def xa_pick(trifecta: list, odds2: Optional[dict[str, float]] = None, n: int = X
     return {"combos": cs, "items": [{"combo": c, "p": round(xp[c], 4), "odds": (odds2 or {}).get(c)} for c in cs]}
 
 
+# コツコツ当てる君（試験中・記録だけ。10/11〜）：普通の予想（推奨買い目・確率上位6点）のうち、補正Bの確率×オッズが KK_EV 以上の組だけ
+#   10/11 live-check --ev-filter（実戦 10/4〜10/10）：普通の予想 全部 76.1%・86.0% → 期待値1.2以上 103.4%・104.7%（外す組 70.8%・79.6%）
+KK_EV = 1.2
+
+
+def kk_pick(picks: list[str], trifecta: list, odds: Optional[dict[str, float]], calib: Optional[tuple[float, float]] = None) -> dict:
+    """コツコツ当てる君の買い目：普通の予想の組のうち、割安（期待値 KK_EV 以上）な組だけ（普通の予想の順）。オッズが無ければ空。"""
+    if not odds:
+        return {"combos": [], "items": []}
+    prob = dict(calibrate(trifecta, odds, *calib) if calib else trifecta)
+    items = []
+    for c in picks:
+        o, p = odds.get(c), prob.get(c)
+        if o and p is not None and p * o >= KK_EV:
+            items.append({"combo": c, "p": round(p, 4), "odds": o, "ev": round(p * o, 2)})
+    return {"combos": [x["combo"] for x in items], "items": items}
+
+
 # 🍒穴狙い🍒（ユーザーの予想方法。記録だけ）：展示の並びで ①〈②・②〈③・③〈④・④〈⑤ のどこかに、外の艇の方が平均スタート順位で
 #   CHERRY_GAP 以上速い所があれば、イン逃し（①頭以外）だけの12点。A＝MINAMOの確率の上位12点、B＝攻める艇（一番差の大きい所の外）とその外の頭で12点。
 #   10/5 ev-check「16.」：A 74.2%・B 75.7%（全部のレースと同じ）→ お金はかけずに記録し、MINAMOが①を市場より弱いと見たレース（edge）で絞れるかを見る
@@ -299,7 +317,7 @@ def co_picks(trifecta: list, odds: Optional[dict[str, float]], th: float = CO_MI
 def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Optional[list] = None,
            ex: Optional[list] = None, ev_items: Optional[list] = None, time_pick: Optional[dict] = None,
            fm_pick: Optional[dict] = None, ag_pick: Optional[dict] = None, ch_pick: Optional[dict] = None,
-           xa_pick: Optional[dict] = None, late: Optional[dict] = None) -> dict:
+           xa_pick: Optional[dict] = None, late: Optional[dict] = None, kk_pick: Optional[dict] = None) -> dict:
     picks = [p["combo"] for p in ai.get("picks", [])]
     order = result.order
     hit = result.trifecta if result.trifecta in picks else None
@@ -392,6 +410,14 @@ def settle(ai: dict, result: RaceResult, pred: Optional[dict] = None, ev: Option
         out["xa_rank"] = cs.index(result.exacta) + 1 if result.exacta in cs else None
         out["xa_stake"] = 100 * len(cs)
         out["xa_return"] = (result.exacta_payout or 0) if result.exacta in cs else 0
+    # コツコツ当てる君（普通の予想のうち割安な組。3連単）
+    if kk_pick is not None:
+        cs = kk_pick.get("combos") or []
+        out["kk_bought"] = bool(cs)
+        out["kk_hit"] = result.trifecta in cs
+        out["kk_rank"] = cs.index(result.trifecta) + 1 if result.trifecta in cs else None
+        out["kk_stake"] = 100 * len(cs)
+        out["kk_return"] = payout if result.trifecta in cs else 0
     # 🍒穴狙い🍒（記録だけ。A＝ch、B＝chb。3連単12点）
     if ch_pick is not None:
         for k, key in (("ch", "combos"), ("chb", "combos_b")):
@@ -431,6 +457,7 @@ def build_race(
     ch_pick: Optional[dict] = None,
     xa_pick: Optional[dict] = None,
     late: Optional[dict] = None,
+    kk_pick: Optional[dict] = None,
 ) -> dict:
     be = {b.boat: b for b in (before.entries if before else [])}
     rt = (getattr(card, "racetime", None) or {}).get("racers") or {}
@@ -513,7 +540,7 @@ def build_race(
             "rows": [asdict(r) for r in result.rows],
         }
         if not result.cancelled and result.trifecta:
-            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick, fm_pick, ag_pick, ch_pick, xa_pick, late)
+            payload["settle"] = settle(ai, result, payload["prediction"], ev, ex, ev_items, time_pick, fm_pick, ag_pick, ch_pick, xa_pick, late, kk_pick)
     return payload
 
 
@@ -604,6 +631,11 @@ def race_summary(race: dict) -> dict:
         "xa_pick": (race.get("xa_pick") or {}).get("combos") if race.get("xa_pick") else None,
         "xa_items": race.get("xa_items"),
         "xa_at": (race.get("xa_pick") or {}).get("at"),
+        # コツコツ当てる君（普通の予想のうち割安な組）
+        **{f"kk_{f}": st.get(f"kk_{f}") for f in ("bought", "hit", "rank", "stake", "return")},
+        "kk_pick": (race.get("kk_pick") or {}).get("combos") if race.get("kk_pick") else None,
+        "kk_items": race.get("kk_items"),
+        "kk_at": (race.get("kk_pick") or {}).get("at"),
         # 🍒穴狙い🍒（記録だけ）
         **{f"{k}_{f}": st.get(f"{k}_{f}") for k in ("ch", "chb") for f in ("bought", "hit", "rank", "stake", "return")},
         "ch_pick": (race.get("ch_pick") or {}).get("combos") if race.get("ch_pick") else None,

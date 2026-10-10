@@ -889,6 +889,7 @@ function trialHitsHtml(race, s) {
     ["3連単（試し）", s.ev_bought, s.ev_hit, rankIn(race.ev_pick, r.trifecta), (race.ev_pick || []).length],
     ["2連単", s.ex_bought, s.ex_hit, rankIn(race.ex_pick, r.exacta), (race.ex_pick || []).length],
     ["2連単（全R）", s.xa_bought ?? null, s.xa_hit, s.xa_rank, (race.xa_pick?.combos || []).length],
+    ["コツコツ当てる君", s.kk_bought ?? null, s.kk_hit, s.kk_rank, (race.kk_pick?.combos || []).length],
     ...[["ev3", "3連単 3分前（記録）"], ["ex3", "2連単 3分前（記録）"], ["ev2", "3連単 2分前（記録）"], ["ev1", "3連単 1分前（記録）"], ["ex2", "2連単 2分前（記録）"], ["ex1", "2連単 1分前（記録）"]].map(([k, n]) =>
       [n, s[`${k}_bought`] ?? null, s[`${k}_hit`], rankIn(race[`${k}_pick`], k.startsWith("ex") ? r.exacta : r.trifecta), (race[`${k}_pick`] || []).length]),
     ["TIME", s.time_bought, s.time_hit, s.time_rank, (race.time_pick?.combos || []).length],
@@ -1174,6 +1175,7 @@ const PICK_KIND = {
   ev: { label: "3連単", rule: "MINAMOの確率を市場（オッズ）と合わせて補正し、期待値（確率×オッズ）が1.2以上の3連単を最大9点。そのうち決めたときのオッズが15〜120倍の組だけ（10/7から）。1点しか残らないレースは見送り（10/11から）", check: "過去の検証（学習に使っていない期間を前後に分けて確かめた）で回収率約121%" },
   co: { label: "3連単 合成", rule: "3連単と同じ組を、合成オッズ配分（オッズの低い組を多めに。どれが当たっても払戻が同じ）で買う。当たれば必ず投資の合成オッズ倍（真ん中18倍）が戻り、トリガミになりません", check: "過去の検証（学習に使っていない約3,000レース）で回収率122%（幅99〜149%）" },
   ex: { label: "2連単", rule: "補正した確率を2連単にまとめ、2連単のオッズで期待値1.2以上の組を最大3点。そのうちオッズが10〜80倍の組だけ（10/7から）", check: "過去の検証（学習に使っていない期間を前後に分けて確かめた）で回収率約117%" },
+  kk: { label: "コツコツ", rule: "コツコツ当てる君：普通の予想（MINAMOが来やすいと見た上位約6点）のうち、補正した確率×オッズが1.2以上の割安な組だけを買う（10/11から）。割安な組が無ければ見送り", check: "実戦の記録（10/4〜10/10）で、普通の予想 全部が76〜86%のところ、割安な組だけなら前半103.4%・後半104.7%（まだ1週間分。過去の検証で確かめている最中）" },
   xa: { label: "2連単 全R", rule: "見送りなしで全レース、MINAMOの2連単の確率の上位3点（期待値・オッズの帯・②が速いレースの見送りは使いません）", check: "過去の検証は成績ページ・ev-check「6.」の「確率上位3点」。期待値で絞る2連単（約117%）より回収率は低い見込み" },
   ch: { label: "🍒穴狙い", rule: "🍒穴狙い🍒（あなたの予想方法）：展示の並びで ①〈②・②〈③・③〈④・④〈⑤ のどこかに、外の艇の方が平均スタート順位で0.4以上速い所があるレースを、イン逃し（①頭以外）だけの12点（MINAMOの確率の上位12点）", check: "お金はかけない記録だけです。過去の検証では約75%（全部のレースと同じ）。MINAMOが①を市場より弱いと見たレースだけに絞れるかを、成績で確かめています" },
   ag: { label: "一致", rule: "レースタイムモニターの1番手が①以外の艇で、MINAMOもその艇の1着を35%以上と見たとき、2連単「その艇-①」を1点（強い艇が勝っても①は2着に残りやすい）", check: "過去の検証（レース前に出た予想・約90レース）で回収率130〜134%（前半・後半とも100%超え、一番大きな払戻を除いて110%前後）。数が少ないので" },
@@ -1205,7 +1207,7 @@ const payRange = (items, stakes) => {
 // 合成オッズ：1 ÷ Σ(1/オッズ)
 const compositeOf = (items) => { const inv = items.reduce((a, x) => a + (x.odds ? 1 / x.odds : NaN), 0); return inv > 0 ? 1 / inv : null; };
 // 1点の金額（ev-check「10.」：資金10万円なら、3連単は平掛け1点100円かケリー1/4で1点1,000円まで、2連単は300〜500円か3,000円まで）
-const STAKE_DEFAULT = { ev: { bank: 100000, how: "kelly", flat: 100, cap: 1000 }, ex: { bank: 100000, how: "kelly", flat: 300, cap: 3000 }, co: { budget: 500 }, fm: { how: "flat", flat: 100 }, ag: { how: "flat", flat: 100 }, ch: { how: "flat", flat: 100 }, xa: { how: "flat", flat: 100 } };
+const STAKE_DEFAULT = { kk: { bank: 100000, how: "flat", flat: 100, cap: 1000 }, ev: { bank: 100000, how: "kelly", flat: 100, cap: 1000 }, ex: { bank: 100000, how: "kelly", flat: 300, cap: 3000 }, co: { budget: 500 }, fm: { how: "flat", flat: 100 }, ag: { how: "flat", flat: 100 }, ch: { how: "flat", flat: 100 }, xa: { how: "flat", flat: 100 } };
 function getStake(k) {
   let v = {};
   try { v = JSON.parse(localStorage.getItem(`minamo-stake-${baseOf(k)}`) || "{}") || {}; } catch { /* 読めなければ既定 */ }
@@ -1270,6 +1272,7 @@ const PICK_COMPARE = {
   ev: ["回収率で勝つこと", "「来る確率×オッズ」が1.2以上の割安な3連単だけ（最大9点）", "見る（市場の見立てと合わせて補正。15〜120倍の組だけ）", "割安な組が2点以上あるレースだけ。1点以下なら見送り", "締切5分前に決めて固定", "低い（1割前後）", "過去の検証で約120%（実戦で確かめている最中）"],
   co: ["回収率で勝つこと", "3連単（試し）と同じ組を、合成オッズ配分で買う", "見る", "3連単（試し）を買うレースだけ", "締切5分前に決めて固定", "低い（1割前後）", "過去の検証で約122%（実戦で確かめている最中）"],
   ex: ["回収率で勝つこと", "「来る確率×オッズ」が1.2以上の割安な2連単だけ（最大3点）", "見る（市場の見立てと合わせて補正。10〜80倍の組だけ）", "割安な組があるレースだけ。無ければ見送り", "締切5分前に決めて固定", "中くらい（2割前後）", "過去の検証で約117%（実戦で確かめている最中）"],
+  kk: ["当てながら、回収率でも負けないこと", "普通の予想の組のうち、「来る確率×オッズ」が1.2以上の割安な組だけ（最大6点）", "見る（市場の見立てと合わせて補正）", "普通の予想に割安な組があるレースだけ。無ければ見送り", "締切5分前に決めて固定", "中くらい（3連単（試し）より当たりやすい組に寄る）", "実戦1週間で約104%（過去の検証で確かめている最中）"],
   xa: ["全レースの見立てを見ること", "MINAMOの2連単の確率の上位3点", "見ない", "全レース（見送りなし）", "締切5分前に決めて固定", "高い（5割前後）", "過去の検証で約95%（続けると少し負ける）"],
   ag: ["回収率で勝つこと", "レースタイムモニターとMINAMOが①以外の同じ艇を推す → 2連単「その艇-①」1点", "見ない", "2つの予想が一致したレースだけ", "締切5分前に決めて固定", "中くらい（2〜3割）", "過去の検証で130〜134%（約90レースだけ。実戦で確かめている最中）"],
   fm: ["回収率で勝つこと", "スタート隊形が ①〈③②④ のとき、2連単①-②を1点", "見ない", "その隊形のレースだけ", "締切5分前に決めて固定", "低め（1〜2割）", "過去の検証で約115%（実戦で確かめている最中）"],
@@ -1309,7 +1312,7 @@ async function pickHistoryHtml(k) {
     <div class="panel ledger" style="margin-top:14px">${ledgerDays(days, k).replace(/<button class="linkish" data-ledger="\d+">([^<]*)<\/button>/g, "$1")}</div>`;
 }
 // 買い方ごとの1レースの点数（画面に出す）
-const PICK_POINTS = { ev: "最大9点", co: "最大9点（3連単（試し）と同じ組）", ex: "最大3点", xa: "3点（毎レース）", ag: "1点", fm: "1点", ch: "12点", time: "6〜12点" };
+const PICK_POINTS = { kk: "最大6点（普通の予想のうち割安な組だけ）", ev: "最大9点", co: "最大9点（3連単（試し）と同じ組）", ex: "最大3点", xa: "3点（毎レース）", ag: "1点", fm: "1点", ch: "12点", time: "6〜12点" };
 const getPickKind = () => { try { return localStorage.getItem("minamo-pick-kind") || "ev"; } catch { return "ev"; } };
 async function renderPicks(refresh = false, k = getPickKind()) {
   if (!state.day || state.day.date !== state.date || refresh) await loadDay();
@@ -1625,6 +1628,8 @@ const REC_KINDS = {
     res: (r) => r.result, pay: (r) => r.payout, picks: (r) => r.co_pick, rank: (r) => rankIn(r.co_pick, r.result) },
   ex: { label: "2連単", note: "期待値で絞った2連単を1点1,000円", bought: (r) => r.ex_bought, hit: (r) => r.ex_hit, stake: (r) => r.ex_stake, ret: (r) => r.ex_return,
     res: (r) => r.result_ex, pay: (r) => r.payout_ex, picks: (r) => r.ex_pick, rank: (r) => rankIn(r.ex_pick, r.result_ex) },
+  kk: { label: "コツコツ", note: "コツコツ当てる君（普通の予想のうち割安な組だけ、記録）を1点1,000円", bought: (r) => r.kk_bought, hit: (r) => r.kk_hit, stake: (r) => r.kk_stake, ret: (r) => r.kk_return,
+    res: (r) => r.result, pay: (r) => r.payout, picks: (r) => r.kk_pick, rank: (r) => r.kk_rank },
   xa: { label: "2連単 全R", note: "2連単（全レース・確率の上位3点）を1点1,000円", bought: (r) => r.xa_bought, hit: (r) => r.xa_hit, stake: (r) => r.xa_stake, ret: (r) => r.xa_return,
     res: (r) => r.result_ex, pay: (r) => r.payout_ex, picks: (r) => r.xa_pick, rank: (r) => rankIn(r.xa_pick, r.result_ex) },
   ch: { label: "🍒穴狙い", note: "🍒穴狙い🍒（イン逃しだけ12点、記録だけ）を1点1,000円", bought: (r) => r.ch_bought, hit: (r) => r.ch_hit, stake: (r) => r.ch_stake, ret: (r) => r.ch_return,
