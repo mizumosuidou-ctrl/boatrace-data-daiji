@@ -620,6 +620,31 @@ def history_append(out_dir: Path, meta: dict) -> None:
         log.warning("history.jsonl に書けませんでした")
 
 
+def history_table(rows: list[dict]) -> str:
+    """学習の移り変わりの表。検証の期間は学習のたびに少しずつ新しくなるので、良し悪しは「基準（コースだけ）との差」で見る。"""
+    if not rows:
+        return "学習の履歴がまだありません（var/ml/history.jsonl）"
+    out = ["学習の移り変わり（対数損失は小さいほど良い。期間が少しずつ違うので「基準との差」で比べる。上位10組＝結果が3連単の上位10組に入った割合）",
+           f"{'学習した時刻':<17}{'基準':>8}{'展示前':>8}{'展示後':>8}{'基準との差':>10}{'上位10組':>9}  採用した追加の材料"]
+    prev_used: set = set()
+    for r in rows:
+        base, pre, post = r.get("baseline"), r.get("pre"), r.get("post")
+        used = {k for k, v in (r.get("new_adopt") or {}).items() if v}
+        diff = (base - pre) if base is not None and pre is not None else None
+        new = sorted(used - prev_used)
+        prev_used = used
+        out.append(f"{str(r.get('trained_at') or '')[:16].replace('T', ' '):<17}"
+                   f"{base if base is not None else float('nan'):>8.4f}{pre if pre is not None else float('nan'):>8.4f}"
+                   f"{post if post is not None else float('nan'):>8.4f}{diff if diff is not None else float('nan'):>10.4f}"
+                   f"{100 * (r.get('pre_top10') or 0):>8.1f}%  {('＋' + '・'.join(new)) if new else ''}")
+    first, last = rows[0], rows[-1]
+    if first.get("baseline") and last.get("baseline") and first.get("pre") and last.get("pre"):
+        d0, d1 = first["baseline"] - first["pre"], last["baseline"] - last["pre"]
+        out.append(f"\n基準との差：最初 {d0:.4f} → いま {d1:.4f}（{'伸びている' if d1 > d0 + 0.002 else '横ばい' if d1 > d0 - 0.002 else '下がっている'}）"
+                   f"・上位10組 {100 * (first.get('pre_top10') or 0):.1f}% → {100 * (last.get('pre_top10') or 0):.1f}%")
+    return "\n".join(out)
+
+
 def history_load(out_dir: Path) -> list[dict]:
     path = Path(out_dir) / "history.jsonl"
     if not path.exists():

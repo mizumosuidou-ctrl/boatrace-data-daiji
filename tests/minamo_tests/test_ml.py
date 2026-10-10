@@ -2273,3 +2273,15 @@ def test_ev_check_entry_report():
     text = "\n".join(ev_check.entry_report(races))
     assert "24. 進入が変わったレース" in text and "のうち 225R" in text
     assert "枠なり" in text and "進入が変わったレースだけ" in text and "今の試し買い" in text
+
+
+def test_history_table():
+    """学習の移り変わり：基準との差で伸びを見て、新しく採用した材料を書く。"""
+    from minamo.ml import train
+
+    rows = [{"trained_at": "2026-10-05T03:30:00", "baseline": 1.36, "pre": 1.20, "post": 1.19, "pre_top10": 0.48, "new_adopt": {"a": True}},
+            {"trained_at": "2026-10-11T04:09:10", "baseline": 1.355, "pre": 1.179, "post": 1.170, "pre_top10": 0.50, "new_adopt": {"a": True, "b": True}}]
+    text = train.history_table(rows)
+    assert "2026-10-11 04:09" in text and "＋b" in text and "＋a" in text
+    assert "最初 0.1600 → いま 0.1760（伸びている）" in text and "48.0% → 50.0%" in text
+    assert "まだありません" in train.history_table([])

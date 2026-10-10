@@ -93,6 +93,7 @@ def main() -> None:
     mlx.add_argument("--peek", metavar="YYYYMMDD", help="1日分の中身と読み取れた数を見るだけ（書き出さない）")
     mln = sub.add_parser("ml-notify", help="学習の結果のひとこと（対数損失・前回との比べ）を Discord に送る。--failed を付けると失敗の知らせ")
     mln.add_argument("--failed", default=None, help="失敗の知らせの理由（例: daily status=1）")
+    sub.add_parser("ml-history", help="学習の移り変わり（基準との差・上位10組・採用した材料）を表で出す")
     sub.add_parser("ml-original-live", help="本番で取ったオリジナル展示（var/state の orig）を学習の材料に書き出す（昨日まで、取り終えた日はとばす）")
     mly = sub.add_parser("ml-years", help="過去何年分を学習に使うと良くなるかを、同じ検証期間で比べる（良くなったときだけ採用）")
     mly.add_argument("--raw", default=None)
@@ -372,6 +373,10 @@ def main() -> None:
         print(text or "（送る内容がありません）")
         if text:
             print("送信しました" if notify.send(text) else "送信しませんでした（Webhook が未設定、または失敗）")
+    elif args.cmd == "ml-history":
+        from .ml import live, train
+
+        print(train.history_table(train.history_load(live.ML_DIR)))
     elif args.cmd == "ml-original-live":
         from .ml import live, original_live
 
