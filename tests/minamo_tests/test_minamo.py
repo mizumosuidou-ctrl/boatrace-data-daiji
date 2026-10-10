@@ -411,6 +411,9 @@ def test_pipeline_full_day(sandbox, monkeypatch):
     fixed_at = race["ev_at"]
     assert race["pick_fixed"] == fixed_at and fixed_at.startswith("2026-10-01T20:40")
     # 固定したあとは、取り直しても買い目を変えない。2分前・1分前には同じルールで決め直した組を別に記録する（記録だけ）
+    assert pipe.tick(date, deadline - timedelta(minutes=2.5)) == 1
+    race = json.loads(race_file.read_text())
+    assert race["ev3_at"].startswith("2026-10-01T20:42") and race["ev2_at"] is None
     assert pipe.tick(date, deadline - timedelta(minutes=1.5)) == 1
     race = json.loads(race_file.read_text())
     assert race["ev2_at"].startswith("2026-10-01T20:43") and race["ev1_at"] is None
@@ -427,7 +430,7 @@ def test_pipeline_full_day(sandbox, monkeypatch):
     assert race["result"]["trifecta"] == "4-1-2" and race["settle"] is not None
     # 試験中のオッズで絞った買い目：締切前に決めた組（見送りなら空）を照合して数える
     assert isinstance(race["ev_pick"], list) and "ev_hit" in race["settle"]
-    assert "ev2_hit" in race["settle"] and "ev1_hit" in race["settle"]
+    assert "ev3_hit" in race["settle"] and "ev2_hit" in race["settle"] and "ev1_hit" in race["settle"]
     assert race["settle"]["ev_stake"] == 100 * len(race["ev_pick"])
     # 「今買う候補」ページ用：決めたときの確率・オッズ・期待値と、一覧への写し
     assert [x["combo"] for x in race["ev_items"]] == race["ev_pick"] and race["ev_at"]
@@ -452,7 +455,7 @@ def test_pipeline_full_day(sandbox, monkeypatch):
     assert sp["races"] == 1 and sp["current"] + sp["hits"] == 1 and record["streaks"]["ev"]["races"] <= 1
     # オッズ履歴：直前情報を取るたびに1行、確定後に「final」を1行
     hist = [json.loads(x) for x in (sandbox / "state" / "odds" / f"{date}.jsonl").read_text().splitlines()]
-    assert [h["kind"] for h in hist] == ["pre"] * 5 + ["final"] and [h["min"] for h in hist[:5]] == [20.0, 10.0, 5.0, 1.5, 1.0]
+    assert [h["kind"] for h in hist] == ["pre"] * 6 + ["final"] and [h["min"] for h in hist[:6]] == [20.0, 10.0, 5.0, 2.5, 1.5, 1.0]
     # ほかの券種のオッズは締切12分前から（20分前は取らない、10分前は取る）
     assert "more" not in hist[0] and {"win", "place", "wide", "trio"} <= set(hist[1]["more"])
     assert hist[0]["t2"]["1-2"] == pytest.approx(1.5) and len(hist[0]["t2"]) == 30 and len(hist[0]["t3"]) == 120
@@ -1141,7 +1144,7 @@ def test_weekly_report_sums_last_week_and_splits_for_discord(tmp_path):
     plus, minus = text.split("✅ 今週プラス")[1].split("❌ 今週マイナス")
     assert "3連単（試し）5分前：1R 的中1（100%） 回収率 1500.0% 収支 +28,000円" in plus
     assert "2連単（試し）5分前：1R 的中0（0%） 回収率 0.0%" in minus
-    assert "2連単：5分前 0.0%（1R） / 2分前 500.0%（1R） / 1分前 --" in text
+    assert "2連単：5分前 0.0%（1R） / 3分前 -- / 2分前 500.0%（1R） / 1分前 --" in text
     parts = weekly.chunks("\n".join(["あ" * 100] * 40), size=1800)
     assert len(parts) == 3 and all(len(p) <= 1800 for p in parts)
 
