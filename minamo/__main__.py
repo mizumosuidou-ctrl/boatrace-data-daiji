@@ -11,6 +11,7 @@
   python -m minamo ml-softmax       レース内 softmax と今のやり方を同じ検証期間で比べる（モデルは保存しない）
   python -m minamo ml-softmax-roi   レース内 softmax と今のやり方を、買い目の回収率まで比べる（展示前・展示後）
   python -m minamo ml-calib         外れ方の分析（予想の確率と実際の1着率を、条件ごとに比べる）
+  python -m minamo audit            成績の自動点検（投資・当たり・払戻・合計のつじつま。読むだけ）
   python -m minamo ml-cv            期間をずらして何回か、特徴量を1つずつ外して効き方を比べる（予想は変えない）
   python -m minamo ml-refit         検証用に分けた直近の期間も学習に入れ直すと良くなるかを比べる（予想は変えない）
   python -m minamo ml-tune          LightGBM の設定を何通りか試して比べる（モデルは保存しない）
@@ -118,6 +119,9 @@ def main() -> None:
     mle = sub.add_parser("ev-check", help="買い目の選び方（確率上位・期待値）を、学習に使っていない期間のオッズと結果で比べる")
     mle.add_argument("--raw", default=None)
     mle.add_argument("--split", action="store_true", help="22.（試し買いの組を live-check --breakdown と同じ分け方で）だけ出す")
+    mau = sub.add_parser("audit", help="成績の自動点検：日ごとの一覧の投資・当たり・払戻・合計のつじつまを調べる（読むだけ）")
+    mau.add_argument("--url", nargs="?", const="__site__", default=None, help="公開サイトを点検する（URL を省くと既定のサイト）。省くとサーバーの data フォルダ")
+    mau.add_argument("--days", type=int, default=14, help="直近何日を点検するか")
     mwk = sub.add_parser("weekly", help="週報：直近7日の実戦の成績と学習の様子（--send で Discord にも送る）")
     mwk.add_argument("--send", action="store_true")
     mwk.add_argument("--data", help="web/data の場所（既定は MINAMO_DATA_DIR）")
@@ -251,6 +255,14 @@ def main() -> None:
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
         print(f"{facts_backfill.fill_kimarite(raw, args.date_from, args.date_to)} days fetched")
+    elif args.cmd == "audit":
+        from . import audit, notify
+
+        if args.url:
+            days, record = audit.load_url(notify.SITE_URL if args.url == "__site__" else args.url, args.days)
+        else:
+            days, record = audit.load_dir(store.DATA_DIR, args.days)
+        print(audit.build(days, record))
     elif args.cmd == "weekly":
         from . import weekly
 
