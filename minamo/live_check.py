@@ -504,3 +504,130 @@ def day_review(data_dir: Path, date: str, jcd: str | None = None) -> str:
         if n:
             out.append(f"  {_pad(name, 14)}{n:>2}R 当たり{h:>2} 回収率 {100 * ret / s if s else 0:6.1f}%")
     return "\n".join(out)
+
+
+MORE_FIX_MIN = 5.0  # 3連複・2連複・拡連複の買い目を決める時刻（締切の何分前より前の、最後に記録したオッズ）
+
+
+def _more_snap(rows: list[dict]) -> dict | None:
+    """そのレースのオッズ履歴から、締切 MORE_FIX_MIN 分前より前で最後の、ほかの券種のオッズのある1行。"""
+    got = [r for r in rows if r.get("more") and r.get("min") is not None and r["min"] >= MORE_FIX_MIN and r.get("t3")]
+    return max(got, key=lambda r: r["at"]) if got else None
+
+
+def _unordered(tri: dict[str, float], k: int) -> dict[str, float]:
+    """3連単の確率を、着順を問わない k 艇の組（2連複 k=2・3連複 k=3）に足し合わせる。組の名前は公式と同じ「1=2」。"""
+    out: dict[str, float] = {}
+    for c, p in tri.items():
+        boats = c.split("-")[:k]
+        key = "=".join(sorted(boats, key=int))
+        out[key] = out.get(key, 0.0) + p
+    return out
+
+
+def _wide_probs(tri: dict[str, float]) -> dict[str, float]:
+    """拡連複：2艇がどちらも3着以内に入る確率。"""
+    out: dict[str, float] = {}
+    for c, p in tri.items():
+        a, b, d = sorted(c.split("-"), key=int)
+        for x, y in ((a, b), (a, d), (b, d)):
+            out[f"{x}={y}"] = out.get(f"{x}={y}", 0.0) + p
+    return out
+
+
+MORE_RULES = {
+    "trio": [("期待値1.2以上・最大3点", 1.2, 3), ("期待値1.2以上・最大5点", 1.2, 5), ("期待値1.0以上・最大5点", 1.0, 5),
+             ("確率上位3点（オッズ見ない）", None, 3), ("確率上位5点（オッズ見ない）", None, 5)],
+    "quinella": [("期待値1.2以上・最大2点", 1.2, 2), ("期待値1.2以上・最大3点", 1.2, 3), ("期待値1.0以上・最大3点", 1.0, 3),
+                 ("確率上位2点（オッズ見ない）", None, 2), ("確率上位3点（オッズ見ない）", None, 3)],
+    "wide": [("期待値1.2以上・最大2点（下限オッズ）", 1.2, 2), ("期待値1.0以上・最大3点（下限オッズ）", 1.0, 3),
+             ("確率上位2点（オッズ見ない）", None, 2)],
+}
+MORE_NAME = {"trio": "3連複", "quinella": "2連複", "wide": "拡連複"}
+MORE_MIN_P = {"trio": 0.01, "quinella": 0.02, "wide": 0.05}
+
+
+def more_check(data_dir: Path, state_dir: Path) -> str:
+    """3連複・2連複・拡連複を、記録してあるオッズ（締切5分前より前の最後の記録）と払戻で、買い方ごとに数える（見るだけ）。
+    確率は MINAMO の3連単の確率を、3連単の試し買いと同じ補正B（その時の3連単オッズ）で直してから足し合わせる。
+    3連単の試し買い（ev）も同じレースで並べる。前半・後半の日に分ける。"""
+    import json
+
+    calib = store.ev_calib()
+    hist: dict[str, list[dict]] = {}
+    for f in sorted((Path(state_dir) / "odds").glob("*.jsonl")):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("more"):
+                hist.setdefault(row["race"], []).append(row)
+    rows = []
+    for f in sorted(Path(data_dir).glob("*/[0-9][0-9]-[0-9][0-9].json")):
+        race = store.read_json(f) or {}
+        res = race.get("result") or {}
+        pays = res.get("payouts") or {}
+        date = race.get("date") or f.parent.name
+        key = f"{date}-{f.stem[:2]}-{f.stem[3:]}"
+        snap = _more_snap(hist.get(key) or [])
+        if race.get("demo") or res.get("cancelled") or not res.get("trifecta") or not race.get("tri_all") or not snap or not pays:
+            continue
+        tri = sorted(race["tri_all"].items(), key=lambda kv: -kv[1])
+        if calib:
+            tri = store.calibrate(tri, snap["t3"], *calib)
+        tri = dict(tri)
+        st = race.get("settle") or {}
+        rows.append({"date": date, "probs": {"trio": _unordered(tri, 3), "quinella": _unordered(tri, 2), "wide": _wide_probs(tri)},
+                     "odds": {k: snap["more"].get(k) or {} for k in MORE_RULES}, "pays": pays,
+                     "ev": (st.get("ev_stake"), st.get("ev_return")) if st.get("ev_bought") else None})
+    if not rows:
+        return "3連複・2連複・拡連複のオッズを記録したレースがありません（10/4 から記録しています）"
+    days = sorted({r["date"] for r in rows})
+    mid = days[len(days) // 2]
+    out = [f"3連複・2連複・拡連複の買い方の比べ（記録したオッズ {len(rows):,}R、{days[0]}〜{days[-1]}。"
+           f"締切{MORE_FIX_MIN:g}分前より前の最後のオッズで決め、払戻で数える。1点100円。前半＝{mid}より前・後半＝{mid}から）"]
+
+    def picks(r, kind, th, k):
+        p, odds = r["probs"][kind], r["odds"][kind]
+        cs = sorted(p, key=p.get, reverse=True)
+        if th is None:
+            return cs[:k]
+        lo = lambda c: (odds[c][0] if isinstance(odds.get(c), (list, tuple)) else odds.get(c)) or 0
+        return [c for c in cs if p[c] >= MORE_MIN_P[kind] and lo(c) and p[c] * lo(c) >= th][:k]
+
+    def cell(g, kind, th, k):
+        n = st = hits = 0
+        pays = []
+        for r in g:
+            b = picks(r, kind, th, k)
+            if not b:
+                continue
+            n += 1
+            st += 100 * len(b)
+            won = [r["pays"].get(kind, {}).get(c, 0) for c in b]
+            got = sum(won)
+            hits += got > 0
+            pays.append(got)
+        if not st:
+            return _pad("（買うレースなし）", 50)
+        tot = sum(pays)
+        return _pad(f"{n:>4}R {st / 100 / n:3.1f}点 的中{100 * hits / n:5.1f}% 回収率{100 * tot / st:6.1f}%（最大除く{100 * (tot - max(pays)) / st:6.1f}%）", 50)
+    a = [r for r in rows if r["date"] < mid]
+    b = [r for r in rows if r["date"] >= mid]
+    for kind, rules in MORE_RULES.items():
+        out.append(f"\n■ {MORE_NAME[kind]}")
+        out.append(f"  {_pad('', 34)}{_pad('前半', 50)}後半")
+        for name, th, k in rules:
+            out.append(f"  {_pad(name, 34)}{cell(a, kind, th, k)}{cell(b, kind, th, k)}")
+
+    def ev_cell(g):
+        bs = [r["ev"] for r in g if r["ev"] and r["ev"][0]]
+        if not bs:
+            return _pad("（買うレースなし）", 50)
+        st, rt = sum(x for x, _ in bs), sum(y or 0 for _, y in bs)
+        return _pad(f"{len(bs):>4}R 的中{100 * sum(1 for _, y in bs if y) / len(bs):5.1f}% 回収率{100 * rt / st:6.1f}%", 50)
+    out.append("\n■ くらべ：3連単（試し）5分前（同じレース）")
+    out.append(f"  {_pad('', 34)}{ev_cell(a)}{ev_cell(b)}")
+    out.append("\n前半・後半とも100%を超え、一番大きい払戻を除いても100%前後なら、記録だけの試し買いに足す候補")
+    return "\n".join(out)

@@ -150,6 +150,7 @@ def main() -> None:
     mll.add_argument("--data", help="web/data の場所（既定は MINAMO_DATA_DIR）")
     mll.add_argument("--odds", action="store_true", help="実戦で決めたときのオッズを、データベースの5分前・1分前・確定オッズと比べる")
     mll.add_argument("--raw", default=None)
+    mll.add_argument("--more", action="store_true", help="3連複・2連複・拡連複を、記録したオッズと払戻で買い方ごとに数える")
     mll.add_argument("--day", default=None, help="その日（YYYYMMDD）のレースを振り返る。--venue（場コード 例 07）でその場をレースごとに")
     mll.add_argument("--venue", default=None)
     mll.add_argument("--breakdown", action="store_true", help="試し買いを買った組ひとつずつで分けた成績（オッズ・期待値・確率・何点目・頭・イン逃げ指数）")
@@ -327,7 +328,11 @@ def main() -> None:
         from . import live_check
 
         data = Path(args.data) if args.data else store.DATA_DIR
-        if args.day:
+        if args.more:
+            from .pipeline import STATE_DIR
+
+            print(live_check.more_check(data, STATE_DIR))
+        elif args.day:
             print(live_check.day_review(data, args.day, args.venue))
         elif args.breakdown:
             print(live_check.breakdown(data))
