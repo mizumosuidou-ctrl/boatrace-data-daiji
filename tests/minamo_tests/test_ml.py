@@ -2060,3 +2060,64 @@ def test_ex_select_too_few_races_says_so():
     from minamo.ml import ex_select
 
     assert "少なすぎ" in ex_select.build(_ex_races(50, edge=False), sims=10)
+
+
+def _live_world(n=400, skip_every=4, drop_ticket=False):
+    """実戦の記録の模擬：バックテストと同じ買い目で買う（skip_every 件に1件は「②が速い」で見送り）。"""
+    from minamo.ml import live_compare as lc
+
+    races = _ex_races(n, edge=True, seed=5)
+    for i, r in enumerate(races):
+        r["race"] = f"2026100{1 + i // 80}-{1 + (i // 12) % 24:02d}-{i % 12 + 1:02d}"
+    cal = (1.0, 0.5)
+    bt = lc._bt_arrays(races, cal)
+    days: dict = {}
+    for i, r in enumerate(races):
+        date, jcd, rno = r["race"].split("-")
+        v = days.setdefault(date, {"date": date, "venues": {}})["venues"].setdefault(jcd, {"jcd": jcd, "races": []})
+        combos = [lc.xs.EX_COMBOS[j] for j in np.flatnonzero(bt["M"][i])]
+        skipped = skip_every and i % skip_every == 0
+        if skipped:
+            combos = []
+        if drop_ticket and combos:
+            combos = combos[:-1] or combos
+        hit = r["hit"].rsplit("-", 1)[0]
+        x = {"rno": int(rno), "ex_pick": combos, "ex_bought": bool(combos), "trial_skip": "②が①より速い" if skipped else None,
+             "result_ex": hit, "ex_stake": 100 * len(combos), "ex_return": round(100 * r["xfinal"][hit]) if hit in combos else 0,
+             "ex_items": [{"combo": c, "p": float(bt["P"][i, lc.xs.EX_COMBOS.index(c)]), "odds": r["x5"][c]} for c in combos]}
+        v["races"].append(x)
+    days = {d: {"date": d, "venues": list(day["venues"].values())} for d, day in days.items()}
+    return races, days, cal
+
+
+def test_live_compare_matches_when_live_follows_the_backtest_rule():
+    from minamo.ml import live_compare as lc
+
+    races, days, cal = _live_world(skip_every=0)
+    text = lc.build(races, days, cal=cal)
+    assert "買い目が全く同じ" in text and "一部同じ 0R／全く違う 0R" in text
+    live_roi = text.split("実戦（2連単（試し））：")[1].split("%")[0]
+    bt_roi = text.split("バックテスト（見送りなし）：")[1].split("%")[0]
+    assert abs(float(live_roi) - float(bt_roi)) < 0.5            # 同じ買い目・同じ払戻なら、回収率は同じ
+    assert "日ごとの回収率" in text
+
+
+def test_live_compare_separates_skipped_races_and_different_tickets():
+    from minamo.ml import live_compare as lc
+
+    races, days, cal = _live_world(skip_every=4)
+    text = lc.build(races, days, cal=cal)
+    assert f"実戦で{lc.SKIP_LABEL}／バックテストも買う" in text         # 実戦が見送ったレースを、バックテストなら買った分として別に出す
+    assert "実戦で買った／バックテストも買う" in text
+    assert "実戦を除く" not in text and "実戦で見送った「②が速い」レースを除く" in text
+    races, days, cal = _live_world(skip_every=0, drop_ticket=True)
+    diff = lc.build(races, days, cal=cal)
+    assert "一部同じ" in diff and "実戦だけの組 平均 0.00点・バックテストだけの組 平均" in diff   # 実戦が1点少ない＝バックテストだけの組が出る
+
+
+def test_live_compare_too_few_common_races_says_so():
+    from minamo.ml import live_compare as lc
+
+    races, days, cal = _live_world(n=40, skip_every=0)
+    assert "少なすぎ" in lc.build(races, days, cal=cal)
+    assert lc.live_races({}) == {}
