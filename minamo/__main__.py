@@ -11,6 +11,7 @@
   python -m minamo ml-softmax       レース内 softmax と今のやり方を同じ検証期間で比べる（モデルは保存しない）
   python -m minamo ml-softmax-roi   レース内 softmax と今のやり方を、買い目の回収率まで比べる（展示前・展示後）
   python -m minamo ml-calib         外れ方の分析（予想の確率と実際の1着率を、条件ごとに比べる）
+  python -m minamo ml-ex-select     2連単の買い方を、偶然を差し引いて選ぶ（前半で選び、後半で確かめる。読むだけ）
   python -m minamo multi-check      買い方の多重比較の点検（補正しても100%を超えたと言えるか。読むだけ）
   python -m minamo audit            成績の自動点検（投資・当たり・払戻・合計のつじつま。読むだけ）
   python -m minamo ml-cv            期間をずらして何回か、特徴量を1つずつ外して効き方を比べる（予想は変えない）
@@ -123,6 +124,10 @@ def main() -> None:
     mau = sub.add_parser("audit", help="成績の自動点検：日ごとの一覧の投資・当たり・払戻・合計のつじつまを調べる（読むだけ）")
     mau.add_argument("--url", nargs="?", const="__site__", default=None, help="公開サイトを点検する（URL を省くと既定のサイト）。省くとサーバーの data フォルダ")
     mau.add_argument("--days", type=int, default=14, help="直近何日を点検するか")
+    mxs = sub.add_parser("ml-ex-select", help="2連単の買い方を、前半で選び後半で確かめる。市場が正しいとしたときの最良の見かけを差し引く（読むだけ）")
+    mxs.add_argument("--raw", default=None, help="書き出したCSVの場所（既定 var/ml/raw）")
+    mxs.add_argument("--sims", type=int, default=300, help="市場が正しいとして結果を作り直す回数")
+    mxs.add_argument("--split", type=float, default=0.6, help="前半（選ぶ側）の割合")
     mmc = sub.add_parser("multi-check", help="買い方の多重比較の点検：複数の買い方をまとめて判定して、補正しても100%を超えたと言えるか（読むだけ）")
     mmc.add_argument("--url", nargs="?", const="__site__", default=None, help="公開サイトを点検する（URL を省くと既定のサイト）。省くとサーバーの data フォルダ")
     mmc.add_argument("--days", type=int, default=60, help="直近何日を使うか")
@@ -260,6 +265,11 @@ def main() -> None:
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
         print(f"{facts_backfill.fill_kimarite(raw, args.date_from, args.date_to)} days fetched")
+    elif args.cmd == "ml-ex-select":
+        from .ml import ex_select, live
+
+        raw = Path(args.raw or live.ML_DIR / "raw")
+        print(ex_select.run(live.ML_DIR, raw, sims=args.sims, split=args.split))
     elif args.cmd == "multi-check":
         from . import audit, multi, notify
 
