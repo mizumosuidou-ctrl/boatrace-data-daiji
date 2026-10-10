@@ -1968,6 +1968,48 @@ def day_trend_report(races: list[dict]) -> list[str]:
     return lines
 
 
+def entry_changed(r: dict) -> bool | None:
+    """進入が艇番どおり（枠なり）でなかったか。進入コースが分からなければ None。"""
+    co = r.get("course_of") or {}
+    if len(co) != 6:
+        return None
+    return any(l != c for l, c in co.items())
+
+
+def entry_report(races: list[dict]) -> list[str]:
+    """24. 進入が変わったレース（前付けなどで艇番どおりのコースに入らなかった）で、MINAMOの当たり方と今の試し買いの成績は違うか。
+    見送りにすると前・後の両方で良くなるかも見る（補正B・後半を前・後に）。"""
+    rs = [r for r in races if entry_changed(r) is not None]
+    if len(rs) < 400:
+        return []
+    rs.sort(key=lambda r: r["race"])
+    mid = rs[len(rs) // 2]["race"]
+    lines = [f"\n24. 進入が変わったレース（艇番どおりのコースに入らなかった。{len(rs):,}R のうち {sum(map(entry_changed, rs)):,}R）"]
+    lines.append("  ■ MINAMOの1着の当たり方（1着の艇の対数損失。小さいほど良い）と、①（1コース）の1着")
+    for tag, flag in (("枠なり", False), ("進入が変わった", True)):
+        for half, g in (("前半", [r for r in rs if r["race"] < mid]), ("後半", [r for r in rs if r["race"] >= mid])):
+            g = [r for r in g if entry_changed(r) == flag]
+            if not g:
+                continue
+            ll = np.mean([-np.log(max(_course_p(r).get(_win_course(r) or 0, 0.0), 1e-9)) for r in g if r.get("p_lane")])
+            one = np.mean([_win_course(r) == 1 for r in g])
+            p1 = np.mean([_course_p(r).get(1, 0.0) for r in g if r.get("p_lane")])
+            lines.append(f"    {_pad(tag, 16)}{half} {len(g):>5}R 対数損失 {ll:.3f}  1コース1着 実際 {100 * one:5.1f}%・MINAMO {100 * p1:5.1f}%")
+    cal = sorted(_test_cal(rs), key=lambda r: r["race"])
+    if len(cal) < 400:
+        return lines
+    cmid = cal[len(cal) // 2]["race"]
+    lines.append(f"  ■ 今の試し買い（補正B・後半 {len(cal):,}R を前・後に。1点100円、払戻は確定オッズ）")
+    lines.append(f"    {_pad('', 34)}{_pad('前', 52)}後")
+    for tag, keep in (("全部（今のまま）", lambda r: True), ("枠なりのレースだけ", lambda r: not entry_changed(r)),
+                      ("進入が変わったレースだけ", entry_changed)):
+        tri, ex = _trial_combo_rows([r for r in cal if keep(r)])
+        for kind, rows in (("3連単", tri), ("2連単", ex)):
+            lines.append(f"    {_pad(f'{kind} {tag}', 34)}{_split_cell([x for x in rows if x['race'] < cmid])}{_split_cell([x for x in rows if x['race'] >= cmid])}")
+    lines.append("    「枠なりのレースだけ」が前・後の両方で「全部」より良ければ、進入が変わったレースの見送りを相談する")
+    return lines
+
+
 BAND_LOWS = (1.0, 5.0, 10.0, 15.0, 20.0)
 BAND_HIGHS = (30.0, 50.0, 80.0, 120.0, 200.0, float("inf"))
 
@@ -2121,6 +2163,14 @@ def build_day_trend(ml_dir: Path, raw: Path) -> str:
     return "\n".join(day_trend_report(races) or ["進入コースの分かる検証のレースが少なすぎます（400R未満）"])
 
 
+def build_entry(ml_dir: Path, raw: Path) -> str:
+    """24. だけ（ev-check --entry）。"""
+    races = load(ml_dir, raw)
+    if not races:
+        return "検証期間の確率（test_preds.csv.gz）か、オッズ履歴（odds_hist.csv）がありません。ml-train のあとに実行してください"
+    return "\n".join(entry_report(races) or ["進入コースの分かる検証のレースが少なすぎます（400R未満）"])
+
+
 def build(ml_dir: Path, raw: Path) -> str:
     races = load(ml_dir, raw)
     if not races:
@@ -2169,4 +2219,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += escape_skip_report(races)
     lines += split_report(races)
     lines += day_trend_report(races)
+    lines += entry_report(races)
     return "\n".join(lines)

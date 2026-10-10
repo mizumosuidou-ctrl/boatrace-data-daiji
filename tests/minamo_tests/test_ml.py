@@ -2251,3 +2251,25 @@ def test_ev_check_day_trend():
     text = "\n".join(ev_check.day_trend_report(races))
     assert "23. 当日の場の傾向" in text and "← 前半で一番良い" in text and "良くなる" in text
     assert "大きく勝ち" in text and "今の試し買い" in text and "①が負けている場は見送り" in text
+
+
+def test_ev_check_entry_report():
+    """24.：進入が変わったレース（艇番どおりのコースでない）を見分け、枠なりと分けて成績を出す。"""
+    from minamo.ml import ev_check
+
+    assert ev_check.entry_changed({"course_of": {l: l for l in range(1, 7)}}) is False
+    assert ev_check.entry_changed({"course_of": {1: 1, 2: 2, 3: 4, 4: 3, 5: 5, 6: 6}}) is True
+    assert ev_check.entry_changed({}) is None
+    rng = np.random.default_rng(2)
+    races = []
+    for i in range(900):
+        lanes = {l: w for l, w in zip(range(1, 7), rng.dirichlet([6, 2, 2, 1.5, 1, 1]))}
+        co = {l: l for l in range(1, 7)} if i % 4 else {1: 1, 2: 2, 3: 4, 4: 3, 5: 5, 6: 6}
+        probs = {ev_check._key(c): x for c, x in ev_check.trifecta_probs(lanes, ev_check.PL_DECAY)}
+        t5 = {c: max(1.5, round(0.75 / x * rng.uniform(0.6, 1.6), 1)) for c, x in probs.items()}
+        races.append({"race": f"2026{i // 28 % 12 + 1:02d}{i % 28 + 1:02d}-24-{i % 12 + 1:02d}-{i:04d}", "probs": probs, "t5": t5, "final": t5,
+                      "hit": ev_check._key(rng.permutation(range(1, 7))[:3]), "p1": lanes[1], "post": False, "decay": ev_check.PL_DECAY,
+                      "course_of": co, "p_lane": lanes, "sr": {}})
+    text = "\n".join(ev_check.entry_report(races))
+    assert "24. 進入が変わったレース" in text and "のうち 225R" in text
+    assert "枠なり" in text and "進入が変わったレースだけ" in text and "今の試し買い" in text
