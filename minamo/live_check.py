@@ -377,6 +377,9 @@ def breakdown(data_dir: Path) -> str:
         if race.get("demo") or res.get("cancelled") or not res.get("trifecta"):
             continue
         esc = ((race.get("prediction") or {}).get("escape") or {}).get("index")
+        boats = (race.get("prediction") or {}).get("boats") or []
+        courses = [(b.get("boat"), b.get("course")) for b in boats]
+        entry = None if len(courses) != 6 or any(c is None for _, c in courses) else any(b != c for b, c in courses)
         for k in rows:
             items = race.get(f"{k}_items") or []
             exa = k.startswith("ex")
@@ -387,7 +390,7 @@ def breakdown(data_dir: Path) -> str:
                 hit = it["combo"] == won
                 rows[k].append({"date": race.get("date") or f.parent.name, "odds": float(it["odds"]), "ev": float(it.get("ev") or 0),
                                 "p": float(it.get("p") or 0), "rank": i + 1, "n": len(items), "head": it["combo"].split("-")[0],
-                                "esc": esc, "hit": hit, "pay": (pay or 0) if hit else 0})
+                                "esc": esc, "entry": entry, "hit": hit, "pay": (pay or 0) if hit else 0})
     out = ["実戦の試し買いを、買った組ひとつずつで分けた成績（1点100円。回収率＝払戻÷投資。当たりが少ない区分は偶然が大きい）"]
 
     def line(tag, g):
@@ -403,6 +406,7 @@ def breakdown(data_dir: Path) -> str:
         ("そのレースの何点目（確率順）", lambda x: f"{x['rank']}点目" if x["rank"] <= 4 else "5点目以降"),
         ("そのレースの点数", lambda x: "1点" if x["n"] == 1 else "2〜3点" if x["n"] <= 3 else "4〜6点" if x["n"] <= 6 else "7点以上"),
         ("頭（1着）の艇", lambda x: "①頭" if x["head"] == "1" else "①以外の頭"),
+        ("進入（展示のコース）", lambda x: "--" if x.get("entry") is None else "進入が変わった" if x["entry"] else "枠なり"),
         ("イン逃げ指数", lambda x: "--" if x["esc"] is None else _band(x["esc"], [0, 40, 55, 70, 85], lambda a, b: f"{a}〜{b}" if b else f"{a}〜")),
     ]
     for k, name in (("ev", "3連単（試し）5分前"), ("ev3", "3連単 3分前"), ("ev2", "3連単 2分前"), ("ev1", "3連単 1分前"),
