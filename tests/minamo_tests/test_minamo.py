@@ -1127,6 +1127,11 @@ def test_ev_and_ex_picks_odds_band():
     combos, items = store.ex_picks(tri, odds, odds2, band=True)
     assert combos == ["1-3"] and items[0]["odds"] == 12.0
     assert store.ex_picks(tri, odds, odds2)[0] == ["1-2", "1-3", "2-1"]
+    # 10/12 から：上位2点のうち①頭の組だけ（3点目の①頭は買わない、上位2点の②頭も買わない）
+    tri2 = [("1-2-3", 0.20), ("2-1-3", 0.15), ("1-3-2", 0.10), ("1-4-2", 0.08)]
+    odds2b = {"1-2": 12.0, "2-1": 15.0, "1-3": 20.0, "1-4": 30.0}
+    assert store.ex_picks(tri2, {}, odds2b, band=True)[0] == ["1-2", "2-1", "1-3"]
+    assert store.ex_picks(tri2, {}, odds2b, band=True, head1=True)[0] == ["1-2"]
 
 
 def test_odds_compare_matches_live_odds_with_database(tmp_path):
