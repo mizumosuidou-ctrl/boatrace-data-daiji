@@ -122,6 +122,7 @@ def main() -> None:
     mlq.add_argument("--raw", default=None)
     mle = sub.add_parser("ev-check", help="買い目の選び方（確率上位・期待値）を、学習に使っていない期間のオッズと結果で比べる")
     mle.add_argument("--raw", default=None)
+    mle.add_argument("--day-trend", action="store_true", help="23.（当日の場の傾向を予想に足すと良くなるか）だけ出す")
     mle.add_argument("--split", action="store_true", help="22.（試し買いの組を live-check --breakdown と同じ分け方で）だけ出す")
     mau = sub.add_parser("audit", help="成績の自動点検：日ごとの一覧の投資・当たり・払戻・合計のつじつまを調べる（読むだけ）")
     mau.add_argument("--url", nargs="?", const="__site__", default=None, help="公開サイトを点検する（URL を省くと既定のサイト）。省くとサーバーの data フォルダ")
@@ -268,7 +269,10 @@ def main() -> None:
         from .ml import ev_check, live
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
-        print(ev_check.build_split(live.ML_DIR, raw) if args.split else ev_check.build(live.ML_DIR, raw))
+        if args.day_trend:
+            print(ev_check.build_day_trend(live.ML_DIR, raw))
+        else:
+            print(ev_check.build_split(live.ML_DIR, raw) if args.split else ev_check.build(live.ML_DIR, raw))
     elif args.cmd == "ml-kimarite":
         from .ml import facts_backfill, live
 
