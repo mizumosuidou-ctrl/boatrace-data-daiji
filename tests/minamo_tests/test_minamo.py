@@ -1218,6 +1218,43 @@ def test_live_day_review(tmp_path):
     assert "2R 当たり 1 回収率  200.0%" in out and "2R 当たり 0 回収率    0.0%" in out
 
 
+
+def test_live_more_check(tmp_path, monkeypatch):
+    """3連複・2連複・拡連複：記録したオッズ（締切5分前より前の最後）で決め、結果の払戻で数える。"""
+    import json as _json
+
+    from minamo import live_check
+
+    monkeypatch.setattr(store, "ev_calib", lambda: None)
+    data, state = tmp_path / "data", tmp_path / "state"
+    (state / "odds").mkdir(parents=True)
+    tri = {"1-2-3": 0.30, "1-3-2": 0.10, "2-1-3": 0.10, "4-5-6": 0.01}
+    lines = []
+    for day in ("20261005", "20261006"):
+        (data / day).mkdir(parents=True)
+        store.write_json(data / day / "01-01.json", {
+            "date": day, "tri_all": tri, "settle": {"ev_bought": True, "ev_stake": 200, "ev_return": 0},
+            "result": {"trifecta": "1-2-3", "payout": 900, "payouts": {"trio": {"1=2=3": 500}, "quinella": {"1=2": 300},
+                                                                         "wide": {"1=2": 150, "1=3": 200, "2=3": 400}}}})
+        more = {"trio": {"1=2=3": 3.0, "4=5=6": 200.0}, "quinella": {"1=2": 1.5, "1=3": 9.0}, "wide": {"1=2": [1.1, 1.3], "2=3": [3.0, 4.0]}}
+        # 5分前より前の最後の行を使う（3分前の行は使わない）
+        lines += [_json.dumps({"race": f"{day}-01-01", "at": f"{day}T10:00:00", "min": 8.0, "t3": {"1-2-3": 5.0}, "more": {"trio": {"1=2=3": 1.0}}}),
+                  _json.dumps({"race": f"{day}-01-01", "at": f"{day}T10:03:00", "min": 5.5, "t3": {"1-2-3": 5.0}, "more": more}),
+                  _json.dumps({"race": f"{day}-01-01", "at": f"{day}T10:06:00", "min": 3.0, "t3": {"1-2-3": 5.0}, "more": {"trio": {"1=2=3": 99.0}}})]
+    (state / "odds" / "20261005.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert live_check._unordered({"1-2-3": 0.2, "2-1-3": 0.1, "1-2-4": 0.05}, 2) == pytest.approx({"1=2": 0.35})
+    assert live_check._unordered({"3-1-2": 0.2, "1-2-3": 0.1}, 3) == pytest.approx({"1=2=3": 0.3})
+    assert live_check._wide_probs({"1-2-3": 0.2})["2=3"] == pytest.approx(0.2)
+    out = live_check.more_check(data, state)
+    assert "記録したオッズ 2R" in out and "■ 3連複" in out and "■ 2連複" in out and "■ 拡連複" in out
+    # 3連複：1=2=3（確率0.5×3.0倍＝1.5）と 4=5=6（0.01×200倍＝2.0）の2点。1=2=3 が当たり（払戻500円÷投資200円）
+    assert "1R 2.0点 的中100.0% 回収率 250.0%" in out
+    # 2連複 1=2 は 0.5×1.5倍＝0.75 で期待値が足りず買わない。確率上位2点（オッズ見ない）は買う
+    assert "（買うレースなし）" in out and "1R 2.0点 的中100.0% 回収率 150.0%" in out
+    assert "くらべ：3連単（試し）" in out
+    assert "記録していない" not in live_check.more_check(data, tmp_path / "none")[:0]
+
+
 def _audit_race(rno=1, **kw):
     """点検用の1レース：3連単1-2-3（配当1,400）・2連単1-2（配当490）。買い目は6点、当たり。"""
     r = {"rno": rno, "deadline": "10:00", "result": "1-2-3", "payout": 1400, "result_ex": "1-2", "payout_ex": 490, "cancelled": False,
