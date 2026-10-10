@@ -1268,3 +1268,75 @@ def test_weekly_report_includes_audit_and_backup_reminder(tmp_path):
     assert "minamo-backup.sh" in text
     store.write_json(tmp_path / "20261006" / "day.json", _audit_day([_audit_race(1, **{"return": 5})]) | {"date": "20261006"})
     assert "払戻が配当と合わない" in weekly.build(tmp_path, ml_dir=tmp_path, today="20261007")
+
+
+def _bets(n, p_hit, payout, seed):
+    """1点100円で n 回。当たる確率 p_hit・当たれば配当 payout（100円あたり）。回収率の期待値は p_hit × payout / 100。"""
+    import random
+
+    rng = random.Random(seed)
+    return [(100.0, float(payout) if rng.random() < p_hit else 0.0) for _ in range(n)]
+
+
+def test_multi_holm_adjustment_and_best_of_n_luck():
+    from minamo import multi
+
+    assert multi.holm([0.01, 0.04, 0.03]) == [0.03, 0.06, 0.06]   # 小さい順に ×(k, k-1, ...)、単調に
+    assert multi.holm([0.5]) == [0.5] and multi.holm([0.4, 0.9]) == [0.8, 0.9]
+    assert multi.expected_best_of(1) == 0 and multi.expected_best_of(10) < multi.expected_best_of(300) < multi.expected_best_of(10000)
+    assert 2.6 < multi.expected_best_of(300) < 2.9   # 300通りの最良は、何も無くても約2.7σ
+
+
+def test_multi_analyse_separates_real_edge_from_luck_and_random():
+    from minamo import multi
+
+    pairs = {
+        "real": _bets(3000, 0.13, 1000, 1),    # 本当の回収率 130%
+        "random": _bets(3000, 0.075, 1000, 2),  # でたらめ（75%）
+        "lucky": _bets(150, 0.105, 1000, 3),    # 回収率 105% だが、レースが少ない
+        "tiny": _bets(10, 0.5, 1000, 4),        # 少なすぎて判定しない
+    }
+    rows = {x["key"]: x for x in multi.analyse(pairs, n_boot=2000)}
+    assert "tiny" not in rows
+    assert rows["real"]["p_profit_adj"] < 0.05 and rows["real"]["lo"] > 1.0   # 補正しても有意
+    assert rows["random"]["p_profit_adj"] > 0.5 and rows["random"]["p_random_adj"] > 0.05   # でたらめ
+    assert rows["lucky"]["p_profit_adj"] > 0.05                                # レースが少ないと、100%超でも言えない
+    assert rows["real"]["need"] is not None and rows["real"]["need"] < 3000   # 本物なら、いまの量で判定できる
+    assert rows["random"]["need"] is None                                      # 100%以下は対象外
+
+
+def test_multi_required_bets_grows_when_the_edge_is_small():
+    from minamo import multi
+
+    big = multi.required_bets(_bets(2000, 0.13, 1000, 5), 0.05)
+    small = multi.required_bets(_bets(2000, 0.105, 1000, 6), 0.05)
+    assert big is not None and small is not None and small > 5 * big
+    assert multi.required_bets(_bets(500, 0.05, 1000, 7), 0.05) is None
+
+
+def test_multi_collect_uses_only_reconciled_days_and_build_runs():
+    from minamo import multi
+
+    ok = _audit_day([_audit_race(1), _audit_race(2)])
+    stale = _audit_day([_audit_race(1, **{"return": 0}), _audit_race(2)], totals={"stake": 1200, "return": 2800})  # 日の合計と合わない日
+    got = multi.collect({"20261008": ok, "20261009": stale})
+    assert len(got["main"]) == 2 and sum(r for _, r in got["main"]) == 2800   # 合う日だけ
+    text = multi.build({"20261008": ok}, n_boot=300)
+    assert "多重比較" in text and "補正しても「100%を超えている」と言える買い方" in text
+    assert "weekly" not in text
+
+
+def test_weekly_report_includes_multi_comparison_line(tmp_path):
+    from minamo import weekly
+
+    store.write_json(tmp_path / "20261005" / "day.json", _audit_day([_audit_race(i) for i in range(1, 40)]) | {"date": "20261005"})
+    text = weekly.build(tmp_path, ml_dir=tmp_path, today="20261007")
+    assert "🔬 多重比較" in text and "補正しても100%超と言える買い方" in text
+
+
+def test_multi_bets_to_detect_scales_with_noise_and_edge():
+    from minamo import multi
+
+    assert multi.bets_to_detect(400, 10, 9) > 10 * multi.bets_to_detect(100, 10, 9) // 2   # ぶれが4倍なら、要るレースは約16倍
+    assert multi.bets_to_detect(100, 5, 9) == 4 * multi.bets_to_detect(100, 10, 9) or abs(multi.bets_to_detect(100, 5, 9) - 4 * multi.bets_to_detect(100, 10, 9)) <= 4
+    assert multi.bets_to_detect(100, 10, 20) > multi.bets_to_detect(100, 10, 1)             # 比べる数が多いほど、要るレースが増える
