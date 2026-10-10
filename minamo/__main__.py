@@ -124,6 +124,7 @@ def main() -> None:
     mlq.add_argument("--raw", default=None)
     mle = sub.add_parser("ev-check", help="買い目の選び方（確率上位・期待値）を、学習に使っていない期間のオッズと結果で比べる")
     mle.add_argument("--raw", default=None)
+    mle.add_argument("--value", action="store_true", help="26.（普通の予想のうち割安な組だけ・2連単の①頭だけ／最大2点）だけ出す")
     mle.add_argument("--shrink", action="store_true", help="25.（締切までのオッズの下がり方を見込んだ期待値で選び直すと）だけ出す")
     mle.add_argument("--entry", action="store_true", help="24.（進入が変わったレースの成績と見送り）だけ出す")
     mle.add_argument("--day-trend", action="store_true", help="23.（当日の場の傾向を予想に足すと良くなるか）だけ出す")
@@ -277,7 +278,9 @@ def main() -> None:
         from .ml import ev_check, live
 
         raw = Path(args.raw) if args.raw else live.ML_DIR / "raw"
-        if args.shrink:
+        if args.value:
+            print(ev_check.build_value(live.ML_DIR, raw))
+        elif args.shrink:
             print(ev_check.build_shrink(live.ML_DIR, raw))
         elif args.entry:
             print(ev_check.build_entry(live.ML_DIR, raw))

@@ -2308,3 +2308,23 @@ def test_ev_check_shrink_report():
     assert all(abs(k - 0.7) < 0.05 for k in tri_k) and all(abs(k - 0.6) < 0.05 for k in ex_k)
     text = "\n".join(ev_check.shrink_report(races))
     assert "25. 当たる組は締切までにオッズが下がる" in text and "下がり方を見込んで 1.0以上" in text and "今のまま（期待値1.2以上）" in text
+
+
+def test_ev_check_value_pick_report():
+    """26.：普通の予想（上位6点）を期待値で絞った成績と、2連単（試し）の①頭だけ・最大2点。"""
+    from minamo.ml import ev_check
+
+    rng = np.random.default_rng(4)
+    races = []
+    for i in range(900):
+        lanes = {l: w for l, w in zip(range(1, 7), rng.dirichlet([6, 2, 2, 1.5, 1, 1]))}
+        probs = {ev_check._key(c): x for c, x in ev_check.trifecta_probs(lanes, ev_check.PL_DECAY)}
+        t5 = {c: max(1.5, round(0.75 / x * rng.uniform(0.6, 1.6), 1)) for c, x in probs.items()}
+        xp = ev_check.exacta_probs(probs)
+        x5 = {c: max(1.2, round(0.75 / v * rng.uniform(0.6, 1.6), 1)) for c, v in xp.items()}
+        races.append({"race": f"2026{i // 28 % 12 + 1:02d}{i % 28 + 1:02d}-24-{i % 12 + 1:02d}-{i:04d}", "probs": probs, "t5": t5, "final": t5,
+                      "hit": max(probs, key=probs.get) if i % 4 == 0 else ev_check._key(rng.permutation(range(1, 7))[:3]),
+                      "x5": x5, "xfinal": x5, "p1": lanes[1], "post": False, "sr": {}})
+    text = "\n".join(ev_check.value_pick_report(races))
+    assert "26. 普通の予想のうち割安な組だけ" in text and "普通の予想のうち期待値1.2以上・15〜120倍" in text
+    assert "2連単（試し）①頭だけ・最大2点" in text and "くらべ：3連単（試し）" in text

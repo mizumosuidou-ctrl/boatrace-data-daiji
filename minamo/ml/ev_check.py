@@ -2083,6 +2083,45 @@ def shrink_report(races: list[dict]) -> list[str]:
     return lines
 
 
+def value_pick_report(races: list[dict]) -> list[str]:
+    """26. 実戦（live-check --ev-filter）で前半・後半とも良かった「普通の予想（確率上位6点）のうち割安な組だけ」と、
+    2連単（試し）の「①頭だけ」「最大2点」を、過去の検証（補正B・後半を前・後に）で確かめる。"""
+    cal = sorted(_test_cal(races), key=lambda r: r["race"])
+    if len(cal) < 400:
+        return []
+    top6 = {r["race"]: sorted(r["probs"], key=r["probs"].get, reverse=True)[:6] for r in races}  # 補正前の確率の上位6点（普通の予想に近い）
+    cmid = cal[len(cal) // 2]["race"]
+    lines = [f"\n26. 普通の予想のうち割安な組だけ・2連単の①頭だけ／最大2点（補正B・後半 {len(cal):,}R を前・後に。1点100円、払戻は確定オッズ）",
+             f"  {_pad('', 40)}{_pad('前', 52)}後"]
+
+    def tri_rows(th, band):
+        from ..store import EV_ODDS
+
+        out = []
+        for r in cal:
+            for c in top6.get(r["race"], []):
+                o = r["t5"].get(c)
+                if th is not None and not (o and r["probs"][c] * o >= th):
+                    continue
+                if band and not (o and EV_ODDS[0] <= o < EV_ODDS[1]):
+                    continue
+                hit = c == r["hit"]
+                out.append({"race": r["race"], "hit": hit, "pay": 100 * r["final"].get(c, 0) if hit else 0})
+        return out
+    for tag, th, band in (("普通の予想（上位6点）全部", None, False), ("普通の予想のうち期待値1.0以上", 1.0, False),
+                          ("普通の予想のうち期待値1.2以上", 1.2, False), ("普通の予想のうち期待値1.2以上・15〜120倍", 1.2, True)):
+        rows = tri_rows(th, band)
+        lines.append(f"  {_pad(tag, 40)}{_split_cell([x for x in rows if x['race'] < cmid])}{_split_cell([x for x in rows if x['race'] >= cmid])}")
+    tri, ex = _trial_combo_rows(cal)
+    lines.append(f"  {_pad('くらべ：3連単（試し）', 40)}{_split_cell([x for x in tri if x['race'] < cmid])}{_split_cell([x for x in tri if x['race'] >= cmid])}")
+    for tag, keep in (("2連単（試し）今のまま", lambda x: True), ("2連単（試し）①頭だけ", lambda x: x["head"] == "1"),
+                      ("2連単（試し）最大2点", lambda x: x["rank"] <= 2), ("2連単（試し）①頭だけ・最大2点", lambda x: x["head"] == "1" and x["rank"] <= 2)):
+        rows = [x for x in ex if keep(x)]
+        lines.append(f"  {_pad(tag, 40)}{_split_cell([x for x in rows if x['race'] < cmid])}{_split_cell([x for x in rows if x['race'] >= cmid])}")
+    lines.append("  前・後の両方で「全部」「今のまま」より良く、100%を超える行があれば、記録だけの試し買いに足す（実戦でも前半・後半で確かめる）")
+    return lines
+
+
 BAND_LOWS = (1.0, 5.0, 10.0, 15.0, 20.0)
 BAND_HIGHS = (30.0, 50.0, 80.0, 120.0, 200.0, float("inf"))
 
@@ -2252,6 +2291,14 @@ def build_shrink(ml_dir: Path, raw: Path) -> str:
     return "\n".join(shrink_report(races) or ["検証のレースが少なすぎます"])
 
 
+def build_value(ml_dir: Path, raw: Path) -> str:
+    """26. だけ（ev-check --value）。"""
+    races = load(ml_dir, raw)
+    if not races:
+        return "検証期間の確率（test_preds.csv.gz）か、オッズ履歴（odds_hist.csv）がありません。ml-train のあとに実行してください"
+    return "\n".join(value_pick_report(races) or ["検証のレースが少なすぎます"])
+
+
 def build(ml_dir: Path, raw: Path) -> str:
     races = load(ml_dir, raw)
     if not races:
@@ -2302,4 +2349,5 @@ def build(ml_dir: Path, raw: Path) -> str:
     lines += day_trend_report(races)
     lines += entry_report(races)
     lines += shrink_report(races)
+    lines += value_pick_report(races)
     return "\n".join(lines)
